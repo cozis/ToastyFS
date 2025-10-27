@@ -1608,7 +1608,7 @@ static int tcp_process_events(TCP *tcp, Event *events)
             removed[i] = defer_close;
             if (0) {}
             else if (defer_close) events[num_events++] = (Event) { EVENT_DISCONNECT, conn - tcp->conns };
-                else if (defer_ready) events[num_events++] = (Event) { EVENT_MESSAGE,    conn - tcp->conns };
+            else if (defer_ready) events[num_events++] = (Event) { EVENT_MESSAGE,    conn - tcp->conns };
         }
     }
 
@@ -2170,8 +2170,7 @@ typedef struct {
     int count;
     int capacity;
     SHA256 *items;
-    SHA256  items_hash;
-} ChunkList;
+} HashList;
 
 typedef struct {
 
@@ -2182,15 +2181,15 @@ typedef struct {
 
     // Chunks held by the chunk server during
     // the last update
-    ChunkList old_list;
+    HashList old_list;
 
     // Chunks added to the chunk server since
     // the last update
-    ChunkList add_list;
+    HashList add_list;
 
     // Chunks removed from the chunk server
     // since the last update
-    ChunkList rem_list;
+    HashList rem_list;
 } ChunkServer;
 
 typedef struct {
@@ -2200,46 +2199,46 @@ typedef struct {
     ChunkServer chunk_servers[MAX_CHUNK_SERVERS];
 } ProgramState;
 
-static void chunk_list_init(ChunkList *chunk_list)
+static void hash_list_init(ChunkList *hash_list)
 {
-    chunk_list->count = 0;
-    chunk_list->capacity = 0;
-    chunk_list->items = NULL;
-    memset(&chunk_list->items_hash, 0, sizeof(SHA256));
+    hash_list->count = 0;
+    hash_list->capacity = 0;
+    hash_list->items = NULL;
+    memset(&hash_list->items_hash, 0, sizeof(SHA256));
 }
 
-static void chunk_list_free(ChunkList *chunk_list)
+static void hash_list_free(ChunkList *hash_list)
 {
-    free(chunk_list->items);
+    free(hash_list->items);
 }
 
-static int chunk_list_insert(ChunkList *chunk_list, SHA256 hash)
+static int hash_list_insert(ChunkList *hash_list, SHA256 hash)
 {
     // Avoid duplicates
-    for (int i = 0; i < chunk_list->count; i++)
-        if (!memcmp(&chunk_list->items[i], &hash, sizeof(SHA256)))
+    for (int i = 0; i < hash_list->count; i++)
+        if (!memcmp(&hash_list->items[i], &hash, sizeof(SHA256)))
             return 0;  // Already present
 
-    if (chunk_list->count == chunk_list->capacity) {
+    if (hash_list->count == hash_list->capacity) {
 
-        int new_capacity = chunk_list->capacity ? chunk_list->capacity * 2 : 16;
+        int new_capacity = hash_list->capacity ? hash_list->capacity * 2 : 16;
 
-        SHA256 *new_items = realloc(chunk_list->items, new_capacity * sizeof(SHA256));
+        SHA256 *new_items = realloc(hash_list->items, new_capacity * sizeof(SHA256));
         if (new_items == NULL)
             return -1;
 
-        chunk_list->items = new_items;
-        chunk_list->capacity = new_capacity;
+        hash_list->items = new_items;
+        hash_list->capacity = new_capacity;
     }
 
-    chunk_list->items[chunk_list->count++] = hash;
+    hash_list->items[hash_list->count++] = hash;
     return 0;
 }
 
-static bool chunk_list_contains(ChunkList *chunk_list, SHA256 hash)
+static bool hash_list_contains(ChunkList *hash_list, SHA256 hash)
 {
-    for (int j = 0; j < chunk_list->count; j++)
-        if (!memcmp(&hash, &chunk_list->items[j], sizeof(SHA256)))
+    for (int j = 0; j < hash_list->count; j++)
+        if (!memcmp(&hash, &hash_list->items[j], sizeof(SHA256)))
             return true;
     return false;
 }
@@ -2248,48 +2247,76 @@ static void chunk_server_init(ChunkServer *chunk_server)
 {
     chunk_server->auth = false;
     chunk_server->num_addrs = 0;
-    chunk_list_init(&chunk_server->old_list);
-    chunk_list_init(&chunk_server->add_list);
-    chunk_list_init(&chunk_server->rem_list);
+    hash_list_init(&chunk_server->old_list);
+    hash_list_init(&chunk_server->add_list);
+    hash_list_init(&chunk_server->rem_list);
 }
 
 static void chunk_server_free(ChunkServer *chunk_server)
 {
-    chunk_list_free(&chunk_server->rem_list);
-    chunk_list_free(&chunk_server->add_list);
-    chunk_list_free(&chunk_server->old_list);
+    hash_list_free(&chunk_server->rem_list);
+    hash_list_free(&chunk_server->add_list);
+    hash_list_free(&chunk_server->old_list);
 }
 
-// Look for a chunk server holding a chunk with the
-// given hash. If no such chunk server exists, return -1.
-static int choose_server_holding_chunk(ProgramState *state, SHA256 hash)
+static bool chunk_server_contains(ChunkServer *chunk_server, SHA256 hash)
 {
-    for (int i = 0; i < state->num_chunk_servers; i++)
-        if (chunk_list_contains(&state->chunk_servers[i].old_list, hash) ||
-            chunk_list_contains(&state->chunk_servers[i].add_list, hash))
-            return i;
-    return -1;
+    return hash_list_contains(&chunk_server->old_list, hash)
+        || hash_list_contains(&chunk_server->add_list, hash);
 }
 
-// Return the index of the chunk server with less
-// chunks, or -1 is no chunk servers are available.
-static int choose_server_for_write(ProgramState *state)
+static bool chunk_server_load(ChunkServer *chunk_server)
 {
-    if (state->num_chunk_servers == 0)
-        return -1;
+    return chunk_server->old_list.count + chunk_server->add_list.count;
+}
 
-    int chunk_count = state->chunk_servers[0].old_list.count + state->chunk_servers[0].add_list.count;
-    int server_index = 0;
-
-    for (int i = 1; i < state->num_chunk_servers; i++) {
-        int tmp = state->chunk_servers[i].old_list.count + state->chunk_servers[i].add_list.count;
-        if (tmp < chunk_count) {
-            chunk_count = tmp;
-            server_index = i;
-        }
+// Returns all chunk servers holding the given chunk
+//
+// The indices of the chunk servers is stored into "out", but at
+// most "max" indices are written. The return value is the number
+// of indices that would be written if "max" were large enough to
+// hold all indices.
+static int
+all_chunk_servers_holding_chunk(ProgramState *state, SHA256 hash, int *out, int max)
+{
+    int num = 0;
+    for (int i = 0; i < state->num_chunk_servers; i++) {
+        if (num < max && chunk_server_contains(&state->chunk_servers[i], hash))
+            out[num] = i;
+        num++;
     }
+    return num;
+}
 
-    return server_index;
+static int compare_chunk_servers(const void *p1, const void *p2, void *data)
+{
+    int a = *(int*) p1;
+    int b = *(int*) p2;
+    ProgramState *state = data;
+    int l1 = chunk_server_load(&state->chunk_servers[a]);
+    int l2 = chunk_server_load(&state->chunk_servers[b]);
+    // TODO
+}
+
+// Returns the indices of chunk servers with lowest load in
+// the "out" array. The return value is the number of indices
+// written, but no more than "max" are written.
+static int choose_servers_for_write(ProgramState *state, int *out, int max)
+{
+    int num = state->num_chunk_servers;
+    int indices[MAX_CHUNK_SERVERS];
+
+    for (int i = 0; i < num; i++)
+        indices[i] = i;
+
+    qsort_r(indices, num, sizeof(*indices), compare_chunk_servers, state);
+
+    if (max > num) max = num;
+
+    for (int i = 0; i < max; i++)
+        out[i] = indices[i]; // Or maybe the other way around? indices[max - i - 1]?
+
+    return num;
 }
 
 static int find_chunk_server_by_addr(ProgramState *state, Address addr)
@@ -2619,28 +2646,33 @@ process_client_read(ProgramState *state, int conn_idx, ByteView msg)
 
         for (uint32_t i = 0; i < num_hashes; i++) {
 
-            // TODO: This should write the address of 3 servers,
-            //       not just 1.
-            int j = choose_server_holding_chunk(state, hashes[i]);
-            if (j < 0) {
-                // TODO
-            }
+            int num_holders;
+            int holders[MAX_CHUNK_SERVERS];
 
-            ChunkServer *chunk_server = &state->chunk_servers[j];
-            assert(chunk_server->auth);
-            assert(chunk_server->num_addrs > 0);
+            num_holders = all_chunk_servers_holding_chunk(state, hashes[i], holders, MAX_CHUNK_SERVERS);
+
+            if (num_holders > state->replication_factor)
+                num_holders = state->replication_factor;
 
             message_write(&writer, &hashes[i], sizeof(hashes[i]));
-            message_write_server_addr(&writer, chunk_server);
+
+            uint32_t tmp = num_holders;
+            message_write(&writer, &tmp, sizeof(tmp));
+
+            for (int j = 0; j < num_holders; j++)
+                message_write_server_addr(&writer, state->chunk_server[holders[j]]);
         }
 
-        // TODO: This should write the location of 3 servers,
-        //       not just 1.
-        int write_server_index = choose_server_for_write(state);
-        if (write_server_index == -1) {
-            // TODO
-        }
-        message_write_server_addr(&writer, &state->chunk_servers[write_server_index]);
+        int num_locations;
+        int locations[MAX_CHUNK_SERVERS];
+
+        num_locations = choose_servers_for_write(state, locations, MAX_CHUNKS_SERVERS);
+
+        if (num_locations > state->replication_factor)
+            nun_locations = state->replication_factor;
+
+        for (int j = 0; j < num_locations; j++)
+            message_write_server_addr(&writer, &state->chunk_servers[locations[j]]);
 
         if (!message_writer_free(&writer))
             return -1;
@@ -2756,7 +2788,7 @@ process_client_write(ProgramState *state, int conn_idx, ByteView msg)
             if (j == -1)
                 return -1;
 
-            if (!chunk_list_insert(&state->chunk_servers[j].add_list, new_hashes[i]))
+            if (!hash_list_insert(&state->chunk_servers[j].add_list, new_hashes[i]))
                 return -1;
         }
 
@@ -2870,8 +2902,8 @@ process_chunk_server_message(ProgramState *state,
     int conn_idx, uint8_t type, ByteView msg)
 {
     switch (type) {
-        case MESSAGE_TYPE_AUTH      : return process_chunk_server_auth(state, conn_idx, msg);
-        default:break;
+        case MESSAGE_TYPE_AUTH:
+        return process_chunk_server_auth(state, conn_idx, msg);
     }
     return -1;
 }
