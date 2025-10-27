@@ -2298,7 +2298,11 @@ all_chunk_servers_holding_chunk(ProgramState *state, SHA256 hash, int *out, int 
     return num;
 }
 
+#ifdef _WIN32
+static int compare_chunk_servers(void *data, const void *p1, const void *p2)
+#else
 static int compare_chunk_servers(const void *p1, const void *p2, void *data)
+#endif
 {
     int a = *(int*) p1;
     int b = *(int*) p2;
@@ -2319,7 +2323,11 @@ static int choose_servers_for_write(ProgramState *state, int *out, int max)
     for (int i = 0; i < num; i++)
         indices[i] = i;
 
+#ifdef _WIN32
+    qsort_s(indices, num, sizeof(*indices), compare_chunk_servers, state);
+#else
     qsort_r(indices, num, sizeof(*indices), compare_chunk_servers, state);
+#endif
 
     if (max > num) max = num;
 
@@ -3313,6 +3321,8 @@ process_metadata_server_state_update(ProgramState *state, int conn_idx, ByteView
 static int
 process_metadata_server_download_locations(ProgramState *state, int conn_idx, ByteView msg)
 {
+    (void) conn_idx;
+
     // The metadata server wants us to download chunks from other chunk servers
 
     BinaryReader reader = { msg.ptr, msg.len, 0 };
@@ -3810,24 +3820,6 @@ int main(int argc, char **argv)
 #define TAG_RETRIEVE_METADATA_FOR_READ  1
 #define TAG_RETRIEVE_METADATA_FOR_WRITE 2
 
-typedef enum {
-    RESULT_TYPE_EMPTY,
-    RESULT_TYPE_CREATE_ERROR,
-    RESULT_TYPE_CREATE_SUCCESS,
-    RESULT_TYPE_DELETE_ERROR,
-    RESULT_TYPE_DELETE_SUCCESS,
-    RESULT_TYPE_LIST_ERROR,
-    RESULT_TYPE_LIST_SUCCESS,
-    RESULT_TYPE_READ_ERROR,
-    RESULT_TYPE_READ_SUCCESS,
-    RESULT_TYPE_WRITE_ERROR,
-    RESULT_TYPE_WRITE_SUCCESS,
-} ResultType;
-
-typedef struct {
-    ResultType type;
-} Result;
-
 typedef struct {
     SHA256   hash;
     char*    dst;
@@ -3857,7 +3849,7 @@ typedef struct {
     int ranges_count;
     int num_pending;
 
-    Result result;
+    TinyDFS_Result result;
 } Operation;
 
 typedef struct {
@@ -3883,7 +3875,7 @@ typedef struct {
     RequestQueue reqs;
 } ChunkServer;
 
-typedef struct {
+struct TinyDFS {
 
     TCP tcp;
 
@@ -3895,52 +3887,66 @@ typedef struct {
     int num_operations;
     Operation operations[MAX_OPERATIONS];
 
-} Client;
+};
 
-static int client_init(Client *client)
+TinyDFS *tinydfs_init(char *addr, uint16_t port)
 {
-    tcp_context_init(&client->tcp);
+    TinyDFS *tdfs = malloc(sizeof(TinyDFS));
+    if (tdfs == NULL)
+        return NULL;
 
-    if (tcp_connect(&client->tcp, addr, TAG_METADATA_SERVER, NULL) < 0) {
-        tcp_context_free(&client->tcp);
-        return -1;
+    Address addr2;
+    addr2.is_ipv4 = true;
+    addr2.port = port;
+    if (inet_pton(AF_INET, addr, &addr2.ipv4) != 1) {
+        free(tdfs);
+        return tdfs;
     }
 
-    client->num_operations = 0;
+    tcp_context_init(&tdfs->tcp);
+
+    if (tcp_connect(&tdfs->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
+        tcp_context_free(&tdfs->tcp);
+        free(tdfs);
+        return NULL;
+    }
+
+    tdfs->num_operations = 0;
 
     for (int i = 0; i < MAX_OPERATIONS; i++)
-        client->operations[i].type = OPERATION_TYPE_FREE;
+        tdfs->operations[i].type = OPERATION_TYPE_FREE;
 
-    return 0;
+    return tdfs;
 }
 
-static void client_free(Client *client)
+void tdfs_free(TinyDFS *tdfs)
 {
-    tcp_context_free(&client->tcp);
+    tcp_context_free(&tdfs->tcp);
+    free(tdfs);
 }
 
 static int
-alloc_operation(Client *client, OperationType type, int off, void *ptr, int len)
+alloc_operation(TinyDFS *tdfs, OperationType type, int off, void *ptr, int len)
 {
-    if (client->num_operations == MAX_OPERATIONS)
+    if (tdfs->num_operations == MAX_OPERATIONS)
         return -1;
-    Operation *o = client->operations;
+    Operation *o = tdfs->operations;
     while (o->type != OPERATION_TYPE_FREE)
         o++;
     o->type = type;
     o->ptr  = ptr;
     o->off  = off;
     o->len  = len;
-    o->result = (Result) { RESULT_TYPE_EMPTY };
+    o->result = (Result) { TINYDFS_RESULT_EMPTY };
 
-    client->num_operations++;
-    return o - client->operations;
+    tdfs->num_operations++;
+    return o - tdfs->operations;
 }
 
-static void free_operation(Client *client, int opidx)
+static void free_operation(TinyDFS *tdfs, int opidx)
 {
-    client->operations[opidx].type = OPERATION_TYPE_FREE;
-    client->num_operations--;
+    tdfs->operations[opidx].type = OPERATION_TYPE_FREE;
+    tdfs->num_operations--;
 }
 
 static void
@@ -3973,176 +3979,177 @@ request_queue_pop(RequestQueue *reqs, Request *req)
 }
 
 static void
-metadata_server_request_start(Client *client, MessageWriter *writer, uint16_t type)
+metadata_server_request_start(TinyDFS *tdfs, MessageWriter *writer, uint16_t type)
 {
-    int conn_idx = tcp_index_from_tag(&client->tcp, TAG_METADATA_SERVER);
-    ByteQueue *output = tcp_output_buffer(&client->tcp, conn_idx);
+    int conn_idx = tcp_index_from_tag(&tdfs->tcp, TAG_METADATA_SERVER);
+    ByteQueue *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
     message_writer_init(writer, output, type);
 }
 
 static int
-metadata_server_request_end(Client *client, MessageWriter *writer, int opidx, int tag)
+metadata_server_request_end(TinyDFS *tdfs, MessageWriter *writer, int opidx, int tag)
 {
     if (!message_writer_free(writer))
         return -1;
 
-    RequestQueue *reqs = &client->metadata_server.reqs;
+    RequestQueue *reqs = &tdfs->metadata_server.reqs;
     if (request_queue_push(reqs, (Request) { tag, opidx }) < 0)
         return -1;
 
     return 0;
 }
 
-static int
-client_submit_create(Client *client, string path, bool is_dir, uint32_t chunk_size)
+int tinydfs_submit_create(TinyDFS *tdfs, char *path, int path_len,
+    bool is_dir, uint32_t chunk_size)
 {
-    OperationType type = OPERATION_TYPE_CREATE;
+    if (path_len < 0) path_len = strlen(path);
 
-    int opidx = alloc_operation(client, type, 0, NULL, 0);
+    OperationType type = OPERATION_TYPE_CREATE;
+    int opidx = alloc_operation(tdfs, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
     MessageWriter writer;
-    metadata_server_request_start(client, &writer, MESSAGE_TYPE_CREATE);
+    metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_CREATE);
 
-    if (path.len > UINT16_MAX) {
-        free_operation(client, opidx);
+    if (path_len > UINT16_MAX) {
+        free_operation(tdfs, opidx);
         return -1;
     }
-    uint16_t path_len = path.len;
-    message_write(&writer, &path_len, sizeof(path_len));
+    uint16_t tmp = path_len;
+    message_write(&writer, &tmp, sizeof(tmp));
 
-    message_write(&writer, path.ptr, path.len);
+    message_write(&writer, path, path_len);
 
     uint8_t tmp_u8 = is_dir;
     message_write(&writer, &tmp_u8, sizeof(tmp_u8));
 
     if (!is_dir) {
         if (chunk_size == 0 || chunk_size > UINT32_MAX) {
-            free_operation(client, opidx);
+            free_operation(tdfs, opidx);
             return -1;
         }
         uint32_t tmp_u32 = chunk_size;
         message_write(&writer, &tmp_u32, sizeof(tmp_u32));
     }
 
-    if (metadata_server_request_end(client, &writer, opidx, 0) < 0) {
-        free_operation(client, opidx);
+    if (metadata_server_request_end(tdfs, &writer, opidx, 0) < 0) {
+        free_operation(tdfs, opidx);
         return -1;
     }
 
     return 0;
 }
 
-static int
-client_submit_delete(Client *client, string path)
+int tinydfs_submit_delete(TinyDFS *tdfs, char *path, int path_len)
 {
+    if (path_len < 0) path_len = strlen(path);
+
     OperationType type = OPERATION_TYPE_DELETE;
-
-    int opidx = alloc_operation(client, type, 0, NULL, 0);
+    int opidx = alloc_operation(tdfs, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
     MessageWriter writer;
-    metadata_server_request_start(client, &writer, MESSAGE_TYPE_DELETE);
+    metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_DELETE);
 
-    if (path.len > UINT16_MAX) {
-        free_operation(client, opidx);
+    if (path_len > UINT16_MAX) {
+        free_operation(tdfs, opidx);
         return -1;
     }
-    uint16_t path_len = path.len;
-    message_write(&writer, &path_len, sizeof(path_len));
+    uint16_t tmp = path_len;
+    message_write(&writer, &tmp, sizeof(tmp));
 
-    message_write(&writer, path.ptr, path.len);
+    message_write(&writer, path, path_len);
 
-    if (metadata_server_request_end(client, &writer, opidx, 0) < 0) {
-        free_operation(client, opidx);
+    if (metadata_server_request_end(tdfs, &writer, opidx, 0) < 0) {
+        free_operation(tdfs, opidx);
         return -1;
     }
 
     return 0;
 }
 
-static int
-client_submit_list(Client *client, string path)
+int tinydfs_submit_list(TinyDFS *tdfs, char *path, int path_len)
 {
-    OperationType type = OPERATION_TYPE_LIST;
+    if (path_len < 0) path_len = strlen(path);
 
-    int opidx = alloc_operation(client, type, 0, NULL, 0);
+    OperationType type = OPERATION_TYPE_LIST;
+    int opidx = alloc_operation(tdfs, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
     MessageWriter writer;
-    metadata_server_request_start(client, &writer, MESSAGE_TYPE_LIST);
+    metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_LIST);
 
-    if (path.len > UINT16_MAX) {
-        free_operation(client, opidx);
+    if (path_len > UINT16_MAX) {
+        free_operation(tdfs, opidx);
         return -1;
     }
-    uint16_t path_len = path.len;
-    message_write(&writer, &path_len, sizeof(path_len));
+    uint16_t tmp = path_len;
+    message_write(&writer, &tmp, sizeof(tmp));
 
-    message_write(&writer, path.ptr, path.len);
+    message_write(&writer, path, path_len);
 
-    if (metadata_server_request_end(client, &writer, opidx, 0) < 0) {
-        free_operation(client, opidx);
+    if (metadata_server_request_end(tdfs, &writer, opidx, 0) < 0) {
+        free_operation(tdfs, opidx);
         return -1;
     }
 
     return 0;
 }
 
-static int send_read_message(Client *client, int opidx, int tag, string path, uint32_t offset, uint32_t length)
+static int send_read_message(TinyDFS *tdfs, int opidx, int tag, string path, uint32_t offset, uint32_t length)
 {
     if (path.len > UINT16_MAX)
         return -1;
     uint16_t path_len = path.len;
 
     MessageWriter writer;
-    metadata_server_request_start(client, &writer, MESSAGE_TYPE_READ);
+    metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_READ);
     message_write(&writer, &path_len, sizeof(path_len));
     message_write(&writer, path.ptr,  path.len);
     message_write(&writer, &offset,   sizeof(offset));
     message_write(&writer, &length,   sizeof(length));
-    if (metadata_server_request_end(client, &writer, opidx, tag) < 0)
+    if (metadata_server_request_end(tdfs, &writer, opidx, tag) < 0)
         return -1;
     return 0;
 }
 
-static int
-client_submit_read(Client *client, string path, int off, void *dst, int len)
+int tinydfs_submit_read(TinyDFS *tdfs, char *path, int path_len, int off, void *dst, int len)
 {
+    if (path_len < 0) path_len = strlen(path);
+
     OperationType type = OPERATION_TYPE_READ;
-
-    int opidx = alloc_operation(client, type, off, dst, len);
+    int opidx = alloc_operation(tdfs, type, off, dst, len);
     if (opidx < 0) return -1;
 
-    if (send_read_message(client, opidx, TAG_RETRIEVE_METADATA_FOR_READ, path, off, len) < 0) {
-        free_operation(client, opidx);
+    if (send_read_message(tdfs, opidx, TAG_RETRIEVE_METADATA_FOR_READ, (string) { path, path_len }, off, len) < 0) {
+        free_operation(tdfs, opidx);
         return -1;
     }
 
     return 0;
 }
 
-static int
-client_submit_write(Client *client, string path, int off, void *src, int len)
+int tinydfs_submit_write(TinyDFS *tdfs, char *path, int path_len, int off, void *src, int len)
 {
-    OperationType type = OPERATION_TYPE_WRITE;
+    if (path_len < 0) path_len = strlen(path);
 
-    int opidx = alloc_operation(client, type, off, src, len);
+    OperationType type = OPERATION_TYPE_WRITE;
+    int opidx = alloc_operation(tdfs, type, off, src, len);
     if (opidx < 0) return -1;
 
-    if (send_read_message(client, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, path, off, len) < 0) {
-        free_operation(client, opidx);
+    if (send_read_message(tdfs, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, (string) { path, path_len }, off, len) < 0) {
+        free_operation(tdfs, opidx);
         return -1;
     }
 
     return 0;
 }
 
-static void process_event_for_create(Client *client,
+static void process_event_for_create(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_CREATE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
@@ -4150,41 +4157,41 @@ static void process_event_for_create(Client *client,
 
     // version;
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_CREATE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_CREATE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_CREATE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_CREATE_SUCCESS) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_CREATE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_CREATE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
-    client->operations[opidx].result = (Result) { RESULT_TYPE_CREATE_SUCCESS };
+    tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_SUCCESS };
 }
 
-static void process_event_for_delete(Client *client,
+static void process_event_for_delete(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_DELETE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
@@ -4192,41 +4199,41 @@ static void process_event_for_delete(Client *client,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_DELETE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_DELETE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_DELETE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_DELETE_SUCCESS) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_DELETE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_DELETE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
-    client->operations[opidx].result = (Result) { RESULT_TYPE_DELETE_SUCCESS };
+    tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_SUCCESS };
 }
 
-static void process_event_for_list(Client *client,
+static void process_event_for_list(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
@@ -4234,24 +4241,24 @@ static void process_event_for_list(Client *client,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_LIST_SUCCESS) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
@@ -4259,18 +4266,18 @@ static void process_event_for_list(Client *client,
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
-    client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_SUCCESS };
+    tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_SUCCESS };
 }
 
-static void process_event_for_read(Client *client,
+static void process_event_for_read(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
         return;
     }
 
@@ -4282,13 +4289,13 @@ static void process_event_for_read(Client *client,
 
             // version
             if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
             uint16_t type;
             if (!binary_read(&reader, &type, sizeof(type))) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
@@ -4298,18 +4305,18 @@ static void process_event_for_read(Client *client,
 
             // length
             if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
             uint32_t chunk_size;
             if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
-            int off = client->operations[opidx].off;
-            int len = client->operations[opidx].len;
+            int off = tdfs->operations[opidx].off;
+            int len = tdfs->operations[opidx].len;
 
             uint32_t first_byte = off;
             uint32_t  last_byte = off + len - 1; // TODO: what if len=0 ?
@@ -4324,11 +4331,11 @@ static void process_event_for_read(Client *client,
 
             Range *ranges = malloc(num_hashes * sizeof(Range));
             if (ranges == NULL) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
-            char *ptr = client->operations[opidx].ptr;
+            char *ptr = tdfs->operations[opidx].ptr;
             for (uint32_t i = first_chunk; i <= last_chunk; i++) {
 
                 uint32_t first_byte_within_chunk = 0;
@@ -4362,14 +4369,14 @@ static void process_event_for_read(Client *client,
 
             // Check there is nothing else to read
             if (binary_read(&reader, NULL, 1)) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
                 return;
             }
 
-            client->operations[opidx].ranges = ranges;
-            client->operations[opidx].ranges_head = 0;
-            client->operations[opidx].ranges_count = num_hashes;
-            client->operations[opidx].num_pending = 0;
+            tdfs->operations[opidx].ranges = ranges;
+            tdfs->operations[opidx].ranges_head = 0;
+            tdfs->operations[opidx].ranges_count = num_hashes;
+            tdfs->operations[opidx].num_pending = 0;
 
             // TODO: start N downloads
         }
@@ -4381,50 +4388,50 @@ static void process_event_for_read(Client *client,
 
             // version
             if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
             uint16_t type;
             if (!binary_read(&reader, &type, sizeof(type))) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
             if (type != MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
             // length
             if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
             uint32_t data_len;
             if (!binary_read(&reader, &data_len, sizeof(data_len))) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
-            char *data = reader.src + reader.cur;
+            uint8_t *data = reader.src + reader.cur;
             if (!binary_read(&reader, NULL, data_len)) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
             // Check there is nothing else to read
             if (binary_read(&reader, NULL, 1)) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_LIST_ERROR };
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
                 return;
             }
 
-            memcpy(client->operations[opidx].ranges[request_tag].dst, data, data_len);
-            client->operations[opidx].num_pending--;
+            memcpy(tdfs->operations[opidx].ranges[request_tag].dst, data, data_len);
+            tdfs->operations[opidx].num_pending--;
 
-            if (client->operations[opidx].num_pending == 0) {
-                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_SUCCESS };
+            if (tdfs->operations[opidx].num_pending == 0) {
+                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_SUCCESS };
             } else {
                 // TODO: start operation
             }
@@ -4433,11 +4440,11 @@ static void process_event_for_read(Client *client,
     }
 }
 
-static void process_event_for_write(Client *client,
+static void process_event_for_write(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        client->operations[opidx].result = (Result) { RESULT_TYPE_WRITE_ERROR };
+        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_WRITE_ERROR };
         return;
     }
 
@@ -4451,53 +4458,53 @@ static void process_event_for_write(Client *client,
     // TODO
 }
 
-static void process_event(Client *client,
+static void process_event(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
-    switch (client->operations[opidx].type) {
-        case OPERATION_TYPE_CREATE: process_event_for_create(client, opidx, request_tag, msg); break;
-        case OPERATION_TYPE_DELETE: process_event_for_delete(client, opidx, request_tag, msg); break;
-        case OPERATION_TYPE_LIST  : process_event_for_list  (client, opidx, request_tag, msg); break;
-        case OPERATION_TYPE_READ  : process_event_for_read  (client, opidx, request_tag, msg); break;
-        case OPERATION_TYPE_WRITE : process_event_for_write (client, opidx, request_tag, msg); break;
+    switch (tdfs->operations[opidx].type) {
+        case OPERATION_TYPE_CREATE: process_event_for_create(tdfs, opidx, request_tag, msg); break;
+        case OPERATION_TYPE_DELETE: process_event_for_delete(tdfs, opidx, request_tag, msg); break;
+        case OPERATION_TYPE_LIST  : process_event_for_list  (tdfs, opidx, request_tag, msg); break;
+        case OPERATION_TYPE_READ  : process_event_for_read  (tdfs, opidx, request_tag, msg); break;
+        case OPERATION_TYPE_WRITE : process_event_for_write (tdfs, opidx, request_tag, msg); break;
         default: UNREACHABLE;
     }
 }
 
 static bool
-translate_operation_into_result(Client *client, int opidx, Result *result)
+translate_operation_into_result(TinyDFS *tdfs, int opidx, Result *result)
 {
-    if (client->operations[opidx].result.type == RESULT_TYPE_EMPTY)
+    if (tdfs->operations[opidx].result.type == TINYDFS_RESULT_EMPTY)
         return false;
-    *result = client->operations[opidx].result;
-    client->operations[opidx].type = OPERATION_TYPE_FREE;
-    client->num_operations--;
+    *result = tdfs->operations[opidx].result;
+    tdfs->operations[opidx].type = OPERATION_TYPE_FREE;
+    tdfs->num_operations--;
     return true;
 }
 
-static void client_wait(Client *client, int opidx, Result *result, int timeout)
+void tinydfs_wait(TinyDFS *tdfs, int opidx, TinyDFS_Result *result, int timeout)
 {
     for (;;) {
 
         if (opidx < 0) {
-            for (int i = 0, j = 0; j < client->num_operations; i++) {
+            for (int i = 0, j = 0; j < tdfs->num_operations; i++) {
 
-                if (client->operations[i].type == OPERATION_TYPE_FREE)
+                if (tdfs->operations[i].type == OPERATION_TYPE_FREE)
                     continue;
                 j++;
 
-                if (translate_operation_into_result(client, i, result))
+                if (translate_operation_into_result(tdfs, i, result))
                     return;
             }
         } else {
-            if (translate_operation_into_result(client, opidx, result))
+            if (translate_operation_into_result(tdfs, opidx, result))
                 return;
         }
 
         int num_events;
         Event events[MAX_CONNS+1];
 
-        num_events = tcp_process_events(&client->tcp, events);
+        num_events = tcp_process_events(&tdfs->tcp, events);
         for (int i = 0; i < num_events; i++) {
             int conn_idx = events[i].conn_idx;
             switch (events[i].type) {
@@ -4509,16 +4516,16 @@ static void client_wait(Client *client, int opidx, Result *result, int timeout)
                 {
                     RequestQueue *reqs;
 
-                    int tag = tcp_get_tag(&client->tcp, conn_idx);
+                    int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
                     if (tag == TAG_METADATA_SERVER_TO_CLIENT)
-                        reqs = &client->metadata_server.reqs;
+                        reqs = &tdfs->metadata_server.reqs;
                     else {
                         assert(tag > -1);
-                        reqs = &client->chunk_servers[tag].reqs;
+                        reqs = &tdfs->chunk_servers[tag].reqs;
                     }
 
                     for (Request req; request_queue_pop(reqs, &req) == 0; )
-                        process_event(client, req.opidx, req.tag, (ByteView) { NULL, 0 });
+                        process_event(tdfs, req.opidx, req.tag, (ByteView) { NULL, 0 });
                 }
                 break;
 
@@ -4528,97 +4535,37 @@ static void client_wait(Client *client, int opidx, Result *result, int timeout)
 
                         ByteView msg;
                         uint16_t msg_type;
-                        int ret = tcp_next_message(&client->tcp, conn_idx, &msg, &msg_type);
+                        int ret = tcp_next_message(&tdfs->tcp, conn_idx, &msg, &msg_type);
                         if (ret == 0)
                             break;
                         if (ret < 0) {
-                            tcp_close(&client->tcp, conn_idx);
+                            tcp_close(&tdfs->tcp, conn_idx);
                             break;
                         }
 
                         RequestQueue *reqs;
 
-                        int tag = tcp_get_tag(&client->tcp, conn_idx);
+                        int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
                         if (tag == TAG_METADATA_SERVER_TO_CLIENT)
-                            reqs = &client->metadata_server.reqs;
+                            reqs = &tdfs->metadata_server.reqs;
                         else {
                             assert(tag > -1);
-                            reqs = &client->chunk_servers[tag].reqs;
+                            reqs = &tdfs->chunk_servers[tag].reqs;
                         }
 
                         Request req;
                         if (request_queue_pop(reqs, &req) < 0) {
                             UNREACHABLE;
                         }
-                        process_event(client, req.opidx, req.tag, msg);
+                        process_event(tdfs, req.opidx, req.tag, msg);
 
-                        tcp_consume_message(&client->tcp, conn_idx);
+                        tcp_consume_message(&tdfs->tcp, conn_idx);
                     }
                 }
                 break;
             }
         }
     }
-}
-
-struct TinyDFS {
-    Client client;
-};
-
-TinyDFS *tinydfs_init(void)
-{
-    TinyDFS *tdfs = malloc(sizeof(TinyDFS));
-    if (tdfs == NULL)
-        return NULL;
-
-    if (client_init(&tdfs->client) < 0) {
-        free(tdfs);
-        return NULL;
-    }
-
-    return tdfs;
-}
-
-void tinydfs_free(TinyDFS *tdfs)
-{
-    client_free(&tdfs->client);
-    free(tdfs);
-}
-
-int tinydfs_wait(TinyDFS *tdfs, TinyDFS_Handle handle,
-    TinyDFS_Result *result, int timeout)
-{
-    // TODO
-}
-
-TinyDFS_Handle tinydfs_submit_create(TinyDFS *tdfs,
-    char *path, int path_len, bool is_dir, unsigned int chunk_size)
-{
-    // TODO
-}
-
-TinyDFS_Handle tinydfs_submit_delete(TinyDFS *tdfs,
-    char *path, int path_len)
-{
-    // TODO
-}
-
-TinyDFS_Handle tinydfs_submit_list(TinyDFS *tdfs,
-    char *path, int path_len)
-{
-    // TODO
-}
-
-TinyDFS_Handle tinydfs_submit_read(TinyDFS *tdfs,
-    char *path, int path_len, void *dst, int len)
-{
-    // TODO
-}
-
-TinyDFS_Handle tinydfs_submit_write(TinyDFS *tdfs,
-    char *path, int path_len, void *src, int len)
-{
-    // TODO
 }
 
 #endif

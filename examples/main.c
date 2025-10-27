@@ -3,7 +3,7 @@
 
 int main(void)
 {
-    TinyDFS *tdfs = tinydfs_init();
+    TinyDFS *tdfs = tinydfs_init("127.0.0.1", 8080);
     if (tdfs == NULL)
         return -1;
 
