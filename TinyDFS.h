@@ -1,6 +1,8 @@
 #ifndef TINYDFS_INCLUDED
 #define TINYDFS_INCLUDED
 
+#include <stdbool.h>
+
 typedef struct TinyDFS TinyDFS;
 
 typedef enum {

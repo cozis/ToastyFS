@@ -20,7 +20,7 @@ chunk_server$(EXT): TinyDFS.c TinyDFS.h
 	gcc -o $@ TinyDFS.c -DBUILD_CHUNK_SERVER $(CFLAGS) $(LFLAGS)
 
 example$(EXT): examples/main.c TinyDFS.c TinyDFS.h
-	gcc -o $@ examples/main.c TinyDFS.c $(CFLAGS) $(LFLAGS)
+	gcc -o $@ examples/main.c TinyDFS.c $(CFLAGS) $(LFLAGS) -I.
 
 clean:
 	rm                      \

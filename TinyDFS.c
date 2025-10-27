@@ -125,6 +125,8 @@
 //       as orphaned or "to-be-deleted" unless they are used by
 //       someone else
 
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <assert.h>
 #include <stdint.h>
@@ -152,9 +154,8 @@
 #define CLOSE_SOCKET close
 #endif
 
-#if !defined(BUILD_METADATA_SERVER) && !defined(BUILD_CHUNK_SERVER)
-#define BUILD_METADATA_SERVER
-#endif
+#define MAX_SERVER_ADDRS 8
+#define MAX_CHUNK_SERVERS 32
 
 //////////////////////////////////////////////////////////////////////////
 // BASICS
@@ -1453,6 +1454,14 @@ static void tcp_context_free(TCP *tcp)
         CLOSE_SOCKET(tcp->listen_fd);
 }
 
+static int tcp_index_from_tag(TCP *tcp, int tag)
+{
+    for (int i = 0; i < tcp->num_conns; i++)
+        if (tcp->conns[i].tag == tag)
+            return i;
+    return -1;
+}
+
 static int tcp_listen(TCP *tcp, char *addr, uint16_t port)
 {
     SOCKET listen_fd = create_listen_socket(addr, port);
@@ -2160,9 +2169,6 @@ static string file_tree_strerror(int code)
 //////////////////////////////////////////////////////////////////////////
 #ifdef BUILD_METADATA_SERVER
 
-#define MAX_SERVER_ADDRS 8
-#define MAX_CHUNK_SERVERS 32
-
 #define CONNECTION_TAG_CLIENT  -1
 #define CONNECTION_TAG_UNKNOWN -2
 
@@ -2193,26 +2199,30 @@ typedef struct {
 } ChunkServer;
 
 typedef struct {
-    int num_chunk_servers;
+
     TCP tcp;
+
     FileTree file_tree;
+
+    int replication_factor;
+
+    int num_chunk_servers;
     ChunkServer chunk_servers[MAX_CHUNK_SERVERS];
 } ProgramState;
 
-static void hash_list_init(ChunkList *hash_list)
+static void hash_list_init(HashList *hash_list)
 {
     hash_list->count = 0;
     hash_list->capacity = 0;
     hash_list->items = NULL;
-    memset(&hash_list->items_hash, 0, sizeof(SHA256));
 }
 
-static void hash_list_free(ChunkList *hash_list)
+static void hash_list_free(HashList *hash_list)
 {
     free(hash_list->items);
 }
 
-static int hash_list_insert(ChunkList *hash_list, SHA256 hash)
+static int hash_list_insert(HashList *hash_list, SHA256 hash)
 {
     // Avoid duplicates
     for (int i = 0; i < hash_list->count; i++)
@@ -2235,7 +2245,7 @@ static int hash_list_insert(ChunkList *hash_list, SHA256 hash)
     return 0;
 }
 
-static bool hash_list_contains(ChunkList *hash_list, SHA256 hash)
+static bool hash_list_contains(HashList *hash_list, SHA256 hash)
 {
     for (int j = 0; j < hash_list->count; j++)
         if (!memcmp(&hash, &hash_list->items[j], sizeof(SHA256)))
@@ -2295,7 +2305,7 @@ static int compare_chunk_servers(const void *p1, const void *p2, void *data)
     ProgramState *state = data;
     int l1 = chunk_server_load(&state->chunk_servers[a]);
     int l2 = chunk_server_load(&state->chunk_servers[b]);
-    // TODO
+    return l1 - l2;
 }
 
 // Returns the indices of chunk servers with lowest load in
@@ -2646,13 +2656,8 @@ process_client_read(ProgramState *state, int conn_idx, ByteView msg)
 
         for (uint32_t i = 0; i < num_hashes; i++) {
 
-            int num_holders;
             int holders[MAX_CHUNK_SERVERS];
-
-            num_holders = all_chunk_servers_holding_chunk(state, hashes[i], holders, MAX_CHUNK_SERVERS);
-
-            if (num_holders > state->replication_factor)
-                num_holders = state->replication_factor;
+            int num_holders = all_chunk_servers_holding_chunk(state, hashes[i], holders, state->replication_factor);
 
             message_write(&writer, &hashes[i], sizeof(hashes[i]));
 
@@ -2660,16 +2665,11 @@ process_client_read(ProgramState *state, int conn_idx, ByteView msg)
             message_write(&writer, &tmp, sizeof(tmp));
 
             for (int j = 0; j < num_holders; j++)
-                message_write_server_addr(&writer, state->chunk_server[holders[j]]);
+                message_write_server_addr(&writer, &state->chunk_servers[holders[j]]);
         }
 
-        int num_locations;
         int locations[MAX_CHUNK_SERVERS];
-
-        num_locations = choose_servers_for_write(state, locations, MAX_CHUNKS_SERVERS);
-
-        if (num_locations > state->replication_factor)
-            nun_locations = state->replication_factor;
+        int num_locations = choose_servers_for_write(state, locations, state->replication_factor);
 
         for (int j = 0; j < num_locations; j++)
             message_write_server_addr(&writer, &state->chunk_servers[locations[j]]);
@@ -2930,6 +2930,10 @@ int program_init(ProgramState *state, int argc, char **argv)
     char addr[] = "127.0.0.1";
     uint16_t port = 8080;
 
+    state->replication_factor = 3;
+    if (state->replication_factor > MAX_CHUNK_SERVERS)
+        return -1;
+
     state->num_chunk_servers = 0;
 
     tcp_context_init(&state->tcp);
@@ -2981,9 +2985,17 @@ int program_step(ProgramState *state)
 
             case EVENT_MESSAGE:
             {
-                ByteView msg;
-                uint16_t msg_type;
-                while (tcp_next_message(&state->tcp, conn_idx, &msg, &msg_type)) {
+                for (;;) {
+
+                    ByteView msg;
+                    uint16_t msg_type;
+                    int ret = tcp_next_message(&state->tcp, conn_idx, &msg, &msg_type);
+                    if (ret == 0)
+                        break;
+                    if (ret < 0) {
+                        tcp_close(&state->tcp, conn_idx);
+                        break;
+                    }
 
                     if (tcp_get_tag(&state->tcp, conn_idx) == CONNECTION_TAG_UNKNOWN) {
                         if (is_chunk_server_message_type(msg_type)) {
@@ -2995,14 +3007,15 @@ int program_step(ProgramState *state)
                         }
                     }
 
-                    int ret;
                     if (tcp_get_tag(&state->tcp, conn_idx) == CONNECTION_TAG_CLIENT)
                         ret = process_client_message(state, conn_idx, msg_type, msg);
                     else
                         ret = process_chunk_server_message(state, conn_idx, msg_type, msg);
 
-                    if (ret < 0)
+                    if (ret < 0) {
                         tcp_close(&state->tcp, conn_idx);
+                        break;
+                    }
 
                     tcp_consume_message(&state->tcp, conn_idx);
                 }
@@ -3227,7 +3240,7 @@ static void start_download_if_necessary(ProgramState *state)
     }
 
     MessageWriter writer;
-    message_writer_init(&writer, output, xxx);
+    message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK);
 
     // TODO
 
@@ -3306,7 +3319,7 @@ process_metadata_server_download_locations(ProgramState *state, int conn_idx, By
 
     // Read header
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
-        return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+        return -1;
 
     // The message layout is this:
     //
@@ -3340,17 +3353,17 @@ process_metadata_server_download_locations(ProgramState *state, int conn_idx, By
 
     uint16_t num_groups;
     if (binary_read(&reader, &num_groups, sizeof(num_groups)))
-        return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+        return -1;
 
     for (uint16_t i = 0; i < num_groups; i++) {
 
         uint8_t num_ipv4;
         if (binary_read(&reader, &num_ipv4, sizeof(num_ipv4)))
-            return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+            return -1;
 
         uint8_t num_ipv6;
         if (binary_read(&reader, &num_ipv6, sizeof(num_ipv6)))
-            return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+            return -1;
 
         IPv4     ipv4[UINT8_MAX];
         IPv6     ipv6[UINT8_MAX];
@@ -3359,27 +3372,27 @@ process_metadata_server_download_locations(ProgramState *state, int conn_idx, By
 
         for (uint8_t j = 0; j < num_ipv4; j++) {
             if (binary_read(&reader, &ipv4[i], sizeof(ipv4[i])))
-                return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+                return -1;
             if (binary_read(&reader, &ipv4_port[i], sizeof(ipv4_port[i])))
-                return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+                return -1;
         }
 
         for (uint8_t j = 0; j < num_ipv6; j++) {
             if (binary_read(&reader, &ipv6[i], sizeof(ipv6[i])))
-                return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+                return -1;
             if (binary_read(&reader, &ipv6_port[i], sizeof(ipv6_port[i])))
-                return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+                return -1;
         }
 
         uint32_t num_hashes;
         if (binary_read(&reader, &num_hashes, sizeof(num_hashes)))
-            return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+            return -1;
 
         for (uint32_t j = 0; j < num_hashes; j++) {
 
             SHA256 hash;
             if (binary_read(&reader, &hash, sizeof(hash)))
-                return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+                return -1;
 
             for (uint8_t k = 0; k < num_ipv4; k++)
                 pending_download_list_add(
@@ -3398,7 +3411,7 @@ process_metadata_server_download_locations(ProgramState *state, int conn_idx, By
     }
 
     if (binary_read(&reader, NULL, 1))
-        return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_XXX, S("Invalid message"));
+        return -1;
 
     start_download_if_necessary(state);
 
@@ -3702,11 +3715,18 @@ int program_step(ProgramState *state)
 
             case EVENT_MESSAGE:
             {
-                ByteView msg;
-                uint16_t msg_type;
-                while (tcp_next_message(&state->tcp, conn_idx, &msg, &msg_type)) {
+                for (;;) {
 
-                    int ret;
+                    ByteView msg;
+                    uint16_t msg_type;
+                    int ret = tcp_next_message(&state->tcp, conn_idx, &msg, &msg_type);
+                    if (ret == 0)
+                        break;
+                    if (ret < 0) {
+                        tcp_close(&state->tcp, conn_idx);
+                        break;
+                    }
+
                     switch (tcp_get_tag(&state->tcp, conn_idx)) {
                         case TAG_METADATA_SERVER:
                         ret = process_metadata_server_message(state, conn_idx, msg_type, msg);
@@ -3784,6 +3804,12 @@ int main(int argc, char **argv)
 #define MAX_OPERATIONS 128
 #define MAX_REQUESTS_PER_QUEUE 128
 
+#define TAG_METADATA_SERVER -2
+#define TAG_METADATA_SERVER_TO_CLIENT -3
+
+#define TAG_RETRIEVE_METADATA_FOR_READ  1
+#define TAG_RETRIEVE_METADATA_FOR_WRITE 2
+
 typedef enum {
     RESULT_TYPE_EMPTY,
     RESULT_TYPE_CREATE_ERROR,
@@ -3823,6 +3849,7 @@ typedef struct {
     OperationType type;
 
     void *ptr;
+    int   off;
     int   len;
 
     Range *ranges;
@@ -3835,7 +3862,7 @@ typedef struct {
 
 typedef struct {
     int tag;
-    int operation_index;
+    int opidx;
 } Request;
 
 typedef struct {
@@ -3874,7 +3901,7 @@ static int client_init(Client *client)
 {
     tcp_context_init(&client->tcp);
 
-    if (tcp_connect(&client->tcp, addr, TAG_METADATA_SERVER) < 0) {
+    if (tcp_connect(&client->tcp, addr, TAG_METADATA_SERVER, NULL) < 0) {
         tcp_context_free(&client->tcp);
         return -1;
     }
@@ -3893,7 +3920,7 @@ static void client_free(Client *client)
 }
 
 static int
-alloc_operation(Client *client, OperationType type, void *ptr, int len)
+alloc_operation(Client *client, OperationType type, int off, void *ptr, int len)
 {
     if (client->num_operations == MAX_OPERATIONS)
         return -1;
@@ -3902,6 +3929,7 @@ alloc_operation(Client *client, OperationType type, void *ptr, int len)
         o++;
     o->type = type;
     o->ptr  = ptr;
+    o->off  = off;
     o->len  = len;
     o->result = (Result) { RESULT_TYPE_EMPTY };
 
@@ -3945,15 +3973,15 @@ request_queue_pop(RequestQueue *reqs, Request *req)
 }
 
 static void
-metadata_server_request_start(Client *client, Writer *writer, uint16_t type)
+metadata_server_request_start(Client *client, MessageWriter *writer, uint16_t type)
 {
     int conn_idx = tcp_index_from_tag(&client->tcp, TAG_METADATA_SERVER);
-    ByteQueue *output = &tcp_output_buffer(&client->tcp, conn_idx);
-    message_writer_init(&writer, output, type);
+    ByteQueue *output = tcp_output_buffer(&client->tcp, conn_idx);
+    message_writer_init(writer, output, type);
 }
 
 static int
-metadata_server_request_end(Client *client, Writer *writer, int opidx, int tag)
+metadata_server_request_end(Client *client, MessageWriter *writer, int opidx, int tag)
 {
     if (!message_writer_free(writer))
         return -1;
@@ -3970,10 +3998,10 @@ client_submit_create(Client *client, string path, bool is_dir, uint32_t chunk_si
 {
     OperationType type = OPERATION_TYPE_CREATE;
 
-    int opidx = alloc_operation(client, type, NULL, 0);
+    int opidx = alloc_operation(client, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
-    Writer writer;
+    MessageWriter writer;
     metadata_server_request_start(client, &writer, MESSAGE_TYPE_CREATE);
 
     if (path.len > UINT16_MAX) {
@@ -4010,10 +4038,10 @@ client_submit_delete(Client *client, string path)
 {
     OperationType type = OPERATION_TYPE_DELETE;
 
-    int opidx = alloc_operation(client, type, NULL, 0);
+    int opidx = alloc_operation(client, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
-    Writer writer;
+    MessageWriter writer;
     metadata_server_request_start(client, &writer, MESSAGE_TYPE_DELETE);
 
     if (path.len > UINT16_MAX) {
@@ -4038,10 +4066,10 @@ client_submit_list(Client *client, string path)
 {
     OperationType type = OPERATION_TYPE_LIST;
 
-    int opidx = alloc_operation(client, type, NULL, 0);
+    int opidx = alloc_operation(client, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
-    Writer writer;
+    MessageWriter writer;
     metadata_server_request_start(client, &writer, MESSAGE_TYPE_LIST);
 
     if (path.len > UINT16_MAX) {
@@ -4067,7 +4095,7 @@ static int send_read_message(Client *client, int opidx, int tag, string path, ui
         return -1;
     uint16_t path_len = path.len;
 
-    Writer writer;
+    MessageWriter writer;
     metadata_server_request_start(client, &writer, MESSAGE_TYPE_READ);
     message_write(&writer, &path_len, sizeof(path_len));
     message_write(&writer, path.ptr,  path.len);
@@ -4079,11 +4107,11 @@ static int send_read_message(Client *client, int opidx, int tag, string path, ui
 }
 
 static int
-client_submit_read(Client *client, string path, void *dst, int len)
+client_submit_read(Client *client, string path, int off, void *dst, int len)
 {
     OperationType type = OPERATION_TYPE_READ;
 
-    int opidx = alloc_operation(client, type, NULL, 0);
+    int opidx = alloc_operation(client, type, off, dst, len);
     if (opidx < 0) return -1;
 
     if (send_read_message(client, opidx, TAG_RETRIEVE_METADATA_FOR_READ, path, off, len) < 0) {
@@ -4095,11 +4123,11 @@ client_submit_read(Client *client, string path, void *dst, int len)
 }
 
 static int
-client_submit_write(Client *client, string path, void *src, int len)
+client_submit_write(Client *client, string path, int off, void *src, int len)
 {
     OperationType type = OPERATION_TYPE_WRITE;
 
-    int opidx = alloc_operation(client, type, NULL, 0);
+    int opidx = alloc_operation(client, type, off, src, len);
     if (opidx < 0) return -1;
 
     if (send_read_message(client, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, path, off, len) < 0) {
@@ -4118,7 +4146,7 @@ static void process_event_for_create(Client *client,
         return;
     }
 
-    Reader reader = { msg.ptr, msg.len, 0 };
+    BinaryReader reader = { msg.ptr, msg.len, 0 };
 
     // version;
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
@@ -4160,7 +4188,7 @@ static void process_event_for_delete(Client *client,
         return;
     }
 
-    Reader reader = { msg.ptr, msg.len, 0 };
+    BinaryReader reader = { msg.ptr, msg.len, 0 };
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
@@ -4202,7 +4230,7 @@ static void process_event_for_list(Client *client,
         return;
     }
 
-    Reader reader = { msg.ptr, msg.len, 0 };
+    BinaryReader reader = { msg.ptr, msg.len, 0 };
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
@@ -4250,7 +4278,7 @@ static void process_event_for_read(Client *client,
 
         case TAG_RETRIEVE_METADATA_FOR_READ:
         {
-            Reader reader = { msg.ptr, msg.len, 0 };
+            BinaryReader reader = { msg.ptr, msg.len, 0 };
 
             // version
             if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
@@ -4280,16 +4308,17 @@ static void process_event_for_read(Client *client,
                 return;
             }
 
+            int off = client->operations[opidx].off;
+            int len = client->operations[opidx].len;
+
             uint32_t first_byte = off;
             uint32_t  last_byte = off + len - 1; // TODO: what if len=0 ?
 
             uint32_t first_chunk = first_byte / chunk_size;
             uint32_t  last_chunk =  last_byte / chunk_size;
 
-            uint32_t num_chunks = 1 + last_chunk - first_chunk;
-
             uint32_t num_hashes;
-            if (!binary_read(&writer, &num_hashes, sizeof(num_hashes))) {
+            if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
                 // TODO
             }
 
@@ -4313,14 +4342,14 @@ static void process_event_for_read(Client *client,
                 if (i - first_chunk < num_hashes) {
 
                     SHA256 hash;
-                    if (!binary_read(&writer, &hash, sizeof(hash))) {
+                    if (!binary_read(&reader, &hash, sizeof(hash))) {
                         // TODO
                     }
 
                     ranges[i - first_chunk] = (Range) {
                         .hash = hash,
                         .dst = ptr,
-                        .offset_within_chunk = offset_within_chunk,
+                        .offset_within_chunk = first_byte_within_chunk,
                         .length_within_chunk = length_within_chunk,
                     };
 
@@ -4348,7 +4377,7 @@ static void process_event_for_read(Client *client,
 
         default:
         {
-            Reader reader = { msg.ptr, msg.len, 0 };
+            BinaryReader reader = { msg.ptr, msg.len, 0 };
 
             // version
             if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
@@ -4363,7 +4392,8 @@ static void process_event_for_read(Client *client,
             }
 
             if (type != MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS) {
-                // TODO
+                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                return;
             }
 
             // length
@@ -4372,7 +4402,17 @@ static void process_event_for_read(Client *client,
                 return;
             }
 
-            // TODO
+            uint32_t data_len;
+            if (!binary_read(&reader, &data_len, sizeof(data_len))) {
+                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                return;
+            }
+
+            char *data = reader.src + reader.cur;
+            if (!binary_read(&reader, NULL, data_len)) {
+                client->operations[opidx].result = (Result) { RESULT_TYPE_READ_ERROR };
+                return;
+            }
 
             // Check there is nothing else to read
             if (binary_read(&reader, NULL, 1)) {
@@ -4380,7 +4420,7 @@ static void process_event_for_read(Client *client,
                 return;
             }
 
-            memcpy(client->operations[opidx].ranges[request_tag].dst, xxx, yyy);
+            memcpy(client->operations[opidx].ranges[request_tag].dst, data, data_len);
             client->operations[opidx].num_pending--;
 
             if (client->operations[opidx].num_pending == 0) {
@@ -4478,27 +4518,42 @@ static void client_wait(Client *client, int opidx, Result *result, int timeout)
                     }
 
                     for (Request req; request_queue_pop(reqs, &req) == 0; )
-                        process_event(client, req.opidx, (ByteView) { NULL, 0 });
+                        process_event(client, req.opidx, req.tag, (ByteView) { NULL, 0 });
                 }
                 break;
 
                 case EVENT_MESSAGE:
                 {
-                    RequestQueue *reqs;
+                    for (;;) {
 
-                    int tag = tcp_get_tag(&client->tcp, conn_idx);
-                    if (tag == TAG_METADATA_SERVER_TO_CLIENT)
-                        reqs = &client->metadata_server.reqs;
-                    else {
-                        assert(tag > -1);
-                        reqs = &client->chunk_servers[tag].reqs;
-                    }
+                        ByteView msg;
+                        uint16_t msg_type;
+                        int ret = tcp_next_message(&client->tcp, conn_idx, &msg, &msg_type);
+                        if (ret == 0)
+                            break;
+                        if (ret < 0) {
+                            tcp_close(&client->tcp, conn_idx);
+                            break;
+                        }
 
-                    Request req;
-                    if (request_queue_pop(reqs, &req) < 0) {
-                        UNREACHABLE;
+                        RequestQueue *reqs;
+
+                        int tag = tcp_get_tag(&client->tcp, conn_idx);
+                        if (tag == TAG_METADATA_SERVER_TO_CLIENT)
+                            reqs = &client->metadata_server.reqs;
+                        else {
+                            assert(tag > -1);
+                            reqs = &client->chunk_servers[tag].reqs;
+                        }
+
+                        Request req;
+                        if (request_queue_pop(reqs, &req) < 0) {
+                            UNREACHABLE;
+                        }
+                        process_event(client, req.opidx, req.tag, msg);
+
+                        tcp_consume_message(&client->tcp, conn_idx);
                     }
-                    process_event(client, req.opidx, req.tag, events[i].msg);
                 }
                 break;
             }
