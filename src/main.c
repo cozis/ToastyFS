@@ -1,3 +1,5 @@
+#ifndef BUILD_LIBRARY
+
 #include <string.h>
 
 #include "chunk_server.h"
@@ -43,3 +45,5 @@ int main(int argc, char **argv)
     }
     return 0;
 }
+
+#endif // BUILD_LIBRARY

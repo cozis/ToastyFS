@@ -8,11 +8,9 @@
 #endif
 
 #include "tcp.h"
+#include "config.h"
 #include "message.h"
 #include <TinyDFS.h>
-
-#define MAX_OPERATIONS 128
-#define MAX_REQUESTS_PER_QUEUE 128
 
 #define TAG_METADATA_SERVER -2
 #define TAG_METADATA_SERVER_TO_CLIENT -3
@@ -88,7 +86,6 @@ struct TinyDFS {
 
     int num_operations;
     Operation operations[MAX_OPERATIONS];
-
 };
 
 TinyDFS *tinydfs_init(char *addr, uint16_t port)

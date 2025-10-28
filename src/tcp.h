@@ -4,6 +4,10 @@
 #include <stdbool.h>
 
 #ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#define POLL WSAPoll
+#define CLOSE_SOCKET closesocket
 #else
 #include <poll.h>
 #include <errno.h>

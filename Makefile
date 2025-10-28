@@ -20,7 +20,7 @@ tinydfs_server$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc
 
 example_client$(EXT): examples/main.c $(CFILES) $(HFILES)
-	gcc -o $@ examples/main.c $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc
+	gcc -o $@ examples/main.c $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_LIBRARY
 
 clean:
 	rm                     \
