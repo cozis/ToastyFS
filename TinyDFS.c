@@ -4487,6 +4487,12 @@ int tinydfs_submit_write(TinyDFS *tdfs, char *path, int path_len, int off, void 
     return 0;
 }
 
+void tinydfs_result_free(TinyDFS_Result *result)
+{
+    if (result->type == TINYDFS_RESULT_LIST_SUCCESS)
+        free(result->entities);
+}
+
 static void process_event_for_create(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
@@ -4497,7 +4503,7 @@ static void process_event_for_create(TinyDFS *tdfs,
 
     BinaryReader reader = { msg.ptr, msg.len, 0 };
 
-    // version;
+    // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
         tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
@@ -4617,37 +4623,54 @@ static void process_event_for_list(TinyDFS *tdfs,
         return;
     }
 
+    TinyDFS_Entity *entities = malloc(item_count * sizeof(TinyDFS_Entity));
+    if (entities == NULL) {
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
+        return;
+    }
+
     // Parse each list item
     for (uint32_t i = 0; i < item_count; i++) {
         uint8_t is_dir;
         if (!binary_read(&reader, &is_dir, sizeof(is_dir))) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
+            free(entities);
             return;
         }
 
         uint16_t name_len;
         if (!binary_read(&reader, &name_len, sizeof(name_len))) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
+            free(entities);
             return;
         }
 
-        // Skip the name data
+        char *name = reader.src + reader.cur;
         if (!binary_read(&reader, NULL, name_len)) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
+            free(entities);
             return;
         }
 
-        // Note: In a full implementation, the list items would be stored somewhere
-        // accessible to the user. For now, we just validate the message format.
+        entities[i].is_dir = is_dir;
+
+        if (name_len > sizeof(entities[i].name)-1) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
+            free(entities);
+            return;
+        }
+        memcpy(entities[i].name, name, name_len);
+        entities[i].name[name_len] = '\0';
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
         tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
+        free(entities);
         return;
     }
 
-    tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_SUCCESS };
+    tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_SUCCESS, item_count, entities };
 }
 
 static void process_event_for_read(TinyDFS *tdfs,
