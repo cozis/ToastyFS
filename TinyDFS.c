@@ -3825,6 +3825,8 @@ typedef struct {
     char*    dst;
     uint32_t offset_within_chunk;
     uint32_t length_within_chunk;
+    Address  server_addr;      // Chunk server address for this chunk
+    int      chunk_server_idx; // Index in tdfs->chunk_servers array
 } Range;
 
 typedef enum {
@@ -3900,7 +3902,7 @@ TinyDFS *tinydfs_init(char *addr, uint16_t port)
     addr2.port = port;
     if (inet_pton(AF_INET, addr, &addr2.ipv4) != 1) {
         free(tdfs);
-        return tdfs;
+        return NULL;
     }
 
     tcp_context_init(&tdfs->tcp);
@@ -3919,7 +3921,7 @@ TinyDFS *tinydfs_init(char *addr, uint16_t port)
     return tdfs;
 }
 
-void tdfs_free(TinyDFS *tdfs)
+void tinydfs_free(TinyDFS *tdfs)
 {
     tcp_context_free(&tdfs->tcp);
     free(tdfs);
@@ -3937,7 +3939,7 @@ alloc_operation(TinyDFS *tdfs, OperationType type, int off, void *ptr, int len)
     o->ptr  = ptr;
     o->off  = off;
     o->len  = len;
-    o->result = (Result) { TINYDFS_RESULT_EMPTY };
+    o->result = (TinyDFS_Result) { TINYDFS_RESULT_EMPTY };
 
     tdfs->num_operations++;
     return o - tdfs->operations;
@@ -3976,6 +3978,63 @@ request_queue_pop(RequestQueue *reqs, Request *req)
     reqs->head = (reqs->head + 1) % MAX_REQUESTS_PER_QUEUE;
     reqs->count--;
     return 0;
+}
+
+// Get or create connection to a chunk server
+static int get_chunk_server_connection(TinyDFS *tdfs, Address addr)
+{
+    // Check if already connected
+    for (int i = 0; i < tdfs->num_chunk_servers; i++) {
+        if (tdfs->chunk_servers[i].used && addr_eql(tdfs->chunk_servers[i].addr, addr)) {
+            int conn_idx = tcp_index_from_tag(&tdfs->tcp, i);
+            if (conn_idx >= 0)
+                return i;
+        }
+    }
+
+    // Find free slot
+    int idx = -1;
+    for (int i = 0; i < MAX_CHUNK_SERVERS; i++) {
+        if (!tdfs->chunk_servers[i].used) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) return -1;
+
+    // Connect
+    if (tcp_connect(&tdfs->tcp, addr, idx, NULL) < 0)
+        return -1;
+
+    // Initialize
+    tdfs->chunk_servers[idx].used = true;
+    tdfs->chunk_servers[idx].addr = addr;
+    request_queue_init(&tdfs->chunk_servers[idx].reqs);
+    tdfs->num_chunk_servers++;
+
+    return idx;
+}
+
+// Send download request for a chunk
+static int send_download_chunk(TinyDFS *tdfs, int chunk_server_idx,
+    SHA256 hash, uint32_t offset, uint32_t length, int opidx, int range_idx)
+{
+    int conn_idx = tcp_index_from_tag(&tdfs->tcp, chunk_server_idx);
+    if (conn_idx < 0) return -1;
+
+    MessageWriter writer;
+    ByteQueue *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
+    message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK);
+
+    message_write(&writer, &hash, sizeof(hash));
+    message_write(&writer, &offset, sizeof(offset));
+    message_write(&writer, &length, sizeof(length));
+
+    if (!message_writer_free(&writer))
+        return -1;
+
+    RequestQueue *reqs = &tdfs->chunk_servers[chunk_server_idx].reqs;
+    return request_queue_push(reqs, (Request) { range_idx, opidx });
 }
 
 static void
@@ -4149,7 +4208,7 @@ static void process_event_for_create(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
@@ -4157,41 +4216,41 @@ static void process_event_for_create(TinyDFS *tdfs,
 
     // version;
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_CREATE_SUCCESS) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_CREATE_ERROR };
         return;
     }
 
-    tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_CREATE_SUCCESS };
+    tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_CREATE_SUCCESS };
 }
 
 static void process_event_for_delete(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
@@ -4199,41 +4258,41 @@ static void process_event_for_delete(TinyDFS *tdfs,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_DELETE_SUCCESS) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_DELETE_ERROR };
         return;
     }
 
-    tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_DELETE_SUCCESS };
+    tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_DELETE_SUCCESS };
 }
 
 static void process_event_for_list(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
@@ -4241,24 +4300,24 @@ static void process_event_for_list(TinyDFS *tdfs,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_LIST_SUCCESS) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
@@ -4266,177 +4325,291 @@ static void process_event_for_list(TinyDFS *tdfs,
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_ERROR };
         return;
     }
 
-    tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_SUCCESS };
+    tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_LIST_SUCCESS };
 }
 
 static void process_event_for_read(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
         return;
     }
 
-    switch (request_tag) {
+    if (request_tag == TAG_RETRIEVE_METADATA_FOR_READ) {
+        // Handle metadata response from metadata server
+        BinaryReader reader = { msg.ptr, msg.len, 0 };
 
-        case TAG_RETRIEVE_METADATA_FOR_READ:
-        {
-            BinaryReader reader = { msg.ptr, msg.len, 0 };
+        // Skip version
+        if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
 
-            // version
-            if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
+        // Check message type
+        uint16_t type;
+        if (!binary_read(&reader, &type, sizeof(type))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
+
+        if (type != MESSAGE_TYPE_READ_SUCCESS) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
+
+        // Skip message length
+        if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
+
+        // Read chunk size
+        uint32_t chunk_size;
+        if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
+
+        // Calculate which chunks we need
+        int off = tdfs->operations[opidx].off;
+        int len = tdfs->operations[opidx].len;
+
+        if (len == 0) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_SUCCESS };
+            return;
+        }
+
+        uint32_t first_byte = off;
+        uint32_t last_byte = off + len - 1;
+        uint32_t first_chunk = first_byte / chunk_size;
+        uint32_t last_chunk = last_byte / chunk_size;
+        uint32_t num_chunks_needed = last_chunk - first_chunk + 1;
+
+        // Read number of hashes
+        uint32_t num_hashes;
+        if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
+
+        // Allocate ranges
+        Range *ranges = malloc(num_chunks_needed * sizeof(Range));
+        if (ranges == NULL) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
+
+        char *ptr = tdfs->operations[opidx].ptr;
+        int num_ranges_with_data = 0;
+
+        // Parse each chunk's hash and server locations
+        for (uint32_t i = 0; i < num_hashes; i++) {
+            // Read hash
+            SHA256 hash;
+            if (!binary_read(&reader, &hash, sizeof(hash))) {
+                free(ranges);
+                tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
-            uint16_t type;
-            if (!binary_read(&reader, &type, sizeof(type))) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
+            // Read number of servers
+            uint32_t num_servers;
+            if (!binary_read(&reader, &num_servers, sizeof(num_servers))) {
+                free(ranges);
+                tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
-            if (type != MESSAGE_TYPE_READ_SUCCESS) {
-                // TODO
-            }
-
-            // length
-            if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
+            // Parse IPv4 addresses
+            uint32_t num_ipv4;
+            if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
+                free(ranges);
+                tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
-            uint32_t chunk_size;
-            if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
-                return;
-            }
+            Address server_addr = {0};
+            bool found = false;
 
-            int off = tdfs->operations[opidx].off;
-            int len = tdfs->operations[opidx].len;
-
-            uint32_t first_byte = off;
-            uint32_t  last_byte = off + len - 1; // TODO: what if len=0 ?
-
-            uint32_t first_chunk = first_byte / chunk_size;
-            uint32_t  last_chunk =  last_byte / chunk_size;
-
-            uint32_t num_hashes;
-            if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
-                // TODO
-            }
-
-            Range *ranges = malloc(num_hashes * sizeof(Range));
-            if (ranges == NULL) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
-                return;
-            }
-
-            char *ptr = tdfs->operations[opidx].ptr;
-            for (uint32_t i = first_chunk; i <= last_chunk; i++) {
-
-                uint32_t first_byte_within_chunk = 0;
-                uint32_t  last_byte_within_chunk = chunk_size-1; // TODO: what if chunk size is 0 ?
-
-                if (i == first_chunk) first_byte_within_chunk = first_byte % chunk_size;
-                if (i ==  last_chunk)  last_byte_within_chunk =  last_byte % chunk_size;
-
-                uint32_t length_within_chunk = 1 + last_byte_within_chunk - first_byte_within_chunk;
-
-                if (i - first_chunk < num_hashes) {
-
-                    SHA256 hash;
-                    if (!binary_read(&reader, &hash, sizeof(hash))) {
-                        // TODO
-                    }
-
-                    ranges[i - first_chunk] = (Range) {
-                        .hash = hash,
-                        .dst = ptr,
-                        .offset_within_chunk = first_byte_within_chunk,
-                        .length_within_chunk = length_within_chunk,
-                    };
-
-                } else {
-                    memset(ptr, 0, length_within_chunk);
+            // Get first IPv4 address
+            for (uint32_t j = 0; j < num_ipv4; j++) {
+                IPv4 ipv4;
+                uint16_t port;
+                if (!binary_read(&reader, &ipv4, sizeof(ipv4)) ||
+                    !binary_read(&reader, &port, sizeof(port))) {
+                    free(ranges);
+                    tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+                    return;
                 }
-
-                ptr += length_within_chunk;
+                if (!found) {
+                    server_addr.is_ipv4 = true;
+                    server_addr.ipv4 = ipv4;
+                    server_addr.port = port;
+                    found = true;
+                }
             }
 
-            // Check there is nothing else to read
-            if (binary_read(&reader, NULL, 1)) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
+            // Skip IPv6 addresses
+            uint32_t num_ipv6;
+            if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
+                free(ranges);
+                tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+                return;
+            }
+            for (uint32_t j = 0; j < num_ipv6; j++) {
+                if (!binary_read(&reader, NULL, sizeof(IPv6)) ||
+                    !binary_read(&reader, NULL, sizeof(uint16_t))) {
+                    free(ranges);
+                    tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+                    return;
+                }
+            }
+
+            if (!found) {
+                free(ranges);
+                tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
-            tdfs->operations[opidx].ranges = ranges;
-            tdfs->operations[opidx].ranges_head = 0;
-            tdfs->operations[opidx].ranges_count = num_hashes;
-            tdfs->operations[opidx].num_pending = 0;
+            // Calculate byte range for this chunk
+            uint32_t chunk_idx = first_chunk + i;
+            uint32_t first_in_chunk = (chunk_idx == first_chunk) ? (first_byte % chunk_size) : 0;
+            uint32_t last_in_chunk = (chunk_idx == last_chunk) ? (last_byte % chunk_size) : (chunk_size - 1);
+            uint32_t len_in_chunk = 1 + last_in_chunk - first_in_chunk;
 
-            // TODO: start N downloads
+            // Fill in range info
+            ranges[i].hash = hash;
+            ranges[i].dst = ptr;
+            ranges[i].offset_within_chunk = first_in_chunk;
+            ranges[i].length_within_chunk = len_in_chunk;
+            ranges[i].server_addr = server_addr;
+            ranges[i].chunk_server_idx = -1;
+
+            ptr += len_in_chunk;
+            num_ranges_with_data++;
         }
-        break;
 
-        default:
-        {
-            BinaryReader reader = { msg.ptr, msg.len, 0 };
+        // Fill remaining chunks with zeros (sparse file)
+        for (uint32_t i = num_hashes; i < num_chunks_needed; i++) {
+            uint32_t chunk_idx = first_chunk + i;
+            uint32_t first_in_chunk = (chunk_idx == first_chunk) ? (first_byte % chunk_size) : 0;
+            uint32_t last_in_chunk = (chunk_idx == last_chunk) ? (last_byte % chunk_size) : (chunk_size - 1);
+            uint32_t len_in_chunk = 1 + last_in_chunk - first_in_chunk;
 
-            // version
-            if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
+            memset(ptr, 0, len_in_chunk);
+            ptr += len_in_chunk;
+        }
+
+        // Store range info
+        tdfs->operations[opidx].ranges = ranges;
+        tdfs->operations[opidx].ranges_head = 0;
+        tdfs->operations[opidx].ranges_count = num_ranges_with_data;
+        tdfs->operations[opidx].num_pending = 0;
+
+        // Start first download
+        if (num_ranges_with_data > 0) {
+            Range *r = &ranges[0];
+            int cs_idx = get_chunk_server_connection(tdfs, r->server_addr);
+            if (cs_idx < 0) {
+                free(ranges);
+                tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+                return;
+            }
+            r->chunk_server_idx = cs_idx;
+
+            if (send_download_chunk(tdfs, cs_idx, r->hash, r->offset_within_chunk,
+                r->length_within_chunk, opidx, 0) < 0) {
+                free(ranges);
+                tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
                 return;
             }
 
-            uint16_t type;
-            if (!binary_read(&reader, &type, sizeof(type))) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
-                return;
-            }
+            tdfs->operations[opidx].num_pending = 1;
+            tdfs->operations[opidx].ranges_head = 1;
+        } else {
+            // No chunks to download
+            free(ranges);
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_SUCCESS };
+        }
 
-            if (type != MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
-                return;
-            }
+    } else {
+        // Handle chunk download response
+        int range_idx = request_tag;
+        BinaryReader reader = { msg.ptr, msg.len, 0 };
 
-            // length
-            if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
-                return;
-            }
+        // Parse response
+        if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
 
-            uint32_t data_len;
-            if (!binary_read(&reader, &data_len, sizeof(data_len))) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
-                return;
-            }
+        uint16_t type;
+        if (!binary_read(&reader, &type, sizeof(type))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
 
-            uint8_t *data = reader.src + reader.cur;
-            if (!binary_read(&reader, NULL, data_len)) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_ERROR };
-                return;
-            }
+        if (type != MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
 
-            // Check there is nothing else to read
-            if (binary_read(&reader, NULL, 1)) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_LIST_ERROR };
-                return;
-            }
+        if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
 
-            memcpy(tdfs->operations[opidx].ranges[request_tag].dst, data, data_len);
-            tdfs->operations[opidx].num_pending--;
+        uint32_t data_len;
+        if (!binary_read(&reader, &data_len, sizeof(data_len))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
 
-            if (tdfs->operations[opidx].num_pending == 0) {
-                tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_READ_SUCCESS };
-            } else {
-                // TODO: start operation
+        uint8_t *data = reader.src + reader.cur;
+        if (!binary_read(&reader, NULL, data_len)) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
+
+        if (binary_read(&reader, NULL, 1)) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_ERROR };
+            return;
+        }
+
+        // Copy data to destination
+        if (range_idx >= 0 && range_idx < tdfs->operations[opidx].ranges_count) {
+            memcpy(tdfs->operations[opidx].ranges[range_idx].dst, data, data_len);
+        }
+
+        tdfs->operations[opidx].num_pending--;
+
+        // Start next download (sequential)
+        int next_idx = tdfs->operations[opidx].ranges_head;
+        if (next_idx < tdfs->operations[opidx].ranges_count) {
+            Range *r = &tdfs->operations[opidx].ranges[next_idx];
+
+            int cs_idx = get_chunk_server_connection(tdfs, r->server_addr);
+            if (cs_idx >= 0) {
+                r->chunk_server_idx = cs_idx;
+                if (send_download_chunk(tdfs, cs_idx, r->hash, r->offset_within_chunk,
+                    r->length_within_chunk, opidx, next_idx) == 0) {
+                    tdfs->operations[opidx].num_pending++;
+                    tdfs->operations[opidx].ranges_head++;
+                }
             }
         }
-        break;
+
+        // Check if done
+        if (tdfs->operations[opidx].num_pending == 0) {
+            free(tdfs->operations[opidx].ranges);
+            tdfs->operations[opidx].ranges = NULL;
+            tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_READ_SUCCESS };
+        }
     }
 }
 
@@ -4444,7 +4617,7 @@ static void process_event_for_write(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        tdfs->operations[opidx].result = (Result) { TINYDFS_RESULT_WRITE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { TINYDFS_RESULT_WRITE_ERROR };
         return;
     }
 
@@ -4472,7 +4645,7 @@ static void process_event(TinyDFS *tdfs,
 }
 
 static bool
-translate_operation_into_result(TinyDFS *tdfs, int opidx, Result *result)
+translate_operation_into_result(TinyDFS *tdfs, int opidx, TinyDFS_Result *result)
 {
     if (tdfs->operations[opidx].result.type == TINYDFS_RESULT_EMPTY)
         return false;

@@ -24,16 +24,13 @@ typedef struct {
     TinyDFS_ResultType type;
 } TinyDFS_Result;
 
-typedef int TinyDFS_Handle;
-#define TINYDFS_INVALID ((TinyDFS_Handle) -1)
-
-TinyDFS*       tinydfs_init(char *addr, uint16_t port);
-void           tinydfs_free(TinyDFS *tdfs);
-int            tinydfs_wait(TinyDFS *tdfs, TinyDFS_Handle handle, TinyDFS_Result *result, int timeout);
-TinyDFS_Handle tinydfs_submit_create (TinyDFS *tdfs, char *path, int path_len, bool is_dir, unsigned int chunk_size);
-TinyDFS_Handle tinydfs_submit_delete (TinyDFS *tdfs, char *path, int path_len);
-TinyDFS_Handle tinydfs_submit_list   (TinyDFS *tdfs, char *path, int path_len);
-TinyDFS_Handle tinydfs_submit_read   (TinyDFS *tdfs, char *path, int path_len, void *dst, int len);
-TinyDFS_Handle tinydfs_submit_write  (TinyDFS *tdfs, char *path, int path_len, void *src, int len);
+TinyDFS *tinydfs_init(char *addr, uint16_t port);
+void tinydfs_free(TinyDFS *tdfs);
+void tinydfs_wait(TinyDFS *tdfs, int opidx, TinyDFS_Result *result, int timeout);
+int tinydfs_submit_create (TinyDFS *tdfs, char *path, int path_len, bool is_dir, unsigned int chunk_size);
+int tinydfs_submit_delete (TinyDFS *tdfs, char *path, int path_len);
+int tinydfs_submit_list   (TinyDFS *tdfs, char *path, int path_len);
+int tinydfs_submit_read   (TinyDFS *tdfs, char *path, int path_len, int off, void *dst, int len);
+int tinydfs_submit_write  (TinyDFS *tdfs, char *path, int path_len, int off, void *src, int len);
 
 #endif // TINYDFS_INCLUDED
