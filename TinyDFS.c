@@ -2063,7 +2063,7 @@ file_tree_delete_entity(FileTree *ft, string path)
 
 static int file_tree_write(FileTree *ft, string path,
     uint64_t off, uint64_t len, SHA256 *prev_hashes,
-    SHA256 *hashes)
+    SHA256 *hashes, SHA256 *removed_hashes, int *num_removed)
 {
     int num_comps;
     string comps[MAX_COMPS];
@@ -2100,12 +2100,39 @@ static int file_tree_write(FileTree *ft, string path,
             memset(&f->chunks[i], 0, sizeof(SHA256));
     }
 
+    // Verify prev_hashes match
     for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++)
         if (memcmp(&f->chunks[i], &prev_hashes[i - first_chunk_index], sizeof(SHA256)))
             return -1;
 
+    // Update chunks
     for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++)
         f->chunks[i] = hashes[i - first_chunk_index];
+
+    // Now check which old hashes are no longer used anywhere in the tree
+    *num_removed = 0;
+    for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++) {
+        SHA256 old_hash = prev_hashes[i - first_chunk_index];
+
+        // Skip zero hashes
+        bool is_zero = true;
+        for (int j = 0; j < (int) sizeof(SHA256); j++) {
+            if (old_hash.data[j] != 0) {
+                is_zero = false;
+                break;
+            }
+        }
+        if (is_zero)
+            continue;
+
+        // Check if this hash is still used anywhere in the tree
+        if (!entity_uses_hash(&ft->root, old_hash)) {
+            // Not used - add to removed list
+            if (removed_hashes)
+                removed_hashes[*num_removed] = old_hash;
+            (*num_removed)++;
+        }
+    }
 
     return 0;
 }
@@ -2781,7 +2808,12 @@ process_client_write(ProgramState *state, int conn_idx, ByteView msg)
     if (binary_read(&reader, NULL, 1))
         return -1;
 
-    int ret = file_tree_write(&state->file_tree, path, offset, length, old_hashes, new_hashes);
+    // Array to collect hashes that are no longer used anywhere in the file tree
+    SHA256 removed_hashes[MAX_CHUNKS_PER_WRITE];
+    int num_removed = 0;
+
+    int ret = file_tree_write(&state->file_tree, path, offset, length,
+                              old_hashes, new_hashes, removed_hashes, &num_removed);
 
     if (ret < 0) {
 
@@ -2801,33 +2833,27 @@ process_client_write(ProgramState *state, int conn_idx, ByteView msg)
 
     } else {
 
-        // Mark old chunks for removal and add new chunks
-        // Note: The old chunks are added to rem_list but will not be immediately
-        // deleted by chunk servers. They wait for a period of time in case the
-        // chunks are still referenced by other files or ongoing operations.
+        // Add new chunks to add_list
         for (uint32_t i = 0; i < num_chunks; i++) {
-
             int j = find_chunk_server_by_addr(state, addrs[i]);
             if (j == -1)
                 return -1;
 
-            // Add the new chunk hash to the add_list
             if (!hash_list_insert(&state->chunk_servers[j].add_list, new_hashes[i]))
                 return -1;
+        }
 
-            // Check if old_hash is not the zero hash (which means it's a new chunk)
-            bool is_zero_hash = true;
-            for (int k = 0; k < (int) sizeof(SHA256); k++) {
-                if (old_hashes[i].data[k] != 0) {
-                    is_zero_hash = false;
-                    break;
+        // Mark removed chunks for deletion on all chunk servers that have them
+        // These are chunks that were overwritten and are no longer referenced anywhere
+        for (int i = 0; i < num_removed; i++) {
+            SHA256 removed_hash = removed_hashes[i];
+
+            // Add to rem_list for all chunk servers that have this chunk
+            for (int j = 0; j < state->num_chunk_servers; j++) {
+                if (chunk_server_contains(&state->chunk_servers[j], removed_hash)) {
+                    if (!hash_list_insert(&state->chunk_servers[j].rem_list, removed_hash))
+                        return -1;
                 }
-            }
-
-            // Mark the old chunk for removal if it was replaced
-            if (!is_zero_hash) {
-                if (!hash_list_insert(&state->chunk_servers[j].rem_list, old_hashes[i]))
-                    return -1;
             }
         }
 
