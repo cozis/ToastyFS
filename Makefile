@@ -9,24 +9,22 @@ else
 	EXT = .out
 endif
 
+CFILES = $(shell find src -name '*.c')
+HFILES = $(shell find src -name '*.h')
+
 .PHONY: all clean
 
-all: metadata_server$(EXT) chunk_server$(EXT) example$(EXT)
+all: tinydfs_server$(EXT) example_client$(EXT)
 
-metadata_server$(EXT): TinyDFS.c TinyDFS.h
-	gcc -o $@ TinyDFS.c -DBUILD_METADATA_SERVER $(CFLAGS) $(LFLAGS)
+tinydfs_server$(EXT): $(CFILES) $(HFILES)
+	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc
 
-chunk_server$(EXT): TinyDFS.c TinyDFS.h
-	gcc -o $@ TinyDFS.c -DBUILD_CHUNK_SERVER $(CFLAGS) $(LFLAGS)
-
-example$(EXT): examples/main.c TinyDFS.c TinyDFS.h
-	gcc -o $@ examples/main.c TinyDFS.c $(CFLAGS) $(LFLAGS) -I.
+example_client$(EXT): examples/main.c $(CFILES) $(HFILES)
+	gcc -o $@ examples/main.c $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc
 
 clean:
-	rm                      \
-		metadata_server.exe \
-		matadata_server.out \
-		chunk_server.exe    \
-		chunk_server.out    \
-		example.exe         \
+	rm                     \
+		tinydfs_server.exe \
+		tinydfs_server.out \
+		example.exe        \
 		example.out
