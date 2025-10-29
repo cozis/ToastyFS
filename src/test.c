@@ -19,25 +19,6 @@ typedef enum {
 } DescriptorType;
 
 typedef struct {
-} DescriptorFile;
-
-typedef struct {
-
-    // Generic fields
-    struct sockaddr_in bind;
-    bool no_bind;
-    bool is_listen;
-
-    // Listen socket
-    int backlog;
-
-    // Data socket
-    ByteQueue input;
-    ByteQueue output;
-
-} DescriptorSocket;
-
-typedef struct {
 
     DescriptorType type;
 
@@ -51,10 +32,10 @@ typedef struct {
     int num_pending;
 
     // Data socket fields
+    int       peer_process;  // Index of the peer process (-1 if not connected)
+    int       peer_fd;       // Descriptor in peer process
     ByteQueue input;
     ByteQueue output;
-    int peer_process;  // Index of the peer process (-1 if not connected)
-    int peer_fd;       // Descriptor in peer process
 
 } Descriptor;
 
@@ -218,7 +199,7 @@ Socket sys_accept(Socket fd, void *addr, int *addr_len)
     if (addr != NULL && addr_len != NULL) {
         int peer_process = current_process->desc[new_fd].peer_process;
         int peer_fd = current_process->desc[new_fd].peer_fd;
-        if (peer_process >= 0 && peer_fd >= 0) {
+        if (peer_process > -1 && peer_fd > -1) {
             struct sockaddr_in *peer_addr = (struct sockaddr_in *)addr;
             *peer_addr = processes[peer_process].desc[peer_fd].bind;
             *addr_len = sizeof(struct sockaddr_in);
@@ -361,10 +342,10 @@ found:
     }
 
     // Initialize byte queues for both ends of the connection
-    byte_queue_init(&current_process->desc[fd].input, 65536);
-    byte_queue_init(&current_process->desc[fd].output, 65536);
-    byte_queue_init(&processes[target_process_idx].desc[accept_fd].input, 65536);
-    byte_queue_init(&processes[target_process_idx].desc[accept_fd].output, 65536);
+    byte_queue_init(&current_process->desc[fd].input, 1<<16);
+    byte_queue_init(&current_process->desc[fd].output, 1<<16);
+    byte_queue_init(&processes[target_process_idx].desc[accept_fd].input, 1<<16);
+    byte_queue_init(&processes[target_process_idx].desc[accept_fd].output, 1<<16);
 
     // Set up the client socket
     current_process->desc[fd].type = DESCRIPTOR_TYPE_CONNECTION_SOCKET;
