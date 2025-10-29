@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdlib.h>
 
+#include "system.h"
 #include "byte_queue.h"
 
 // This is the implementation of a byte queue useful
@@ -12,19 +13,6 @@
 // bytes.
 //
 // Only up to 4GB of data can be stored at once.
-
-static void *mymalloc(ByteQueue *queue, uint32_t len)
-{
-    (void) queue;
-    return malloc(len);
-}
-
-static void myfree(ByteQueue *queue, void *ptr, uint32_t len)
-{
-    (void) queue;
-    (void) len,
-    free(ptr);
-}
 
 // Initialize the queue
 void byte_queue_init(ByteQueue *queue, uint32_t limit)
@@ -44,12 +32,12 @@ void byte_queue_free(ByteQueue *queue)
 {
     if (queue->read_target) {
         if (queue->read_target != queue->data)
-            myfree(queue, queue->read_target, queue->read_target_size);
+            sys_free(queue->read_target);
         queue->read_target = NULL;
         queue->read_target_size = 0;
     }
 
-    myfree(queue, queue->data, queue->size);
+    sys_free(queue->data);
     queue->data = NULL;
 }
 
@@ -111,7 +99,7 @@ void byte_queue_read_ack(ByteQueue *queue, uint32_t num)
 
     if (queue->read_target) {
         if (queue->read_target != queue->data)
-            myfree(queue, queue->read_target, queue->read_target_size);
+            sys_free(queue->read_target);
         queue->read_target = NULL;
         queue->read_target_size = 0;
     }
@@ -236,7 +224,7 @@ int byte_queue_write_setmincap(ByteQueue *queue, uint32_t mincap)
             if (size > queue->limit)
                 size = queue->limit;
 
-            uint8_t *data = mymalloc(queue, size);
+            uint8_t *data = sys_malloc(size);
             if (!data) {
                 queue->flags |= BYTE_QUEUE_ERROR;
                 return 0;
@@ -246,7 +234,7 @@ int byte_queue_write_setmincap(ByteQueue *queue, uint32_t mincap)
                 memcpy(data, queue->data + queue->head, queue->used);
 
             if (queue->read_target != queue->data)
-                myfree(queue, queue->data, queue->size);
+                sys_free(queue->data);
 
             queue->data = data;
             queue->head = 0;

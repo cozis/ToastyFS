@@ -8,6 +8,7 @@
 #endif
 
 #include "tcp.h"
+#include "system.h"
 #include "config.h"
 #include "message.h"
 #include <TinyDFS.h>
@@ -90,7 +91,7 @@ struct TinyDFS {
 
 TinyDFS *tinydfs_init(char *addr, uint16_t port)
 {
-    TinyDFS *tdfs = malloc(sizeof(TinyDFS));
+    TinyDFS *tdfs = sys_malloc(sizeof(TinyDFS));
     if (tdfs == NULL)
         return NULL;
 
@@ -98,7 +99,7 @@ TinyDFS *tinydfs_init(char *addr, uint16_t port)
     addr2.is_ipv4 = true;
     addr2.port = port;
     if (inet_pton(AF_INET, addr, &addr2.ipv4) != 1) {
-        free(tdfs);
+        sys_free(tdfs);
         return NULL;
     }
 
@@ -106,7 +107,7 @@ TinyDFS *tinydfs_init(char *addr, uint16_t port)
 
     if (tcp_connect(&tdfs->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
         tcp_context_free(&tdfs->tcp);
-        free(tdfs);
+        sys_free(tdfs);
         return NULL;
     }
 
@@ -121,7 +122,7 @@ TinyDFS *tinydfs_init(char *addr, uint16_t port)
 void tinydfs_free(TinyDFS *tdfs)
 {
     tcp_context_free(&tdfs->tcp);
-    free(tdfs);
+    sys_free(tdfs);
 }
 
 static int
@@ -404,7 +405,7 @@ int tinydfs_submit_write(TinyDFS *tdfs, char *path, int path_len, int off, void 
 void tinydfs_result_free(TinyDFS_Result *result)
 {
     if (result->type == TINYDFS_RESULT_LIST_SUCCESS)
-        free(result->entities);
+        sys_free(result->entities);
 }
 
 static void process_event_for_create(TinyDFS *tdfs,
@@ -537,7 +538,7 @@ static void process_event_for_list(TinyDFS *tdfs,
         return;
     }
 
-    TinyDFS_Entity *entities = malloc(item_count * sizeof(TinyDFS_Entity));
+    TinyDFS_Entity *entities = sys_malloc(item_count * sizeof(TinyDFS_Entity));
     if (entities == NULL) {
         tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_LIST_ERROR };
         return;
@@ -548,21 +549,21 @@ static void process_event_for_list(TinyDFS *tdfs,
         uint8_t is_dir;
         if (!binary_read(&reader, &is_dir, sizeof(is_dir))) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_LIST_ERROR };
-            free(entities);
+            sys_free(entities);
             return;
         }
 
         uint16_t name_len;
         if (!binary_read(&reader, &name_len, sizeof(name_len))) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_LIST_ERROR };
-            free(entities);
+            sys_free(entities);
             return;
         }
 
         char *name = reader.src + reader.cur;
         if (!binary_read(&reader, NULL, name_len)) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_LIST_ERROR };
-            free(entities);
+            sys_free(entities);
             return;
         }
 
@@ -570,7 +571,7 @@ static void process_event_for_list(TinyDFS *tdfs,
 
         if (name_len > sizeof(entities[i].name)-1) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_LIST_ERROR };
-            free(entities);
+            sys_free(entities);
             return;
         }
         memcpy(entities[i].name, name, name_len);
@@ -580,7 +581,7 @@ static void process_event_for_list(TinyDFS *tdfs,
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
         tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_LIST_ERROR };
-        free(entities);
+        sys_free(entities);
         return;
     }
 
@@ -653,7 +654,7 @@ static void process_event_for_read(TinyDFS *tdfs,
         }
 
         // Allocate ranges
-        Range *ranges = malloc(num_chunks_needed * sizeof(Range));
+        Range *ranges = sys_malloc(num_chunks_needed * sizeof(Range));
         if (ranges == NULL) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
             return;
@@ -667,7 +668,7 @@ static void process_event_for_read(TinyDFS *tdfs,
             // Read hash
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
-                free(ranges);
+                sys_free(ranges);
                 tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                 return;
             }
@@ -675,7 +676,7 @@ static void process_event_for_read(TinyDFS *tdfs,
             // Read number of servers
             uint32_t num_servers;
             if (!binary_read(&reader, &num_servers, sizeof(num_servers))) {
-                free(ranges);
+                sys_free(ranges);
                 tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                 return;
             }
@@ -683,7 +684,7 @@ static void process_event_for_read(TinyDFS *tdfs,
             // Parse IPv4 addresses
             uint32_t num_ipv4;
             if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
-                free(ranges);
+                sys_free(ranges);
                 tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                 return;
             }
@@ -697,7 +698,7 @@ static void process_event_for_read(TinyDFS *tdfs,
                 uint16_t port;
                 if (!binary_read(&reader, &ipv4, sizeof(ipv4)) ||
                     !binary_read(&reader, &port, sizeof(port))) {
-                    free(ranges);
+                    sys_free(ranges);
                     tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                     return;
                 }
@@ -712,21 +713,21 @@ static void process_event_for_read(TinyDFS *tdfs,
             // Skip IPv6 addresses
             uint32_t num_ipv6;
             if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
-                free(ranges);
+                sys_free(ranges);
                 tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                 return;
             }
             for (uint32_t j = 0; j < num_ipv6; j++) {
                 if (!binary_read(&reader, NULL, sizeof(IPv6)) ||
                     !binary_read(&reader, NULL, sizeof(uint16_t))) {
-                    free(ranges);
+                    sys_free(ranges);
                     tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                     return;
                 }
             }
 
             if (!found) {
-                free(ranges);
+                sys_free(ranges);
                 tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                 return;
             }
@@ -771,7 +772,7 @@ static void process_event_for_read(TinyDFS *tdfs,
             Range *r = &ranges[0];
             int cs_idx = get_chunk_server_connection(tdfs, r->server_addr);
             if (cs_idx < 0) {
-                free(ranges);
+                sys_free(ranges);
                 tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                 return;
             }
@@ -779,7 +780,7 @@ static void process_event_for_read(TinyDFS *tdfs,
 
             if (send_download_chunk(tdfs, cs_idx, r->hash, r->offset_within_chunk,
                 r->length_within_chunk, opidx, 0) < 0) {
-                free(ranges);
+                sys_free(ranges);
                 tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
                 return;
             }
@@ -788,7 +789,7 @@ static void process_event_for_read(TinyDFS *tdfs,
             tdfs->operations[opidx].ranges_head = 1;
         } else {
             // No chunks to download
-            free(ranges);
+            sys_free(ranges);
             tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_SUCCESS };
         }
 
@@ -861,7 +862,7 @@ static void process_event_for_read(TinyDFS *tdfs,
 
         // Check if done
         if (tdfs->operations[opidx].num_pending == 0) {
-            free(tdfs->operations[opidx].ranges);
+            sys_free(tdfs->operations[opidx].ranges);
             tdfs->operations[opidx].ranges = NULL;
             tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_SUCCESS };
         }

@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "system.h"
 #include "file_tree.h"
 
 static int parse_path(string path, string *comps, int max)
@@ -99,7 +100,7 @@ static void dir_free(Dir *d)
 {
     for (uint64_t i = 0; i < d->num_children; i++)
         entity_free(&d->children[i]);
-    free(d->children);
+    sys_free(d->children);
 }
 
 static void dir_remove(Dir *d, int idx)
@@ -124,7 +125,7 @@ static void file_init(File *f, uint64_t chunk_size)
 
 static void file_free(File *f)
 {
-    free(f->chunks);
+    sys_free(f->chunks);
     f->chunks = NULL;
 }
 
@@ -268,14 +269,14 @@ int file_tree_create_entity(FileTree *ft, string path,
         if (new_max == 0)
             new_max = 8;
 
-        Entity *p = malloc(sizeof(Entity) * new_max);
+        Entity *p = sys_malloc(sizeof(Entity) * new_max);
         if (p == NULL)
             return FILETREE_NOMEM;
 
         for (uint64_t i = 0; i < d->num_children; i++)
             p[i] = d->children[i];
 
-        free(d->children);
+        sys_free(d->children);
         d->children = p;
         d->max_children = new_max;
     }
@@ -340,13 +341,13 @@ int file_tree_write(FileTree *ft, string path,
     uint64_t  last_chunk_index = (off + len - 1) / f->chunk_size;
 
     if (last_chunk_index >= f->num_chunks) {
-        SHA256 *new_chunks = malloc((last_chunk_index+1) * sizeof(SHA256));
+        SHA256 *new_chunks = sys_malloc((last_chunk_index+1) * sizeof(SHA256));
         if (new_chunks == NULL)
             return FILETREE_NOMEM;
         if (f->chunks) {
             if (f->num_chunks > 0)
                 memcpy(new_chunks, f->chunks, f->num_chunks);
-            free(f->chunks);
+            sys_free(f->chunks);
         }
         f->chunks = new_chunks;
         f->num_chunks = last_chunk_index+1;

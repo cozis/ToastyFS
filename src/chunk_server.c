@@ -19,7 +19,7 @@ pending_download_list_init(PendingDownloadList *list)
 static void
 pending_download_list_free(PendingDownloadList *list)
 {
-    free(list->items);
+    sys_free(list->items);
 }
 
 static int
@@ -36,13 +36,13 @@ pending_download_list_add(PendingDownloadList *list, Address addr, SHA256 hash)
         if (list->capacity == 0) new_capacity = 8;
         else                     new_capacity = 2 * list->capacity;
 
-        PendingDownload *new_items = malloc(new_capacity * sizeof(PendingDownload));
+        PendingDownload *new_items = sys_malloc(new_capacity * sizeof(PendingDownload));
         if (new_items == NULL)
             return -1;
 
         if (list->capacity > 0) {
             memcpy(new_items, list->items, list->count * sizeof(list->items[0]));
-            free(list->items);
+            sys_free(list->items);
         }
 
         list->items = new_items;
@@ -135,12 +135,12 @@ static int chunk_store_patch(ChunkStore *store, SHA256 target_chunk,
         return -1;
 
     if (patch_off > SIZE_MAX - patch.len) {
-        free(data.ptr);
+        sys_free(data.ptr);
         return -1;
     }
 
     if (patch_off + (size_t) patch.len > (size_t) data.len) {
-        free(data.ptr);
+        sys_free(data.ptr);
         return -1;
     }
 
@@ -148,11 +148,11 @@ static int chunk_store_patch(ChunkStore *store, SHA256 target_chunk,
 
     ret = store_chunk(store, data, new_hash);
     if (ret < 0) {
-        free(data.ptr);
+        sys_free(data.ptr);
         return -1;
     }
 
-    free(data.ptr);
+    sys_free(data.ptr);
     return 0;
 }
 
@@ -233,33 +233,33 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
     if (!binary_read(&reader, &rem_count, sizeof(rem_count)))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
 
-    SHA256 *add_list = malloc(add_count * sizeof(SHA256));
-    SHA256 *rem_list = malloc(rem_count * sizeof(SHA256));
+    SHA256 *add_list = sys_malloc(add_count * sizeof(SHA256));
+    SHA256 *rem_list = sys_malloc(rem_count * sizeof(SHA256));
     if (add_list == NULL || rem_list == NULL) {
-        free(add_list);
-        free(rem_list);
+        sys_free(add_list);
+        sys_free(rem_list);
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Out of memory"));
     }
 
     for (uint32_t i = 0; i < add_count; i++) {
         if (!binary_read(&reader, &add_list[i], sizeof(SHA256))) {
-            free(add_list);
-            free(rem_list);
+            sys_free(add_list);
+            sys_free(rem_list);
             return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
         }
     }
 
     for (uint32_t i = 0; i < rem_count; i++) {
         if (!binary_read(&reader, &rem_list[i], sizeof(SHA256))) {
-            free(add_list);
-            free(rem_list);
+            sys_free(add_list);
+            sys_free(rem_list);
             return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
         }
     }
 
     if (binary_read(&reader, NULL, 1)) {
-        free(add_list);
-        free(rem_list);
+        sys_free(add_list);
+        sys_free(rem_list);
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
     }
 
@@ -302,14 +302,14 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
                                    (string) { main_path, strlen(main_path) }) < 0) {
                 // Failed to move, treat as missing
                 if (missing_chunks == NULL)
-                    missing_chunks = malloc(add_count * sizeof(SHA256));
+                    missing_chunks = sys_malloc(add_count * sizeof(SHA256));
                 if (missing_chunks)
                     missing_chunks[missing_count++] = add_list[i];
             }
         } else {
             // Chunk is missing in both locations
             if (missing_chunks == NULL)
-                missing_chunks = malloc(add_count * sizeof(SHA256));
+                missing_chunks = sys_malloc(add_count * sizeof(SHA256));
             if (missing_chunks)
                 missing_chunks[missing_count++] = add_list[i];
         }
@@ -338,8 +338,8 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
                           (string) { orphaned_path, strlen(orphaned_path) });
     }
 
-    free(add_list);
-    free(rem_list);
+    sys_free(add_list);
+    sys_free(rem_list);
 
     // Send response
     if (missing_count > 0) {
@@ -356,7 +356,7 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
         for (uint32_t i = 0; i < missing_count; i++)
             message_write(&writer, &missing_chunks[i], sizeof(SHA256));
 
-        free(missing_chunks);
+        sys_free(missing_chunks);
 
         if (!message_writer_free(&writer))
             return -1;
@@ -625,7 +625,7 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     if (binary_read(&reader, NULL, 1))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("Invalid message"));
 
-    char *mem = malloc(chunk_size);
+    char *mem = sys_malloc(chunk_size);
     if (mem == NULL)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("Out of memory"));
 
@@ -639,7 +639,7 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
 
     int ret = chunk_store_add(&state->store, (string) { mem, chunk_size });
 
-    free(mem);
+    sys_free(mem);
 
     if (ret < 0)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("I/O error"));
@@ -732,7 +732,7 @@ process_client_download_chunk(ChunkServer *state, int conn_idx, ByteView msg)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("I/O error"));
 
     if (target_off >= (size_t) data.len || target_len > (size_t) data.len - target_off) {
-        free(data.ptr);
+        sys_free(data.ptr);
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid range"));
     }
     string slice = { data.ptr + target_off, target_len };
@@ -746,7 +746,7 @@ process_client_download_chunk(ChunkServer *state, int conn_idx, ByteView msg)
 
     message_write(&writer, slice.ptr, slice.len);
 
-    free(data.ptr);
+    sys_free(data.ptr);
 
     if (!message_writer_free(&writer))
         return -1;
@@ -765,7 +765,7 @@ process_client_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView
     return -1;
 }
 
-int chunk_server_init(ChunkServer *state, int argc, char **argv)
+int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled)
 {
     (void) argc;
     (void) argv;
@@ -806,7 +806,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv)
 
     state->metadata_server_disconnect_time = 0;
 
-    return 0;
+    return tcp_register_events(&state->tcp, contexts, polled);
 }
 
 int chunk_server_free(ChunkServer *state)
@@ -817,10 +817,10 @@ int chunk_server_free(ChunkServer *state)
     return 0;
 }
 
-int chunk_server_step(ChunkServer *state)
+int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled)
 {
     Event events[MAX_CONNS+1];
-    int num_events = tcp_process_events(&state->tcp, events);
+    int num_events = tcp_translate_events(&state->tcp, contexts, polled, num_polled, events);
 
     Time current_time = get_current_time();
     if (current_time == INVALID_TIME)
@@ -938,5 +938,5 @@ int chunk_server_step(ChunkServer *state)
         }
     }
 
-    return 0;
+    return tcp_register_events(&state->tcp, contexts, polled, num_polled);
 }

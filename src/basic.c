@@ -1,11 +1,5 @@
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <time.h>
-#endif
-
 #include "basic.h"
+#include "system.h"
 
 bool streq(string s1, string s2)
 {
@@ -28,10 +22,10 @@ Time get_current_time(void)
         int64_t freq;
         int ok;
 
-        ok = QueryPerformanceCounter((LARGE_INTEGER*) &count);
+        ok = sys_QueryPerformanceCounter((LARGE_INTEGER*) &count);
         if (!ok) return INVALID_TIME;
 
-        ok = QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
+        ok = sys_QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
         if (!ok) return INVALID_TIME;
 
         uint64_t res = 1000 * (double) count / freq;
@@ -41,7 +35,7 @@ Time get_current_time(void)
     {
         struct timespec time;
 
-        if (clock_gettime(CLOCK_REALTIME, &time))
+        if (sys_clock_gettime(CLOCK_REALTIME, &time))
             return INVALID_TIME;
 
         uint64_t res;

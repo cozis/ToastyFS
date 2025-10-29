@@ -17,6 +17,7 @@
 #include <windows.h>
 #endif
 
+#include "system.h"
 #include "file_system.h"
 
 int rename_file_or_dir(string oldpath, string newpath);
@@ -30,7 +31,7 @@ int file_open(string path, Handle *fd)
     memcpy(zt, path.ptr, path.len);
     zt[path.len] = '\0';
 
-    int ret = open(zt, O_RDWR | O_CREAT | O_APPEND, 0644);
+    int ret = sys_open(zt, O_RDWR | O_CREAT | O_APPEND, 0644);
     if (ret < 0)
         return -1;
 
@@ -43,7 +44,7 @@ int file_open(string path, Handle *fd)
     MultiByteToWideChar(CP_UTF8, 0, path.ptr, path.len, wpath, MAX_PATH);
     wpath[path.len] = L'\0';
 
-    HANDLE h = CreateFileW(
+    HANDLE h = sys_CreateFileW(
         wpath,
         GENERIC_WRITE | GENERIC_READ,
         0,
@@ -63,24 +64,24 @@ int file_open(string path, Handle *fd)
 void file_close(Handle fd)
 {
 #ifdef __linux__
-    close((int) fd.data);
+    sys_close((int) fd.data);
 #endif
 
 #ifdef _WIN32
-    CloseHandle((HANDLE) fd.data);
+    sys_CloseHandle((HANDLE) fd.data);
 #endif
 }
 
 int file_lock(Handle fd)
 {
 #ifdef __linux__
-    if (flock((int) fd.data, LOCK_EX) < 0)
+    if (sys_flock((int) fd.data, LOCK_EX) < 0)
         return -1;
     return 0;
 #endif
 
 #ifdef _WIN32
-    if (!LockFile((HANDLE) fd.data, 0, 0, MAXDWORD, MAXDWORD))
+    if (!sys_LockFile((HANDLE) fd.data, 0, 0, MAXDWORD, MAXDWORD))
         return -1;
     return 0;
 #endif
@@ -89,13 +90,13 @@ int file_lock(Handle fd)
 int file_unlock(Handle fd)
 {
 #ifdef __linux__
-    if (flock((int) fd.data, LOCK_UN) < 0)
+    if (sys_flock((int) fd.data, LOCK_UN) < 0)
         return -1;
     return 0;
 #endif
 
 #ifdef _WIN32
-    if (!UnlockFile((HANDLE) fd.data, 0, 0, MAXDWORD, MAXDWORD))
+    if (!sys_UnlockFile((HANDLE) fd.data, 0, 0, MAXDWORD, MAXDWORD))
         return -1;
     return 0;
 #endif
@@ -104,13 +105,13 @@ int file_unlock(Handle fd)
 int file_sync(Handle fd)
 {
 #ifdef __linux__
-    if (fsync((int) fd.data) < 0)
+    if (sys_fsync((int) fd.data) < 0)
         return -1;
     return 0;
 #endif
 
 #ifdef _WIN32
-    if (!FlushFileBuffers((HANDLE) fd.data))
+    if (!sys_FlushFileBuffers((HANDLE) fd.data))
         return -1;
     return 0;
 #endif
@@ -119,12 +120,12 @@ int file_sync(Handle fd)
 int file_read(Handle fd, char *dst, int max)
 {
 #ifdef __linux__
-    return read((int) fd.data, dst, max);
+    return sys_read((int) fd.data, dst, max);
 #endif
 
 #ifdef _WIN32
     DWORD num;
-    if (!ReadFile((HANDLE) fd.data, dst, max, &num, NULL))
+    if (!sys_ReadFile((HANDLE) fd.data, dst, max, &num, NULL))
         return -1;
     if (num > INT_MAX)
         return -1;
@@ -135,12 +136,12 @@ int file_read(Handle fd, char *dst, int max)
 int file_write(Handle fd, char *src, int len)
 {
 #ifdef __linux__
-    return write((int) fd.data, src, len);
+    return sys_write((int) fd.data, src, len);
 #endif
 
 #ifdef _WIN32
     DWORD num;
-    if (!WriteFile((HANDLE) fd.data, src, len, &num, NULL))
+    if (!sys_WriteFile((HANDLE) fd.data, src, len, &num, NULL))
         return -1;
     if (num > INT_MAX)
         return -1;
@@ -152,7 +153,7 @@ int file_size(Handle fd, size_t *len)
 {
 #ifdef __linux__
     struct stat buf;
-    if (fstat((int) fd.data, &buf) < 0)
+    if (sys_fstat((int) fd.data, &buf) < 0)
         return -1;
     if (buf.st_size < 0 || (uint64_t) buf.st_size > SIZE_MAX)
         return -1;
@@ -162,7 +163,7 @@ int file_size(Handle fd, size_t *len)
 
 #ifdef _WIN32
     LARGE_INTEGER buf;
-    if (!GetFileSizeEx((HANDLE) fd.data, &buf))
+    if (!sys_GetFileSizeEx((HANDLE) fd.data, &buf))
         return -1;
     if (buf.QuadPart < 0 || (uint64_t) buf.QuadPart > SIZE_MAX)
         return -1;
@@ -193,7 +194,7 @@ static int write_bytes(int fd, string data)
 {
     size_t written = 0;
     while (written < (size_t) data.len) {
-        int ret = write(fd, data.ptr + written, data.len - written);
+        int ret = sys_write(fd, data.ptr + written, data.len - written);
         if (ret < 0) {
             if (errno == EINTR)
                 continue;
@@ -218,26 +219,26 @@ int file_write_atomic(string path, string content)
     memcpy(tmp_path + parent.len, pattern, strlen(pattern));
     tmp_path[parent.len + strlen(pattern)] = '\0';
 
-    int fd = mkstemp(tmp_path);
+    int fd = sys_mkstemp(tmp_path);
     if (fd < 0)
         return -1;
 
     if (write_bytes(fd, content) < 0) {
-        close(fd);
-        remove(tmp_path);
+        sys_close(fd);
+        sys_remove(tmp_path);
         return -1;
     }
 
 #ifdef _WIN32
-    if (_commit(fd)) {
-        close(fd);
-        remove(tmp_path);
+    if (sys__commit(fd)) {
+        sys_close(fd);
+        sys_remove(tmp_path);
         return -1;
     }
 #else
-    if (fsync(fd)) {
-        close(fd);
-        remove(tmp_path);
+    if (sys_fsync(fd)) {
+        sys_close(fd);
+        sys_remove(tmp_path);
         return -1;
     }
 #endif
@@ -245,7 +246,7 @@ int file_write_atomic(string path, string content)
     close(fd);
 
     if (rename_file_or_dir((string) { tmp_path, strlen(tmp_path) }, path)) {
-        remove(tmp_path);
+        sys_remove(tmp_path);
         return -1;
     }
     return 0;
@@ -260,10 +261,10 @@ int create_dir(string path)
     zt[path.len] = '\0';
 
 #ifdef _WIN32
-    if (mkdir(zt) < 0)
+    if (sys_mkdir(zt) < 0)
         return -1;
 #else
-    if (mkdir(zt, 0766))
+    if (sys_mkdir(zt, 0766))
         return -1;
 #endif
 
@@ -284,7 +285,7 @@ int rename_file_or_dir(string oldpath, string newpath)
     memcpy(newpath_zt, newpath.ptr, newpath.len);
     newpath_zt[newpath.len] = '\0';
 
-    if (rename(oldpath_zt, newpath_zt))
+    if (sys_rename(oldpath_zt, newpath_zt))
         return -1;
     return 0;
 }
@@ -297,7 +298,7 @@ int remove_file_or_dir(string path)
     memcpy(path_zt, path.ptr, path.len);
     path_zt[path.len] = '\0';
 
-    if (remove(path_zt))
+    if (sys_remove(path_zt))
         return -1;
     return 0;
 }
@@ -311,12 +312,12 @@ int get_full_path(string path, char *dst)
     path_zt[path.len] = '\0';
 
 #ifdef __linux__
-    if (realpath(path_zt, dst) == NULL)
+    if (sys_realpath(path_zt, dst) == NULL)
         return -1;
 #endif
 
 #ifdef _WIN32
-    if (_fullpath(path_zt, dst, PATH_MAX) == NULL)
+    if (sys__fullpath(path_zt, dst, PATH_MAX) == NULL)
         return -1;
 #endif
 
@@ -341,7 +342,7 @@ int file_read_all(string path, string *data)
         return -1;
     }
 
-    char *dst = malloc(len);
+    char *dst = sys_malloc(len);
     if (dst == NULL) {
         file_close(fd);
         return -1;
@@ -351,6 +352,7 @@ int file_read_all(string path, string *data)
     while ((size_t) copied < len) {
         ret = file_read(fd, dst + copied, len - copied);
         if (ret < 0) {
+            sys_free(dst);
             file_close(fd);
             return -1;
         }

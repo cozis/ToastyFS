@@ -147,11 +147,8 @@ void tcp_consume_message(TCP *tcp, int conn_idx)
     tcp->conns[conn_idx].msglen = 0;
 }
 
-// The "events" array must be an array of capacity MAX_CONNS+1
-int tcp_process_events(TCP *tcp, Event *events)
+int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
 {
-    struct pollfd polled[MAX_CONNS + 1];
-    void *contexts[MAX_CONNS + 1];
     int num_polled = 0;
 
     if (tcp->listen_fd != INVALID_SOCKET && tcp->num_conns < MAX_CONNS) {
@@ -173,8 +170,12 @@ int tcp_process_events(TCP *tcp, Event *events)
         }
     }
 
-    sys_poll(polled, num_polled, -1);
+    return 0;
+}
 
+// The "events" array must be an array of capacity MAX_CONNS+1
+int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd *polled, int num_polled)
+{
     bool removed[MAX_CONNS+1];
 
     int num_events = 0;
