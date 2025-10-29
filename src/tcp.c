@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "tcp.h"
+#include "system.h"
 #include "message.h"
 
 bool addr_eql(Address a, Address b)
@@ -25,7 +26,7 @@ bool addr_eql(Address a, Address b)
 
 static SOCKET create_listen_socket(char *addr, uint16_t port)
 {
-    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET fd = sys_socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET)
         return INVALID_SOCKET;
 
@@ -35,11 +36,11 @@ static SOCKET create_listen_socket(char *addr, uint16_t port)
     if (inet_pton(AF_INET, addr, &bind_buf.sin_addr) != 1)
         return INVALID_SOCKET;
 
-    if (bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf)))
+    if (sys_bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf)))
         return INVALID_SOCKET;
 
     int backlog = 32;
-    if (listen(fd, backlog) < 0)
+    if (sys_listen(fd, backlog) < 0)
         return INVALID_SOCKET;
 
     return fd;
@@ -58,7 +59,7 @@ static void conn_init(Connection *conn, SOCKET fd, bool connecting)
 
 static void conn_free(Connection *conn)
 {
-    CLOSE_SOCKET(conn->fd);
+    sys_closesocket(conn->fd);
     byte_queue_free(&conn->input);
     byte_queue_free(&conn->output);
 }
@@ -90,7 +91,7 @@ void tcp_context_init(TCP *tcp)
 void tcp_context_free(TCP *tcp)
 {
     if (tcp->listen_fd != INVALID_SOCKET)
-        CLOSE_SOCKET(tcp->listen_fd);
+        sys_closesocket(tcp->listen_fd);
 }
 
 int tcp_index_from_tag(TCP *tcp, int tag)
@@ -172,7 +173,7 @@ int tcp_process_events(TCP *tcp, Event *events)
         }
     }
 
-    POLL(polled, num_polled, -1);
+    sys_poll(polled, num_polled, -1);
 
     bool removed[MAX_CONNS+1];
 
@@ -181,7 +182,7 @@ int tcp_process_events(TCP *tcp, Event *events)
 
         if (polled[i].fd == tcp->listen_fd) {
 
-            SOCKET new_fd = accept(tcp->listen_fd, NULL, NULL);
+            SOCKET new_fd = sys_accept(tcp->listen_fd, NULL, NULL);
             if (new_fd != INVALID_SOCKET) {
                 events[num_events++] = (Event) { EVENT_CONNECT, tcp->num_conns };
                 conn_init(&tcp->conns[tcp->num_conns++], new_fd, false);
@@ -202,7 +203,7 @@ int tcp_process_events(TCP *tcp, Event *events)
 
                     int err = 0;
                     socklen_t len = sizeof(err);
-                    if (getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (void*) &err, &len) < 0 || err != 0)
+                    if (sys_getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (void*) &err, &len) < 0 || err != 0)
                         defer_close = true;
                     else {
                         conn->connecting = false;
@@ -214,7 +215,7 @@ int tcp_process_events(TCP *tcp, Event *events)
 
                 if (polled[i].revents & POLLIN) {
                     ByteView buf = byte_queue_write_buf(&conn->input);
-                    int num = recv(conn->fd, (char*) buf.ptr, buf.len, 0);
+                    int num = sys_recv(conn->fd, (char*) buf.ptr, buf.len, 0);
                     if (num == 0)
                         defer_close = true;
                     else if (num < 0) {
@@ -243,7 +244,7 @@ int tcp_process_events(TCP *tcp, Event *events)
 
                 if (polled[i].revents & POLLOUT) {
                     ByteView buf = byte_queue_read_buf(&conn->output);
-                    int num = send(conn->fd, (char*) buf.ptr, buf.len, 0);
+                    int num = sys_send(conn->fd, (char*) buf.ptr, buf.len, 0);
                     if (num < 0) {
                         if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)
                             defer_close = true;
@@ -281,7 +282,7 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
         return -1;
     int conn_idx = tcp->num_conns;
 
-    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET fd = sys_socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET)
         return -1;
 
@@ -291,13 +292,13 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
         buf.sin_family = AF_INET;
         buf.sin_port = htons(addr.port);
         memcpy(&buf.sin_addr, &addr.ipv4, sizeof(IPv4));
-        ret = connect(fd, (struct sockaddr*) &buf, sizeof(buf));
+        ret = sys_connect(fd, (struct sockaddr*) &buf, sizeof(buf));
     } else {
         struct sockaddr_in6 buf;
         buf.sin6_family = AF_INET6;
         buf.sin6_port = htons(addr.port);
         memcpy(&buf.sin6_addr, &addr.ipv6, sizeof(IPv6));
-        ret = connect(fd, (struct sockaddr*) &buf, sizeof(buf));
+        ret = sys_connect(fd, (struct sockaddr*) &buf, sizeof(buf));
     }
 
     bool connecting;
@@ -305,7 +306,7 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
         connecting = false;
     } else {
         if (errno != EINPROGRESS) {
-            CLOSE_SOCKET(fd);
+            sys_closesocket(fd);
             return -1;
         }
         connecting = true;

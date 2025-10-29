@@ -1,4 +1,4 @@
-#ifndef BUILD_LIBRARY
+#ifdef BUILD_SERVER
 
 #include <string.h>
 
@@ -24,10 +24,12 @@ int main(int argc, char **argv)
             return ret;
 
         for (;;) {
-            metadata_server_step(&state);
+            ret = metadata_server_step(&state);
+            if (ret)
+                return ret;
         }
 
-        metadata_server_free(&state);
+        ret = metadata_server_free(&state);
 
     } else {
 
@@ -37,13 +39,14 @@ int main(int argc, char **argv)
             return ret;
 
         for (;;) {
-            chunk_server_step(&state);
+            ret = chunk_server_step(&state);
+            if (ret)
+                return ret;
         }
 
-        chunk_server_free(&state);
-
+        ret = chunk_server_free(&state);
     }
-    return 0;
+    return ret;
 }
 
-#endif // BUILD_LIBRARY
+#endif // BUILD_SERVER

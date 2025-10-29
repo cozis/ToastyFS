@@ -23,7 +23,7 @@ int main(void)
         return -1;
     }
 
-    char buff_2[] = "This is file 1";
+    char buff_2[] = "This is file 2";
     if (tinydfs_submit_write(tdfs, "/my_file_1", -1, 0, buff_2, sizeof(buff_2)-1) < 0) {
         tinydfs_free(tdfs);
         return -1;

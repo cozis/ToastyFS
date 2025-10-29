@@ -3,22 +3,7 @@
 
 #include <stdbool.h>
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#define POLL WSAPoll
-#define CLOSE_SOCKET closesocket
-#else
-#include <poll.h>
-#include <errno.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#define POLL poll
-#define CLOSE_SOCKET close
-#define SOCKET int
-#define INVALID_SOCKET -1
-#endif
-
+#include "system.h"
 #include "byte_queue.h"
 
 #define MAX_CONNS 512

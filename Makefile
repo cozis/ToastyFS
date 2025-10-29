@@ -14,17 +14,22 @@ HFILES = $(shell find src -name '*.h')
 
 .PHONY: all clean
 
-all: tinydfs_server$(EXT) example_client$(EXT)
+all: tinydfs_server$(EXT) tinydfs_test$(EXT) example_client$(EXT)
 
 tinydfs_server$(EXT): $(CFILES) $(HFILES)
-	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc
+	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_SERVER
+
+tinydfs_test$(EXT): $(CFILES) $(HFILES)
+	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_TEST
 
 example_client$(EXT): examples/main.c $(CFILES) $(HFILES)
-	gcc -o $@ examples/main.c $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_LIBRARY
+	gcc -o $@ examples/main.c $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc
 
 clean:
 	rm                     \
 		tinydfs_server.exe \
 		tinydfs_server.out \
-		example.exe        \
-		example.out
+		tinydfs_test.exe   \
+		tinydfs_test.out   \
+		example_client.exe \
+		example_client.out
