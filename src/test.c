@@ -1,10 +1,14 @@
 #ifdef BUILD_TEST
 
+#include <string.h>
+#include <stdbool.h>
 #include "system.h"
 #include "chunk_server.h"
 #include "metadata_server.h"
+#include "byte_queue.h"
 
 #define MAX_DESCRIPTORS 1024
+#define MAX_PENDING_CONNECTIONS 128
 
 typedef enum {
     DESCRIPTOR_TYPE_EMPTY,
@@ -13,25 +17,6 @@ typedef enum {
     DESCRIPTOR_TYPE_LISTEN_SOCKET,
     DESCRIPTOR_TYPE_CONNECTION_SOCKET,
 } DescriptorType;
-
-typedef struct {
-} DescriptorFile;
-
-typedef struct {
-
-    // Generic fields
-    struct sockaddr_in bind;
-    bool no_bind;
-    bool is_listen;
-
-    // Listen socket
-    int backlog;
-
-    // Data socket
-    ByteQueue input;
-    ByteQueue output;
-
-} DescriptorSocket;
 
 typedef struct {
 
@@ -43,8 +28,12 @@ typedef struct {
 
     // Listen socket fields
     int backlog;
+    int pending_connections[MAX_PENDING_CONNECTIONS];
+    int num_pending;
 
     // Data socket fields
+    int       peer_process;  // Index of the peer process (-1 if not connected)
+    int       peer_fd;       // Descriptor in peer process
     ByteQueue input;
     ByteQueue output;
 
@@ -89,22 +78,30 @@ Socket sys_socket(int domain, int type, int protocol)
     }
 
     Socket fd = 0;
-    while (current_process->desc[fd].type != DESCRIPTOR_TYPE_EMPTY)
+    while (fd < MAX_DESCRIPTORS && current_process->desc[fd].type != DESCRIPTOR_TYPE_EMPTY)
         fd++;
+
+    if (fd >= MAX_DESCRIPTORS) {
+        // TODO: errno
+        return BAD_SOCKET;
+    }
 
     current_process->desc[fd].type = DESCRIPTOR_TYPE_PRECONF_SOCKET;
     current_process->desc[fd].no_bind = true;
+    current_process->desc[fd].num_pending = 0;
+    current_process->desc[fd].peer_process = -1;
+    current_process->desc[fd].peer_fd = -1;
     return fd;
 }
 
 int sys_bind(Socket fd, void *addr, size_t addr_len)
 {
-    if (current_process->desc[fd].type != DESCRIPTOR_TYPE_SOCKET) {
+    if (current_process->desc[fd].type != DESCRIPTOR_TYPE_PRECONF_SOCKET) {
         // TODO: errno
         return -1;
     }
 
-    if (addr_len != sizeof(current_process->desc[fd].sock.bind)) {
+    if (addr_len != sizeof(current_process->desc[fd].bind)) {
         // TODO: errno
         return -1;
     }
@@ -113,18 +110,18 @@ int sys_bind(Socket fd, void *addr, size_t addr_len)
     //       on this port
 
     current_process->desc[fd].no_bind = false;
-    memcpy(&current_process[fd].desc[fd].bind, addr, addr_len);
+    memcpy(&current_process->desc[fd].bind, addr, addr_len);
     return 0;
 }
 
 int sys_listen(Socket fd, int backlog)
 {
-    if (current_process->desc[fd].type != DESCRIPTOR_TYPE_SOCKET) {
+    if (current_process->desc[fd].type != DESCRIPTOR_TYPE_PRECONF_SOCKET) {
         // TODO: errno
         return -1;
     }
 
-    current_process->desc[fd].type = DESCRIPTOR_TYPE_LISTEN-SOCKET;
+    current_process->desc[fd].type = DESCRIPTOR_TYPE_LISTEN_SOCKET;
     current_process->desc[fd].backlog = backlog;
     return 0;
 }
@@ -159,12 +156,12 @@ int sys_poll(struct pollfd *polled, int num_polled, int timeout)
         }
 
         if (polled[i].events & POLLIN) {
-            if (!byte_queue_empty(&current_process->desc[fd].data_socket.input))
+            if (!byte_queue_empty(&current_process->desc[fd].input))
                 polled[i].revents |= POLLIN;
         }
 
         if (polled[i].events & POLLOUT) {
-            if (!byte_queue_full(&current_process->desc[fd].data_socket.output))
+            if (!byte_queue_full(&current_process->desc[fd].output))
                 polled[i].revents |= POLLOUT;
         }
 
@@ -182,7 +179,34 @@ Socket sys_accept(Socket fd, void *addr, int *addr_len)
         return BAD_SOCKET;
     }
 
-    // TODO
+    if (current_process->desc[fd].num_pending == 0) {
+        // No pending connections - would block in real system
+        // TODO: errno (EAGAIN/EWOULDBLOCK)
+        return BAD_SOCKET;
+    }
+
+    // Get the first pending connection descriptor
+    Socket new_fd = current_process->desc[fd].pending_connections[0];
+
+    // Remove from pending queue
+    current_process->desc[fd].num_pending--;
+    for (int i = 0; i < current_process->desc[fd].num_pending; i++) {
+        current_process->desc[fd].pending_connections[i] =
+            current_process->desc[fd].pending_connections[i + 1];
+    }
+
+    // Fill in peer address if requested
+    if (addr != NULL && addr_len != NULL) {
+        int peer_process = current_process->desc[new_fd].peer_process;
+        int peer_fd = current_process->desc[new_fd].peer_fd;
+        if (peer_process > -1 && peer_fd > -1) {
+            struct sockaddr_in *peer_addr = (struct sockaddr_in *)addr;
+            *peer_addr = processes[peer_process].desc[peer_fd].bind;
+            *addr_len = sizeof(struct sockaddr_in);
+        }
+    }
+
+    return new_fd;
 }
 
 int sys_getsockopt(Socket fd, int level, int optname, void *optval, socklen_t *optlen)
@@ -196,21 +220,28 @@ int sys_getsockopt(Socket fd, int level, int optname, void *optval, socklen_t *o
 
         case SO_ERROR:
         {
-            if (optlen == NULL || *optlen != sizeof(int)) {
+            if (optlen == NULL || *optlen < sizeof(int)) {
                 // TODO: errno
                 return -1;
             }
 
-            // TODO
+            if (optval == NULL) {
+                // TODO: errno
+                return -1;
+            }
+
+            // In our simulation, all connections succeed immediately
+            // and we don't track socket errors, so always return 0
+            *(int *)optval = 0;
+            *optlen = sizeof(int);
+            return 0;
         }
-        break;
 
         default:
-        // TODO
-        break;
+        // Unsupported socket option
+        // TODO: errno (ENOPROTOOPT)
+        return -1;
     }
-
-    // TODO
 }
 
 int sys_setsockopt(Socket fd, int level, int optname, void *optval, socklen_t optlen)
@@ -226,7 +257,7 @@ int sys_recv(Socket fd, void *dst, int len, int flags)
         return -1;
     }
 
-    ByteQueue *input = &current_process->desc[fd].data_socket.input;
+    ByteQueue *input = &current_process->desc[fd].input;
     ByteView buf = byte_queue_read_buf(input);
     if (buf.len > len)
         buf.len = len;
@@ -243,7 +274,7 @@ int sys_send(Socket fd, void *src, int len, int flags)
         return -1;
     }
 
-    ByteQueue *output = &current_process->desc[fd].data_socket.output;
+    ByteQueue *output = &current_process->desc[fd].output;
     ByteView buf = byte_queue_write_buf(output);
     if (buf.len > len)
         buf.len = len;
@@ -260,11 +291,81 @@ int sys_connect(Socket fd, void *addr, size_t addr_len)
         return -1;
     }
 
+    if (addr_len != sizeof(struct sockaddr_in)) {
+        // TODO: errno
+        return -1;
+    }
+
+    struct sockaddr_in *target_addr = (struct sockaddr_in *)addr;
+
+    // Find the process with a listen socket on this address
+    int target_process_idx = -1;
+    Socket target_listen_fd = BAD_SOCKET;
+
+    for (int i = 0; i < num_processes; i++) {
+        for (int j = 0; j < MAX_DESCRIPTORS; j++) {
+            Descriptor *desc = &processes[i].desc[j];
+            if (desc->type == DESCRIPTOR_TYPE_LISTEN_SOCKET && !desc->no_bind) {
+                if (desc->bind.sin_port == target_addr->sin_port &&
+                    (desc->bind.sin_addr.s_addr == target_addr->sin_addr.s_addr ||
+                     desc->bind.sin_addr.s_addr == INADDR_ANY)) {
+                    target_process_idx = i;
+                    target_listen_fd = j;
+                    goto found;
+                }
+            }
+        }
+    }
+
+found:
+    if (target_process_idx < 0) {
+        // No listener found - connection refused
+        // TODO: errno (ECONNREFUSED)
+        return -1;
+    }
+
+    // Create a new socket in the target process for the accepted connection
+    Socket accept_fd = 0;
+    while (accept_fd < MAX_DESCRIPTORS &&
+           processes[target_process_idx].desc[accept_fd].type != DESCRIPTOR_TYPE_EMPTY)
+        accept_fd++;
+
+    if (accept_fd >= MAX_DESCRIPTORS) {
+        // TODO: errno
+        return -1;
+    }
+
+    // Check if pending queue is full
+    if (processes[target_process_idx].desc[target_listen_fd].num_pending >= MAX_PENDING_CONNECTIONS) {
+        // TODO: errno (ECONNREFUSED or EAGAIN)
+        return -1;
+    }
+
+    // Initialize byte queues for both ends of the connection
+    byte_queue_init(&current_process->desc[fd].input, 1<<16);
+    byte_queue_init(&current_process->desc[fd].output, 1<<16);
+    byte_queue_init(&processes[target_process_idx].desc[accept_fd].input, 1<<16);
+    byte_queue_init(&processes[target_process_idx].desc[accept_fd].output, 1<<16);
+
+    // Set up the client socket
     current_process->desc[fd].type = DESCRIPTOR_TYPE_CONNECTION_SOCKET;
+    int current_process_idx = current_process - processes;
+    current_process->desc[fd].peer_process = target_process_idx;
+    current_process->desc[fd].peer_fd = accept_fd;
 
-    // TODO
+    // Set up the accepted socket
+    processes[target_process_idx].desc[accept_fd].type = DESCRIPTOR_TYPE_CONNECTION_SOCKET;
+    processes[target_process_idx].desc[accept_fd].no_bind = false;
+    processes[target_process_idx].desc[accept_fd].bind = *target_addr;
+    processes[target_process_idx].desc[accept_fd].peer_process = current_process_idx;
+    processes[target_process_idx].desc[accept_fd].peer_fd = fd;
+    processes[target_process_idx].desc[accept_fd].num_pending = 0;
 
-    errno = EINPROGRESS;
+    // Add to pending connections queue
+    processes[target_process_idx].desc[target_listen_fd].pending_connections[
+        processes[target_process_idx].desc[target_listen_fd].num_pending++] = accept_fd;
+
+    // Connection succeeds immediately in simulation (no EINPROGRESS needed)
     return 0;
 }
 
@@ -294,6 +395,7 @@ int main(void)
     }
 
     for (;;) {
+        // Step each process
         for (int i = 0; i < num_processes; i++) {
 
             current_process = &processes[i];
@@ -303,11 +405,43 @@ int main(void)
             else        ret = chunk_server_step(&chunk_servers[i-1]);
 
             if (ret) {
-                // TODO
+                // TODO: handle error
             }
         }
 
-        // TODO: process network transit
+        // Process network transit: move data from output queues to peer input queues
+        for (int i = 0; i < num_processes; i++) {
+            for (int fd = 0; fd < MAX_DESCRIPTORS; fd++) {
+                Descriptor *desc = &processes[i].desc[fd];
+
+                if (desc->type != DESCRIPTOR_TYPE_CONNECTION_SOCKET)
+                    continue;
+
+                if (desc->peer_process < 0 || desc->peer_fd < 0)
+                    continue;
+
+                // Get peer descriptor
+                Descriptor *peer = &processes[desc->peer_process].desc[desc->peer_fd];
+
+                // Transfer data from this socket's output to peer's input
+                ByteView output_data = byte_queue_read_buf(&desc->output);
+                if (output_data.len > 0) {
+                    // Get available space in peer's input queue
+                    ByteView peer_input_space = byte_queue_write_buf(&peer->input);
+
+                    // Transfer as much as possible
+                    size_t transfer_size = output_data.len;
+                    if (transfer_size > peer_input_space.len)
+                        transfer_size = peer_input_space.len;
+
+                    if (transfer_size > 0) {
+                        memcpy(peer_input_space.ptr, output_data.ptr, transfer_size);
+                        byte_queue_write_ack(&peer->input, transfer_size);
+                        byte_queue_read_ack(&desc->output, transfer_size);
+                    }
+                }
+            }
+        }
     }
 
     for (int i = 0; i < num_processes-1; i++) {
