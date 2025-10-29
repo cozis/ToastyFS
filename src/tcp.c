@@ -59,7 +59,7 @@ static void conn_init(Connection *conn, SOCKET fd, bool connecting)
 
 static void conn_free(Connection *conn)
 {
-    sys_closesocket(conn->fd);
+    CLOSE_SOCKET(conn->fd);
     byte_queue_free(&conn->input);
     byte_queue_free(&conn->output);
 }
@@ -91,7 +91,7 @@ void tcp_context_init(TCP *tcp)
 void tcp_context_free(TCP *tcp)
 {
     if (tcp->listen_fd != INVALID_SOCKET)
-        sys_closesocket(tcp->listen_fd);
+        CLOSE_SOCKET(tcp->listen_fd);
 }
 
 int tcp_index_from_tag(TCP *tcp, int tag)
@@ -307,7 +307,7 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
         connecting = false;
     } else {
         if (errno != EINPROGRESS) {
-            sys_closesocket(fd);
+            CLOSE_SOCKET(fd);
             return -1;
         }
         connecting = true;

@@ -1,3 +1,8 @@
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/file.h>
+
 #include "system.h"
 
 void *sys_malloc_(size_t len, char *file, int line)
@@ -21,6 +26,16 @@ void sys_free_(void *ptr, char *file, int line)
     free(ptr);
 }
 
+int sys_remove(char *path)
+{
+    return remove(path);
+}
+
+int sys_rename(char *oldpath, char *newpath)
+{
+    return rename(oldpath, newpath);
+}
+
 #ifdef _WIN32
 
 SOCKET sys_socket(int domain, int type, int protocol)
@@ -41,11 +56,6 @@ int sys_listen(SOCKET fd, int backlog)
 int sys_closesocket(SOCKET fd)
 {
     return closesocket(fd);
-}
-
-int sys_WSAPoll(struct pollfd *polled, int num_polled, int timeout)
-{
-    return WSAPoll(polled, num_polled, timeout);
 }
 
 SOCKET sys_accept(SOCKET fd, void *addr, int *addr_len)
@@ -150,17 +160,7 @@ int sys_listen(int fd, int backlog)
     return listen(fd, backlog);
 }
 
-int sys_close(int fd)
-{
-    return close(fd);
-}
-
-int sys_poll(struct pollfd *polled, int num_polled, int timeout)
-{
-    return poll(polled, num_polled, timeout);
-}
-
-int sys_accept(int fd, void *addr, int *addr_len)
+int sys_accept(int fd, void *addr, socklen_t *addr_len)
 {
     return accept(fd, addr, addr_len);
 }
@@ -220,9 +220,14 @@ int sys_read(int fd, char *dst, int len)
     return read(fd, dst, len);
 }
 
-int sys_stat(int fd, struct stat *buf)
+int sys_write(int fd, char *src, int len)
 {
-    return stat(fd, buf);
+    return write(fd, src, len);
+}
+
+int sys_fstat(int fd, struct stat *buf)
+{
+    return fstat(fd, buf);
 }
 
 int sys_mkstemp(char *path)
@@ -233,6 +238,11 @@ int sys_mkstemp(char *path)
 char* sys_realpath(char *path, char *dst)
 {
     return realpath(path, dst);
+}
+
+int sys_mkdir(char *path, mode_t mode)
+{
+    return mkdir(path, mode);
 }
 
 #endif

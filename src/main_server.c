@@ -2,8 +2,16 @@
 
 #include <string.h>
 
-#include "core/chunk_server.h"
-#include "core/metadata_server.h"
+#ifdef _WIN32
+#include <winsock2.h>
+#define POLL WSAPoll
+#else
+#include <poll.h>
+#define POLL poll
+#endif
+
+#include "chunk_server.h"
+#include "metadata_server.h"
 
 int metadata_server_main(int argc, char **argv)
 {

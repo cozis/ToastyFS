@@ -1,3 +1,4 @@
+#include <stddef.h>
 
 void *sys_malloc_ (size_t len,            char *file, int line);
 void *sys_realloc_(void *ptr, size_t len, char *file, int line);
@@ -7,24 +8,14 @@ void  sys_free_   (void *ptr,             char *file, int line);
 #define sys_realloc(ptr, len) sys_realloc_((ptr), (len), __FILE__, __LINE__)
 #define sys_free(ptr)         sys_free_   ((ptr),        __FILE__, __LINE__)
 
+int sys_remove(char *path);
+int sys_rename(char *oldpath, char *newpath);
+
 #ifdef _WIN32
 
-typedef union _LARGE_INTEGER {
-  struct {
-    DWORD LowPart;
-    LONG  HighPart;
-  } DUMMYSTRUCTNAME;
-  struct {
-    DWORD LowPart;
-    LONG  HighPart;
-  } u;
-  LONGLONG QuadPart;
-} LARGE_INTEGER;
-
-#define BOOL int
-#define WCHAR wchar_t
-#define SOCKET void*
-#define HANDLE void*
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <winsock2.h>
 
 SOCKET sys_socket           (int domain, int type, int protocol);
 int    sys_bind             (SOCKET fd, void *addr, size_t addr_len);
@@ -50,10 +41,17 @@ char*  sys__fullpath        (char *path, char *dst, int cap);
 
 #else
 
+#include <poll.h>
+#include <time.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+
 int   sys_socket            (int domain, int type, int protocol);
 int   sys_bind              (int fd, void *addr, size_t addr_len);
 int   sys_listen            (int fd, int backlog);
-int   sys_accept            (int fd, void *addr, int *addr_len);
+int   sys_accept            (int fd, void *addr, socklen_t *addr_len);
 int   sys_getsockopt        (int fd, int level, int optname, void *optval, socklen_t *optlen);
 int   sys_setsockopt        (int fd, int level, int optname, void *optval, socklen_t optlen);
 int   sys_recv              (int fd, void *dst, int len, int flags);
@@ -65,8 +63,10 @@ int   sys_close             (int fd);
 int   sys_flock             (int fd, int op);
 int   sys_fsync             (int fd);
 int   sys_read              (int fd, char *dst, int len);
-int   sys_stat              (int fd, struct stat *buf);
+int   sys_write             (int fd, char *src, int len);
+int   sys_fstat             (int fd, struct stat *buf);
 int   sys_mkstemp           (char *path);
 char* sys_realpath          (char *path, char *dst);
+int   sys_mkdir             (char *path, mode_t mode);
 
 #endif

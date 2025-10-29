@@ -820,7 +820,7 @@ int chunk_server_free(ChunkServer *state)
 int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled)
 {
     Event events[MAX_CONNS+1];
-    int num_events = tcp_translate_events(&state->tcp, contexts, polled, num_polled, events);
+    int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
 
     Time current_time = get_current_time();
     if (current_time == INVALID_TIME)
@@ -938,5 +938,5 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         }
     }
 
-    return tcp_register_events(&state->tcp, contexts, polled, num_polled);
+    return tcp_register_events(&state->tcp, contexts, polled);
 }

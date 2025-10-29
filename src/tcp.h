@@ -6,6 +6,14 @@
 #include "system.h"
 #include "byte_queue.h"
 
+#ifdef _WIN32
+#define CLOSE_SOCKET sys_closesocket
+#else
+#define SOCKET int
+#define INVALID_SOCKET -1
+#define CLOSE_SOCKET sys_close
+#endif
+
 #define MAX_CONNS 512
 
 typedef enum {

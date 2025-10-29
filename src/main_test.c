@@ -1,10 +1,18 @@
 #ifdef BUILD_TEST
 
-#include "core/chunk_server.h"
-#include "core/metadata_server.h"
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+#include "chunk_server.h"
+#include "metadata_server.h"
 
 #define MAX_PROCESSES 128
 #define MAX_DESCRIPTORS 1024
+#define MAX_ALLOCATIONS 128
 
 typedef enum {
     DESCRIPTOR_TYPE_EMPTY,
@@ -128,7 +136,7 @@ void descriptor_turn_socket_into_listener(Descriptor *desc, int backlog)
 
 void descriptor_turn_socket_into_connection(Descriptor *desc, int peer_process, int peer_fd)
 {
-    desc->type = DESCRIPTOR_TYPE_LISTENER_SOCKET;
+    desc->type = DESCRIPTOR_TYPE_CONNECTION_SOCKET;
     desc->pending = true;
     desc->peer_process = peer_process;
     desc->peer_fd = peer_fd;
@@ -151,7 +159,7 @@ void descriptor_free(Descriptor *desc)
         break;
 
         case DESCRIPTOR_TYPE_FILE:
-        close(desc->proxy_fd);
+        close(desc->real_fd);
         break;
 
         case DESCRIPTOR_TYPE_SOCKET:
@@ -365,6 +373,16 @@ void sys_free_(void *ptr, char *file, int line)
 
     current_process->at->mem_usage -= current_process->at->allocs[found].len;
     current_process->at->allocs[found] = current_process->at->allocs[--current_process->num_allocs];
+}
+
+int sys_remove(char *path)
+{
+    return remove(path);
+}
+
+int sys_rename(char *oldpath, char *newpath)
+{
+    return rename(oldpath, newpath);
 }
 
 #ifdef _WIN32
@@ -931,7 +949,7 @@ int sys_write(int fd, char *src, int len)
     }
 }
 
-int sys_stat(int fd, struct stat *buf)
+int sys_fstat(int fd, struct stat *buf)
 {
     Descriptor *desc = &current_process->dt->desc[fd];
     if (desc->type != DESCRIPTOR_TYPE_FILE) {
@@ -950,6 +968,11 @@ int sys_mkstemp(char *path)
 char* sys_realpath(char *path, char *dst)
 {
     return realpath(path, dst);
+}
+
+int sys_mkdir(char *path, mode_t mode)
+{
+    return mkdir(path, mode);
 }
 
 #endif
