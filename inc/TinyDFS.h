@@ -4,6 +4,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <poll.h>
+#endif
+
 typedef struct TinyDFS TinyDFS;
 
 typedef struct {
@@ -36,6 +42,10 @@ typedef struct {
 TinyDFS *tinydfs_init(char *addr, uint16_t port);
 void tinydfs_free(TinyDFS *tdfs);
 void tinydfs_wait(TinyDFS *tdfs, int opidx, TinyDFS_Result *result, int timeout);
+
+bool tinydfs_isdone(TinyDFS *tdfs, int opidx, TinyDFS_Result *result);
+int  tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled, int num_polled);
+
 int  tinydfs_submit_create (TinyDFS *tdfs, char *path, int path_len, bool is_dir, unsigned int chunk_size);
 int  tinydfs_submit_delete (TinyDFS *tdfs, char *path, int path_len);
 int  tinydfs_submit_list   (TinyDFS *tdfs, char *path, int path_len);

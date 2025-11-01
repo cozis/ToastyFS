@@ -3,8 +3,10 @@
 #include <stdlib.h>
 
 #ifdef _WIN32
+#define POLL WSAPoll
 #else
 #include <arpa/inet.h>
+#define POLL poll
 #endif
 
 #include "tcp.h"
@@ -560,7 +562,7 @@ static void process_event_for_list(TinyDFS *tdfs,
             return;
         }
 
-        char *name = reader.src + reader.cur;
+        char *name = (char*) reader.src + reader.cur;
         if (!binary_read(&reader, NULL, name_len)) {
             tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_LIST_ERROR };
             sys_free(entities);
@@ -922,38 +924,70 @@ translate_operation_into_result(TinyDFS *tdfs, int opidx, TinyDFS_Result *result
     return true;
 }
 
-void tinydfs_wait(TinyDFS *tdfs, int opidx, TinyDFS_Result *result, int timeout)
+bool tinydfs_isdone(TinyDFS *tdfs, int opidx, TinyDFS_Result *result)
 {
-    for (;;) {
+    if (opidx < 0) {
+        for (int i = 0, j = 0; j < tdfs->num_operations; i++) {
 
-        if (opidx < 0) {
-            for (int i = 0, j = 0; j < tdfs->num_operations; i++) {
+            if (tdfs->operations[i].type == OPERATION_TYPE_FREE)
+                continue;
+            j++;
 
-                if (tdfs->operations[i].type == OPERATION_TYPE_FREE)
-                    continue;
-                j++;
-
-                if (translate_operation_into_result(tdfs, i, result))
-                    return;
-            }
-        } else {
-            if (translate_operation_into_result(tdfs, opidx, result))
-                return;
+            if (translate_operation_into_result(tdfs, i, result))
+                return true;
         }
+    } else {
+        if (translate_operation_into_result(tdfs, opidx, result))
+            return true;
+    }
 
-        int num_events;
-        Event events[MAX_CONNS+1];
+    return false;
+}
 
-        num_events = tcp_process_events(&tdfs->tcp, events);
-        for (int i = 0; i < num_events; i++) {
-            int conn_idx = events[i].conn_idx;
-            switch (events[i].type) {
+int tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled, int num_polled)
+{
+    int num_events;
+    Event events[MAX_CONNS+1];
 
-                case EVENT_CONNECT:
-                break;
+    num_events = tcp_translate_events(&tdfs->tcp, events, contexts, polled, num_polled);
+    for (int i = 0; i < num_events; i++) {
+        int conn_idx = events[i].conn_idx;
+        switch (events[i].type) {
 
-                case EVENT_DISCONNECT:
-                {
+            case EVENT_CONNECT:
+            break;
+
+            case EVENT_DISCONNECT:
+            {
+                RequestQueue *reqs;
+
+                int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
+                if (tag == TAG_METADATA_SERVER_TO_CLIENT)
+                    reqs = &tdfs->metadata_server.reqs;
+                else {
+                    assert(tag > -1);
+                    reqs = &tdfs->chunk_servers[tag].reqs;
+                }
+
+                for (Request req; request_queue_pop(reqs, &req) == 0; )
+                    process_event(tdfs, req.opidx, req.tag, (ByteView) { NULL, 0 });
+            }
+            break;
+
+            case EVENT_MESSAGE:
+            {
+                for (;;) {
+
+                    ByteView msg;
+                    uint16_t msg_type;
+                    int ret = tcp_next_message(&tdfs->tcp, conn_idx, &msg, &msg_type);
+                    if (ret == 0)
+                        break;
+                    if (ret < 0) {
+                        tcp_close(&tdfs->tcp, conn_idx);
+                        break;
+                    }
+
                     RequestQueue *reqs;
 
                     int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
@@ -964,46 +998,32 @@ void tinydfs_wait(TinyDFS *tdfs, int opidx, TinyDFS_Result *result, int timeout)
                         reqs = &tdfs->chunk_servers[tag].reqs;
                     }
 
-                    for (Request req; request_queue_pop(reqs, &req) == 0; )
-                        process_event(tdfs, req.opidx, req.tag, (ByteView) { NULL, 0 });
-                }
-                break;
-
-                case EVENT_MESSAGE:
-                {
-                    for (;;) {
-
-                        ByteView msg;
-                        uint16_t msg_type;
-                        int ret = tcp_next_message(&tdfs->tcp, conn_idx, &msg, &msg_type);
-                        if (ret == 0)
-                            break;
-                        if (ret < 0) {
-                            tcp_close(&tdfs->tcp, conn_idx);
-                            break;
-                        }
-
-                        RequestQueue *reqs;
-
-                        int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
-                        if (tag == TAG_METADATA_SERVER_TO_CLIENT)
-                            reqs = &tdfs->metadata_server.reqs;
-                        else {
-                            assert(tag > -1);
-                            reqs = &tdfs->chunk_servers[tag].reqs;
-                        }
-
-                        Request req;
-                        if (request_queue_pop(reqs, &req) < 0) {
-                            UNREACHABLE;
-                        }
-                        process_event(tdfs, req.opidx, req.tag, msg);
-
-                        tcp_consume_message(&tdfs->tcp, conn_idx);
+                    Request req;
+                    if (request_queue_pop(reqs, &req) < 0) {
+                        UNREACHABLE;
                     }
+                    process_event(tdfs, req.opidx, req.tag, msg);
+
+                    tcp_consume_message(&tdfs->tcp, conn_idx);
                 }
-                break;
             }
+            break;
         }
+    }
+
+    return tcp_register_events(&tdfs->tcp, contexts, polled);
+}
+
+void tinydfs_wait(TinyDFS *tdfs, int opidx, TinyDFS_Result *result, int timeout)
+{
+    void *contexts[MAX_CONNS+1];
+    struct pollfd polled[MAX_CONNS+1];
+    int num_polled;
+
+    num_polled = tinydfs_process_events(tdfs, contexts, polled, 0);
+
+    while (!tinydfs_isdone(tdfs, opidx, result)) {
+        POLL(polled, num_polled, -1);
+        num_polled = tinydfs_process_events(tdfs, contexts, polled, num_polled);
     }
 }

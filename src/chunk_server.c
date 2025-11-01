@@ -118,6 +118,7 @@ static int chunk_store_add(ChunkStore *store, string data)
     return store_chunk(store, data, &dummy);
 }
 
+#if 0
 static void chunk_store_remove(ChunkStore *store, SHA256 hash)
 {
     char buf[PATH_MAX];
@@ -125,6 +126,7 @@ static void chunk_store_remove(ChunkStore *store, SHA256 hash)
 
     remove_file_or_dir(path);
 }
+#endif
 
 static int chunk_store_patch(ChunkStore *store, SHA256 target_chunk,
 	uint64_t patch_off, string patch, SHA256 *new_hash)
@@ -279,9 +281,6 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
         // Get paths for main and orphaned locations
         hash2path(&state->store, add_list[i], main_path);
         snprintf(orphaned_path, sizeof(orphaned_path), "%s/orphaned/", state->store.path);
-        string orphaned_dir = { orphaned_path, strlen(orphaned_path) };
-        string orphaned_file = hash2path(&state->store, add_list[i], orphaned_path);
-        orphaned_file.ptr = orphaned_path;
 
         // Build orphaned path properly
         strcpy(orphaned_path, state->store.path);
@@ -541,10 +540,10 @@ process_chunk_server_download_success(ChunkServer *state, int conn_idx, ByteView
         return -1;
 
     // Read the chunk data
-    if (reader.cur + data_len > reader.len)
+    if (data_len > (uint32_t) (reader.len - reader.cur))
         return -1;
 
-    string data = { reader.src + reader.cur, data_len };
+    string data = { (char*) reader.src + reader.cur, data_len };
 
     // Store the downloaded chunk
     if (chunk_store_add(&state->store, data) < 0) {
@@ -617,7 +616,7 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, &target_len, sizeof(target_len)))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("Invalid message"));
 
-    string data = { reader.src + reader.cur, target_len };
+    string data = { (char*) reader.src + reader.cur, target_len };
     if (!binary_read(&reader, NULL, target_len))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("Invalid message"));
 
@@ -678,7 +677,7 @@ process_client_upload_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, &data_len, sizeof(data_len)))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_UPLOAD_CHUNK_ERROR, S("Invalid message"));
 
-    string data = { reader.src + reader.cur, data_len };
+    string data = { (char*) reader.src + reader.cur, data_len };
 
     // Check that there are no more bytes to read
     if (binary_read(&reader, NULL, 1))

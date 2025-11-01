@@ -1,22 +1,3 @@
-#include <stdio.h>
-#include <limits.h>
-#include <stdlib.h>
-#include <assert.h>
-
-#ifdef __linux__
-#include <fcntl.h>
-#include <errno.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/file.h>
-#include <sys/stat.h>
-#endif
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
-
 #include "system.h"
 #include "file_system.h"
 
@@ -172,6 +153,8 @@ int file_size(Handle fd, size_t *len)
 #endif
 }
 
+// TODO: port to windows
+#ifndef _WIN32
 // TODO: test this
 static string parent_path(string path)
 {
@@ -189,7 +172,6 @@ static string parent_path(string path)
 
     return path;
 }
-
 static int write_bytes(int fd, string data)
 {
     size_t written = 0;
@@ -205,7 +187,6 @@ static int write_bytes(int fd, string data)
     assert((size_t) data.len == written);
     return 0;
 }
-
 int file_write_atomic(string path, string content)
 {
     string parent = parent_path(path);
@@ -251,6 +232,7 @@ int file_write_atomic(string path, string content)
     }
     return 0;
 }
+#endif
 
 int create_dir(string path)
 {
@@ -261,7 +243,7 @@ int create_dir(string path)
     zt[path.len] = '\0';
 
 #ifdef _WIN32
-    if (sys_mkdir(zt) < 0)
+    if (sys__mkdir(zt) < 0)
         return -1;
 #else
     if (sys_mkdir(zt, 0766))

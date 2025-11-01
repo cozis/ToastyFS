@@ -1,72 +1,134 @@
-#include <stddef.h>
-
-void *sys_malloc_ (size_t len,            char *file, int line);
-void *sys_realloc_(void *ptr, size_t len, char *file, int line);
-void  sys_free_   (void *ptr,             char *file, int line);
-
-#define sys_malloc(len)       sys_malloc_ ((len),        __FILE__, __LINE__)
-#define sys_realloc(ptr, len) sys_realloc_((ptr), (len), __FILE__, __LINE__)
-#define sys_free(ptr)         sys_free_   ((ptr),        __FILE__, __LINE__)
-
-int sys_remove(char *path);
-int sys_rename(char *oldpath, char *newpath);
+#include <stdio.h>
 
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN
+
+#include <direct.h> // _mkdir
 #include <windows.h>
 #include <winsock2.h>
-
-SOCKET sys_socket           (int domain, int type, int protocol);
-int    sys_bind             (SOCKET fd, void *addr, size_t addr_len);
-int    sys_listen           (SOCKET fd, int backlog);
-int    sys_closesocket      (SOCKET fd);
-SOCKET sys_accept           (SOCKET fd, void *addr, int *addr_len);
-int    sys_getsockopt       (SOCKET fd, int level, int optname, void *optval, int *optlen);
-int    sys_setsockopt       (SOCKET fd, int level, int optname, void *optval, int optlen);
-int    sys_recv             (SOCKET fd, void *dst, int len, int flags);
-int    sys_send             (SOCKET fd, void *src, int len, int flags);
-int    sys_connect          (SOCKET fd, void *addr, size_t addr_len);
-BOOL   sys_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
-BOOL   sys_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
-HANDLE sys_CreateFileW      (WCHAR *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
-BOOL   sys_CloseHandle      (HANDLE handle);
-BOOL   sys_LockFile         (HANDLE handle);
-BOOL   sys_UnlockFile       (HANDLE handle);
-BOOL   sys_FlushFileBuffers (HANDLE handle);
-BOOL   sys_ReadFile         (HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov);
-BOOL   sys_WriteFile        (HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov);
-BOOL   sys_GetFileSizeEx    (HANDLE handle, LARGE_INTEGER *buf);
-char*  sys__fullpath        (char *path, char *dst, int cap);
+#include <ws2tcpip.h>
 
 #else
 
 #include <poll.h>
 #include <time.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-int   sys_socket            (int domain, int type, int protocol);
-int   sys_bind              (int fd, void *addr, size_t addr_len);
-int   sys_listen            (int fd, int backlog);
-int   sys_accept            (int fd, void *addr, socklen_t *addr_len);
-int   sys_getsockopt        (int fd, int level, int optname, void *optval, socklen_t *optlen);
-int   sys_setsockopt        (int fd, int level, int optname, void *optval, socklen_t optlen);
-int   sys_recv              (int fd, void *dst, int len, int flags);
-int   sys_send              (int fd, void *src, int len, int flags);
-int   sys_connect           (int fd, void *addr, size_t addr_len);
-int   sys_clock_gettime     (clockid_t clockid, struct timespec *tp);
-int   sys_open              (char *path, int flags, int mode);
-int   sys_close             (int fd);
-int   sys_flock             (int fd, int op);
-int   sys_fsync             (int fd);
-int   sys_read              (int fd, char *dst, int len);
-int   sys_write             (int fd, char *src, int len);
-int   sys_fstat             (int fd, struct stat *buf);
-int   sys_mkstemp           (char *path);
-char* sys_realpath          (char *path, char *dst);
-int   sys_mkdir             (char *path, mode_t mode);
+#define SOCKET int
+#define INVALID_SOCKET ((SOCKET) -1)
+
+#endif
+
+#ifdef BUILD_TEST
+
+int    spawn_simulated_process(char *args);
+void   update_simulation(void);
+void   cleanup_simulation(void);
+
+SOCKET mock_socket(int domain, int type, int protocol);
+int    mock_bind(SOCKET fd, void *addr, size_t addr_len);
+int    mock_listen(SOCKET fd, int backlog);
+SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len);
+int    mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *optlen);
+int    mock_setsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t optlen);
+int    mock_recv(SOCKET fd, void *dst, int len, int flags);
+int    mock_send(SOCKET fd, void *src, int len, int flags);
+int    mock_connect(SOCKET fd, void *addr, size_t addr_len);
+
+// Common
+#define sys_malloc           mock_malloc
+#define sys_realloc          mock_realloc
+#define sys_free             mock_free
+#define sys_remove           mock_remove
+#define sys_rename           mock_rename
+#define sys_socket           mock_socket
+#define sys_bind             mock_bind
+#define sys_listen           mock_listen
+#define sys_accept           mock_accept
+#define sys_getsockopt       mock_getsockopt
+#define sys_setsockopt       mock_setsockopt
+#define sys_recv             mock_recv
+#define sys_send             mock_send
+#define sys_connect          mock_connect
+
+// Windows
+#define sys__mkdir           mock__mkdir
+#define sys_closesocket      mock_closesocket
+#define sys_CreateFileW      mock_CreateFileW
+#define sys_CloseHandle      mock_CloseHandle
+#define sys_LockFile         mock_LockFile
+#define sys_UnlockFile       mock_UnlockFile
+#define sys_FlushFileBuffers mock_FlushFileBuffers
+#define sys_ReadFile         mock_ReadFile
+#define sys_WriteFile        mock_WriteFile
+#define sys_GetFileSizeEx    mock_GetFileSizeEx
+#define sys__fullpath        mock__fullpath
+#define sys_QueryPerformanceCounter   mock_QueryPerformanceCounter
+#define sys_QueryPerformanceFrequency mock_QueryPerformanceFrequency
+
+// Linux
+#define sys_mkdir            mock_mkdir
+#define sys_open             mock_open
+#define sys_close            mock_close
+#define sys_flock            mock_flock
+#define sys_fsync            mock_fsync
+#define sys_read             mock_read
+#define sys_write            mock_write
+#define sys_fstat            mock_fstat
+#define sys_mkstemp          mock_mkstemp
+#define sys_realpath         mock_realpath
+#define sys_clock_gettime    mock_clock_gettime
+
+#else
+
+// Common
+#define sys_malloc           malloc
+#define sys_realloc          realloc
+#define sys_free             free
+#define sys_remove           remove
+#define sys_rename           rename
+#define sys_socket           socket
+#define sys_bind             bind
+#define sys_listen           listen
+#define sys_accept           accept
+#define sys_getsockopt       getsockopt
+#define sys_setsockopt       setsockopt
+#define sys_recv             recv
+#define sys_send             send
+#define sys_connect          connect
+
+// Windows
+#define sys__mkdir           _mkdir
+#define sys_closesocket      closesocket
+#define sys_CreateFileW      CreateFileW
+#define sys_CloseHandle      CloseHandle
+#define sys_LockFile         LockFile
+#define sys_UnlockFile       UnlockFile
+#define sys_FlushFileBuffers FlushFileBuffers
+#define sys_ReadFile         ReadFile
+#define sys_WriteFile        WriteFile
+#define sys_GetFileSizeEx    GetFileSizeEx
+#define sys__fullpath        _fullpath
+#define sys_QueryPerformanceCounter   QueryPerformanceCounter
+#define sys_QueryPerformanceFrequency QueryPerformanceFrequency
+
+// Linux
+#define sys_mkdir            mkdir
+#define sys_open             open
+#define sys_close            close
+#define sys_flock            flock
+#define sys_fsync            fsync
+#define sys_read             read
+#define sys_write            write
+#define sys_fstat            fstat
+#define sys_mkstemp          mkstemp
+#define sys_realpath         realpath
+#define sys_clock_gettime    clock_gettime
 
 #endif
