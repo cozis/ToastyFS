@@ -139,6 +139,8 @@ struct Process {
     int num_allocs;
     Allocation allocs[MAX_ALLOCATIONS];
 
+    Time wakeup_time;
+
     bool leader;
     union {
         ChunkServer    chunk_server;
@@ -149,9 +151,7 @@ struct Process {
 static int num_processes = 0;
 static Process *processes[MAX_PROCESSES];
 static Process *current_process = NULL;
-
-// Simulated clock for deterministic time
-static struct timespec simulated_time = {0, 0};
+static uint64_t current_time = 1;
 
 // Helper to set socket errors correctly on Windows vs Linux
 #ifdef _WIN32
@@ -235,6 +235,12 @@ static bool is_space(char c)
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
+void startup_simulation(void)
+{
+    num_processes = 0;
+    current_process = NULL;
+}
+
 int spawn_simulated_process(char *args)
 {
     if (num_processes == MAX_PROCESSES)
@@ -246,6 +252,7 @@ int spawn_simulated_process(char *args)
         return -1;
     memcpy(mem, args, args_len);
     mem[args_len] = '\0';
+    args = mem;
 
     int argc = 0;
     char *argv[MAX_ARGS];
@@ -277,17 +284,28 @@ int spawn_simulated_process(char *args)
     process->num_desc = 0;
     process->num_allocs = 0;
 
+    for (int i = 0; i < MAX_DESCRIPTORS; i++)
+        process->desc[i].type = DESC_EMPTY;
+
     void *contexts[MAX_CONNS+1];
     struct pollfd polled[MAX_CONNS+1];
     int num_polled;
 
+    current_process = process;
+    int timeout = -1;
     if (leader) {
-        num_polled = metadata_server_init(&process->metadata_server, argc, argv, contexts, polled);
+        num_polled = metadata_server_init(&process->metadata_server, argc, argv, contexts, polled, &timeout);
     } else {
-        num_polled = chunk_server_init(&process->chunk_server, argc, argv, contexts, polled);
+        num_polled = chunk_server_init(&process->chunk_server, argc, argv, contexts, polled, &timeout);
     }
+    current_process = NULL;
     if (num_polled < 0) {
         // TODO
+    }
+    if (timeout < 0) {
+        process->wakeup_time = INVALID_TIME;
+    } else {
+        process->wakeup_time = current_time + timeout;
     }
 
     process_poll_array(process, contexts, polled, num_polled);
@@ -442,12 +460,14 @@ static int data_queue_write(DataQueue *queue, char *src, int len)
 
 void update_simulation(void)
 {
+    // TODO: sort processes based on their wakeup time
+
     for (int i = 0; i < num_processes; i++) {
         current_process = processes[i];
 
         void *contexts[MAX_CONNS+1];
         struct pollfd polled[MAX_CONNS+1];
-        int num_polled;
+        int num_polled = 0;
 
         for (int j = 0, k = 0; k < current_process->num_desc; j++) {
 
@@ -470,14 +490,21 @@ void update_simulation(void)
             }
         }
 
+        int timeout = -1;
         if (current_process->leader) {
-            num_polled = metadata_server_step(&current_process->metadata_server, contexts, polled, num_polled);
+            num_polled = metadata_server_step(&current_process->metadata_server, contexts, polled, num_polled, &timeout);
         } else {
-            num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled);
+            num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled, &timeout);
         }
 
         if (num_polled < 0) {
             // TODO
+        }
+
+        if (timeout < 0) {
+            current_process->wakeup_time = INVALID_TIME;
+        } else {
+            current_process->wakeup_time = current_time + timeout;
         }
 
         process_poll_array(current_process, contexts, polled, num_polled);
@@ -688,7 +715,6 @@ SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
     Descriptor *peer = handle_to_desc(peer_handle);
     if (peer == NULL) {
         // Peer closed without removing itself from the accept queue!
-        // Try next connection in queue
         SET_SOCKET_ERROR(SOCKET_ERROR_CONNABORTED);  // Connection aborted
         return INVALID_SOCKET;
     }
