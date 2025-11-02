@@ -153,6 +153,45 @@ static Process *current_process = NULL;
 // Simulated clock for deterministic time
 static struct timespec simulated_time = {0, 0};
 
+// Helper to set socket errors correctly on Windows vs Linux
+#ifdef _WIN32
+#define SET_SOCKET_ERROR(err) WSASetLastError(err)
+#define SOCKET_ERROR_WOULDBLOCK WSAEWOULDBLOCK
+#define SOCKET_ERROR_AFNOSUPPORT WSAEAFNOSUPPORT
+#define SOCKET_ERROR_MFILE WSAEMFILE
+#define SOCKET_ERROR_BADF WSAEBADF
+#define SOCKET_ERROR_NOTSOCK WSAENOTSOCK
+#define SOCKET_ERROR_INVAL WSAEINVAL
+#define SOCKET_ERROR_ADDRINUSE WSAEADDRINUSE
+#define SOCKET_ERROR_DESTADDRREQ WSAEDESTADDRREQ
+#define SOCKET_ERROR_CONNABORTED WSAECONNABORTED
+#define SOCKET_ERROR_ISCONN WSAEISCONN
+#define SOCKET_ERROR_INPROGRESS WSAEINPROGRESS
+#define SOCKET_ERROR_OPNOTSUPP WSAEOPNOTSUPP
+#define SOCKET_ERROR_NOTCONN WSAENOTCONN
+#define SOCKET_ERROR_CONNRESET WSAECONNRESET
+#define SOCKET_ERROR_PROTOOPT WSAENOPROTOOPT
+#define SOCKET_ERROR_PIPE WSAESHUTDOWN  // Closest to EPIPE on Windows
+#else
+#define SET_SOCKET_ERROR(err) (errno = (err))
+#define SOCKET_ERROR_WOULDBLOCK EWOULDBLOCK
+#define SOCKET_ERROR_AFNOSUPPORT EAFNOSUPPORT
+#define SOCKET_ERROR_MFILE EMFILE
+#define SOCKET_ERROR_BADF EBADF
+#define SOCKET_ERROR_NOTSOCK ENOTSOCK
+#define SOCKET_ERROR_INVAL EINVAL
+#define SOCKET_ERROR_ADDRINUSE EADDRINUSE
+#define SOCKET_ERROR_DESTADDRREQ EDESTADDRREQ
+#define SOCKET_ERROR_CONNABORTED ECONNABORTED
+#define SOCKET_ERROR_ISCONN EISCONN
+#define SOCKET_ERROR_INPROGRESS EINPROGRESS
+#define SOCKET_ERROR_OPNOTSUPP EOPNOTSUPP
+#define SOCKET_ERROR_NOTCONN ENOTCONN
+#define SOCKET_ERROR_CONNRESET ECONNRESET
+#define SOCKET_ERROR_PROTOOPT ENOPROTOOPT
+#define SOCKET_ERROR_PIPE EPIPE
+#endif
+
 static void process_poll_array(Process *process,
     void **contexts, struct pollfd *polled, int num_polled)
 {
@@ -525,12 +564,12 @@ int mock_rename(char *oldpath, char *newpath)
 SOCKET mock_socket(int domain, int type, int protocol)
 {
     if (domain != AF_INET || type != SOCK_STREAM || protocol != 0) {
-        errno = EAFNOSUPPORT;  // Address family not supported
+        SET_SOCKET_ERROR(SOCKET_ERROR_AFNOSUPPORT);  // Address family not supported
         return INVALID_SOCKET;
     }
 
     if (current_process->num_desc == MAX_DESCRIPTORS) {
-        errno = EMFILE;  // Too many open files
+        SET_SOCKET_ERROR(SOCKET_ERROR_MFILE);  // Too many open files
         return INVALID_SOCKET;
     }
 
@@ -565,20 +604,20 @@ static DescriptorAddress convert_address(void *addr, size_t addr_len)
 int mock_bind(SOCKET fd, void *addr, size_t addr_len)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        errno = EBADF;  // Bad file descriptor
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_SOCKET) {
-        errno = ENOTSOCK;  // Socket operation on non-socket
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTSOCK);  // Socket operation on non-socket
         return -1;
     }
 
     DescriptorAddress address = convert_address(addr, addr_len);
     if (address.type == DESC_ADDR_VOID) {
-        errno = EINVAL;  // Invalid argument
+        SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);  // Invalid argument
         return -1;
     }
 
@@ -590,7 +629,7 @@ int mock_bind(SOCKET fd, void *addr, size_t addr_len)
                 if (address.type == DESC_ADDR_IPV4 &&
                     other->address.ipv4.sin_port == address.ipv4.sin_port &&
                     other->address.ipv4.sin_addr.s_addr == address.ipv4.sin_addr.s_addr) {
-                    errno = EADDRINUSE;  // Address already in use
+                    SET_SOCKET_ERROR(SOCKET_ERROR_ADDRINUSE);  // Address already in use
                     return -1;
                 }
             }
@@ -604,19 +643,19 @@ int mock_bind(SOCKET fd, void *addr, size_t addr_len)
 int mock_listen(SOCKET fd, int backlog)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        errno = EBADF;  // Bad file descriptor
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_SOCKET) {
-        errno = ENOTSOCK;  // Socket operation on non-socket
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTSOCK);  // Socket operation on non-socket
         return -1;
     }
 
     if (desc->address.type == DESC_ADDR_VOID) {
-        errno = EDESTADDRREQ;  // Destination address required (socket not bound)
+        SET_SOCKET_ERROR(SOCKET_ERROR_DESTADDRREQ);  // Destination address required (socket not bound)
         return -1;
     }
 
@@ -629,20 +668,20 @@ int mock_listen(SOCKET fd, int backlog)
 SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        errno = EBADF;  // Bad file descriptor
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return INVALID_SOCKET;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_LISTEN_SOCKET) {
-        errno = EINVAL;  // Invalid argument (not a listening socket)
+        SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);  // Invalid argument (not a listening socket)
         return INVALID_SOCKET;
     }
 
     DescriptorHandle peer_handle;
     if (!accept_queue_pop(&desc->accept_queue, &peer_handle)) {
-        errno = EWOULDBLOCK;  // Would block (no pending connections)
+        SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);  // Would block (no pending connections)
         return INVALID_SOCKET;
     }
 
@@ -650,12 +689,12 @@ SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
     if (peer == NULL) {
         // Peer closed without removing itself from the accept queue!
         // Try next connection in queue
-        errno = ECONNABORTED;  // Connection aborted
+        SET_SOCKET_ERROR(SOCKET_ERROR_CONNABORTED);  // Connection aborted
         return INVALID_SOCKET;
     }
 
     if (current_process->num_desc == MAX_DESCRIPTORS) {
-        errno = EMFILE;  // Too many open files
+        SET_SOCKET_ERROR(SOCKET_ERROR_MFILE);  // Too many open files
         return INVALID_SOCKET;
     }
     int new_idx = 0;
@@ -683,27 +722,27 @@ SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
 int mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *optlen)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        errno = EBADF;  // Bad file descriptor
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type == DESC_EMPTY) {
-        errno = EBADF;
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);
         return -1;
     }
 
     // Only support SOL_SOCKET level for now
     if (level != SOL_SOCKET) {
-        errno = ENOPROTOOPT;  // Protocol not available
+        SET_SOCKET_ERROR(SOCKET_ERROR_PROTOOPT);  // Protocol not available
         return -1;
     }
 
     // Support SO_ERROR option
     if (optname == SO_ERROR) {
         if (*optlen < sizeof(int)) {
-            errno = EINVAL;
+            SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);
             return -1;
         }
         *(int*)optval = 0;  // No error
@@ -711,27 +750,27 @@ int mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *
         return 0;
     }
 
-    errno = ENOPROTOOPT;
+    SET_SOCKET_ERROR(SOCKET_ERROR_PROTOOPT);
     return -1;
 }
 
 int mock_setsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t optlen)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        errno = EBADF;  // Bad file descriptor
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type == DESC_EMPTY) {
-        errno = EBADF;
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);
         return -1;
     }
 
     // Only support SOL_SOCKET level for now
     if (level != SOL_SOCKET) {
-        errno = ENOPROTOOPT;  // Protocol not available
+        SET_SOCKET_ERROR(SOCKET_ERROR_PROTOOPT);  // Protocol not available
         return -1;
     }
 
@@ -747,31 +786,31 @@ int mock_setsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t o
 int mock_recv(SOCKET fd, void *dst, int len, int flags)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        errno = EBADF;  // Bad file descriptor
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     if (flags != 0) {
-        errno = EOPNOTSUPP;  // Operation not supported
+        SET_SOCKET_ERROR(SOCKET_ERROR_OPNOTSUPP);  // Operation not supported
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_CONNECTION_SOCKET) {
-        errno = ENOTCONN;  // Transport endpoint is not connected
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTCONN);  // Transport endpoint is not connected
         return -1;
     }
 
     if (desc->connection_state != CONNECTION_ESTABLISHED) {
-        errno = ENOTCONN;
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTCONN);
         return -1;
     }
 
     Descriptor *peer = handle_to_desc(desc->connection_peer);
     if (peer == NULL) {
-        errno = ECONNRESET;  // Connection reset by peer
-        return -1;
+        // Peer closed - return 0 to indicate orderly shutdown
+        return 0;
     }
 
     DataQueue *input_data = &peer->output_data;
@@ -779,7 +818,7 @@ int mock_recv(SOCKET fd, void *dst, int len, int flags)
 
     // If no data available, would block
     if (bytes_read == 0) {
-        errno = EWOULDBLOCK;
+        SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);
         return -1;
     }
 
@@ -789,31 +828,31 @@ int mock_recv(SOCKET fd, void *dst, int len, int flags)
 int mock_send(SOCKET fd, void *src, int len, int flags)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        errno = EBADF;  // Bad file descriptor
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     if (flags != 0) {
-        errno = EOPNOTSUPP;  // Operation not supported
+        SET_SOCKET_ERROR(SOCKET_ERROR_OPNOTSUPP);  // Operation not supported
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_CONNECTION_SOCKET) {
-        errno = ENOTCONN;  // Transport endpoint is not connected
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTCONN);  // Transport endpoint is not connected
         return -1;
     }
 
     if (desc->connection_state != CONNECTION_ESTABLISHED) {
-        errno = ENOTCONN;
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTCONN);
         return -1;
     }
 
     // Check if peer is still connected
     Descriptor *peer = handle_to_desc(desc->connection_peer);
     if (peer == NULL) {
-        errno = EPIPE;  // Broken pipe
+        SET_SOCKET_ERROR(SOCKET_ERROR_PIPE);  // Broken pipe / connection shutdown
         return -1;
     }
 
@@ -822,7 +861,7 @@ int mock_send(SOCKET fd, void *src, int len, int flags)
 
     // If queue is full, we would block
     if (bytes_written < len) {
-        errno = EWOULDBLOCK;
+        SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);
         return bytes_written > 0 ? bytes_written : -1;
     }
 
@@ -832,14 +871,14 @@ int mock_send(SOCKET fd, void *src, int len, int flags)
 int mock_connect(SOCKET fd, void *addr, size_t addr_len)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        errno = EBADF;  // Bad file descriptor
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_SOCKET) {
-        errno = EISCONN;  // Transport endpoint is already connected
+        SET_SOCKET_ERROR(SOCKET_ERROR_ISCONN);  // Transport endpoint is already connected
         return -1;
     }
 
@@ -847,12 +886,12 @@ int mock_connect(SOCKET fd, void *addr, size_t addr_len)
     desc->connection_state = CONNECTION_DELAYED;
     desc->connect_address = convert_address(addr, addr_len);
     if (desc->connect_address.type == DESC_ADDR_VOID) {
-        errno = EINVAL;  // Invalid argument
+        SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);  // Invalid argument
         return -1;
     }
 
-    // Return EINPROGRESS to indicate non-blocking connection in progress
-    errno = EINPROGRESS;
+    // Return EINPROGRESS/WSAEWOULDBLOCK to indicate non-blocking connection in progress
+    SET_SOCKET_ERROR(SOCKET_ERROR_INPROGRESS);
     return -1;
 }
 
