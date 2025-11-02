@@ -1,3 +1,5 @@
+#ifdef BUILD_TEST
+
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,9 +7,7 @@
 #include "system.h"
 #include "chunk_server.h"
 #include "metadata_server.h"
-#ifdef BUILD_TEST
 #include "simulation_client.h"
-#endif
 
 #ifdef _WIN32
 #define NATIVE_HANDLE HANDLE
@@ -137,9 +137,7 @@ typedef struct {
 typedef enum {
     PROCESS_TYPE_METADATA_SERVER,
     PROCESS_TYPE_CHUNK_SERVER,
-#ifdef BUILD_TEST
     PROCESS_TYPE_CLIENT,
-#endif
 } ProcessType;
 
 struct Process {
@@ -156,9 +154,7 @@ struct Process {
     union {
         ChunkServer      chunk_server;
         MetadataServer   metadata_server;
-#ifdef BUILD_TEST
         SimulationClient simulation_client;
-#endif
     };
 };
 
@@ -250,7 +246,6 @@ static bool is_leader(int argc, char **argv)
     return false;
 }
 
-#ifdef BUILD_TEST
 static bool is_client(int argc, char **argv)
 {
     for (int i = 0; i < argc; i++)
@@ -258,7 +253,6 @@ static bool is_client(int argc, char **argv)
             return true;
     return false;
 }
-#endif
 
 #define MAX_ARGS 128
 
@@ -307,21 +301,16 @@ int spawn_simulated_process(char *args)
     }
 
     bool leader = is_leader(argc, argv);
-#ifdef BUILD_TEST
     bool client = is_client(argc, argv);
-#endif
 
     Process *process = malloc(sizeof(Process));
     if (process == NULL)
         return -1;
 
     // Determine process type
-#ifdef BUILD_TEST
     if (client) {
         process->type = PROCESS_TYPE_CLIENT;
-    } else
-#endif
-    if (leader) {
+    } else if (leader) {
         process->type = PROCESS_TYPE_METADATA_SERVER;
     } else {
         process->type = PROCESS_TYPE_CHUNK_SERVER;
@@ -347,11 +336,9 @@ int spawn_simulated_process(char *args)
         case PROCESS_TYPE_CHUNK_SERVER:
             num_polled = chunk_server_init(&process->chunk_server, argc, argv, contexts, polled, &timeout);
             break;
-#ifdef BUILD_TEST
         case PROCESS_TYPE_CLIENT:
             num_polled = simulation_client_init(&process->simulation_client, argc, argv, contexts, polled, &timeout);
             break;
-#endif
         default:
             num_polled = -1;
             break;
@@ -383,11 +370,9 @@ static void free_process(Process *process)
         case PROCESS_TYPE_CHUNK_SERVER:
             chunk_server_free(&process->chunk_server);
             break;
-#ifdef BUILD_TEST
         case PROCESS_TYPE_CLIENT:
             simulation_client_free(&process->simulation_client);
             break;
-#endif
     }
     free(process);
 }
@@ -570,11 +555,9 @@ void update_simulation(void)
             case PROCESS_TYPE_CHUNK_SERVER:
                 num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled, &timeout);
                 break;
-#ifdef BUILD_TEST
             case PROCESS_TYPE_CLIENT:
                 num_polled = simulation_client_step(&current_process->simulation_client, contexts, polled, num_polled, &timeout);
                 break;
-#endif
         }
 
         if (num_polled < 0) {
@@ -1481,4 +1464,6 @@ int mock_mkdir(char *path, mode_t mode)
     return mkdir(path, mode);
 }
 
-#endif
+#endif // !_WIN32
+
+#endif // BUILD_TEST
