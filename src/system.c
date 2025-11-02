@@ -890,11 +890,11 @@ HANDLE mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess,
 
 BOOL mock_CloseHandle(HANDLE handle)
 {
-    if (fd == INVALID_SOCKET) {
+    if (handle == INVALID_HANDLE_VALUE) {
         // TODO
         return -1;
     }
-    int idx = (int) fd;
+    int idx = (int) handle;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -912,11 +912,11 @@ BOOL mock_LockFile(HANDLE hFile,
     DWORD nNumberOfBytesToLockLow,
     DWORD nNumberOfBytesToLockHigh)
 {
-    if (handle == INVALID_HANDLE_VALUE) {
+    if (hFile == INVALID_HANDLE_VALUE) {
         // TODO
         return FALSE;
     }
-    int idx = (int) handle;
+    int idx = (int) hFile;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -939,11 +939,11 @@ BOOL mock_UnlockFile(
     DWORD  nNumberOfBytesToUnlockLow,
     DWORD  nNumberOfBytesToUnlockHigh)
 {
-    if (handle == INVALID_HANDLE_VALUE) {
+    if (hFile == INVALID_HANDLE_VALUE) {
         // TODO
         return FALSE;
     }
-    int idx = (int) handle;
+    int idx = (int) hFile;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1007,7 +1007,7 @@ BOOL mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED 
         return -1;
     }
 
-    return WriteFile(desc->real_fd, src, len, num ov);
+    return WriteFile(desc->real_fd, src, len, num, ov);
 }
 
 BOOL mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf)
