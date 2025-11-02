@@ -150,6 +150,48 @@ static int num_processes = 0;
 static Process *processes[MAX_PROCESSES];
 static Process *current_process = NULL;
 
+// Simulated clock for deterministic time
+static struct timespec simulated_time = {0, 0};
+
+// Helper to set socket errors correctly on Windows vs Linux
+#ifdef _WIN32
+#define SET_SOCKET_ERROR(err) WSASetLastError(err)
+#define SOCKET_ERROR_WOULDBLOCK WSAEWOULDBLOCK
+#define SOCKET_ERROR_AFNOSUPPORT WSAEAFNOSUPPORT
+#define SOCKET_ERROR_MFILE WSAEMFILE
+#define SOCKET_ERROR_BADF WSAEBADF
+#define SOCKET_ERROR_NOTSOCK WSAENOTSOCK
+#define SOCKET_ERROR_INVAL WSAEINVAL
+#define SOCKET_ERROR_ADDRINUSE WSAEADDRINUSE
+#define SOCKET_ERROR_DESTADDRREQ WSAEDESTADDRREQ
+#define SOCKET_ERROR_CONNABORTED WSAECONNABORTED
+#define SOCKET_ERROR_ISCONN WSAEISCONN
+#define SOCKET_ERROR_INPROGRESS WSAEINPROGRESS
+#define SOCKET_ERROR_OPNOTSUPP WSAEOPNOTSUPP
+#define SOCKET_ERROR_NOTCONN WSAENOTCONN
+#define SOCKET_ERROR_CONNRESET WSAECONNRESET
+#define SOCKET_ERROR_PROTOOPT WSAENOPROTOOPT
+#define SOCKET_ERROR_PIPE WSAESHUTDOWN  // Closest to EPIPE on Windows
+#else
+#define SET_SOCKET_ERROR(err) (errno = (err))
+#define SOCKET_ERROR_WOULDBLOCK EWOULDBLOCK
+#define SOCKET_ERROR_AFNOSUPPORT EAFNOSUPPORT
+#define SOCKET_ERROR_MFILE EMFILE
+#define SOCKET_ERROR_BADF EBADF
+#define SOCKET_ERROR_NOTSOCK ENOTSOCK
+#define SOCKET_ERROR_INVAL EINVAL
+#define SOCKET_ERROR_ADDRINUSE EADDRINUSE
+#define SOCKET_ERROR_DESTADDRREQ EDESTADDRREQ
+#define SOCKET_ERROR_CONNABORTED ECONNABORTED
+#define SOCKET_ERROR_ISCONN EISCONN
+#define SOCKET_ERROR_INPROGRESS EINPROGRESS
+#define SOCKET_ERROR_OPNOTSUPP EOPNOTSUPP
+#define SOCKET_ERROR_NOTCONN ENOTCONN
+#define SOCKET_ERROR_CONNRESET ECONNRESET
+#define SOCKET_ERROR_PROTOOPT ENOPROTOOPT
+#define SOCKET_ERROR_PIPE EPIPE
+#endif
+
 static void process_poll_array(Process *process,
     void **contexts, struct pollfd *polled, int num_polled)
 {
@@ -522,12 +564,12 @@ int mock_rename(char *oldpath, char *newpath)
 SOCKET mock_socket(int domain, int type, int protocol)
 {
     if (domain != AF_INET || type != SOCK_STREAM || protocol != 0) {
-        // TODO: errno
+        SET_SOCKET_ERROR(SOCKET_ERROR_AFNOSUPPORT);  // Address family not supported
         return INVALID_SOCKET;
     }
 
     if (current_process->num_desc == MAX_DESCRIPTORS) {
-        // TODO: errno
+        SET_SOCKET_ERROR(SOCKET_ERROR_MFILE);  // Too many open files
         return INVALID_SOCKET;
     }
 
@@ -561,41 +603,59 @@ static DescriptorAddress convert_address(void *addr, size_t addr_len)
 
 int mock_bind(SOCKET fd, void *addr, size_t addr_len)
 {
-    if (fd == INVALID_SOCKET) {
-        // TODO
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_SOCKET) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTSOCK);  // Socket operation on non-socket
         return -1;
     }
 
     DescriptorAddress address = convert_address(addr, addr_len);
     if (address.type == DESC_ADDR_VOID) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);  // Invalid argument
         return -1;
     }
 
-    // TODO: Should check that the address family matched
-    //       the one used to create the socket
+    // Check if address is already in use by another socket
+    for (int i = 0; i < current_process->num_desc; i++) {
+        Descriptor *other = &current_process->desc[i];
+        if (other->type != DESC_EMPTY && i != idx) {
+            if (other->address.type == address.type) {
+                if (address.type == DESC_ADDR_IPV4 &&
+                    other->address.ipv4.sin_port == address.ipv4.sin_port &&
+                    other->address.ipv4.sin_addr.s_addr == address.ipv4.sin_addr.s_addr) {
+                    SET_SOCKET_ERROR(SOCKET_ERROR_ADDRINUSE);  // Address already in use
+                    return -1;
+                }
+            }
+        }
+    }
+
     desc->address = address;
     return 0;
 }
 
 int mock_listen(SOCKET fd, int backlog)
 {
-    if (fd == INVALID_SOCKET) {
-        // TODO
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_SOCKET) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTSOCK);  // Socket operation on non-socket
+        return -1;
+    }
+
+    if (desc->address.type == DESC_ADDR_VOID) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_DESTADDRREQ);  // Destination address required (socket not bound)
         return -1;
     }
 
@@ -607,32 +667,35 @@ int mock_listen(SOCKET fd, int backlog)
 
 SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
 {
-    if (fd == INVALID_SOCKET) {
-        // TODO
-        return -1;
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
+        return INVALID_SOCKET;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_LISTEN_SOCKET) {
-        // TODO
-        return -1;
+        SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);  // Invalid argument (not a listening socket)
+        return INVALID_SOCKET;
     }
 
     DescriptorHandle peer_handle;
     if (!accept_queue_pop(&desc->accept_queue, &peer_handle)) {
-        // TODO
-        assert(0);
+        SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);  // Would block (no pending connections)
+        return INVALID_SOCKET;
     }
 
     Descriptor *peer = handle_to_desc(peer_handle);
     if (peer == NULL) {
         // Peer closed without removing itself from the accept queue!
-        assert(0);
+        // Try next connection in queue
+        SET_SOCKET_ERROR(SOCKET_ERROR_CONNABORTED);  // Connection aborted
+        return INVALID_SOCKET;
     }
 
     if (current_process->num_desc == MAX_DESCRIPTORS) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_MFILE);  // Too many open files
+        return INVALID_SOCKET;
     }
     int new_idx = 0;
     while (current_process->desc[new_idx].type != DESC_EMPTY)
@@ -658,89 +721,164 @@ SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
 
 int mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *optlen)
 {
-    // TODO
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
+        return -1;
+    }
+
+    int idx = (int) fd;
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type == DESC_EMPTY) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);
+        return -1;
+    }
+
+    // Only support SOL_SOCKET level for now
+    if (level != SOL_SOCKET) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_PROTOOPT);  // Protocol not available
+        return -1;
+    }
+
+    // Support SO_ERROR option
+    if (optname == SO_ERROR) {
+        if (*optlen < sizeof(int)) {
+            SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);
+            return -1;
+        }
+        *(int*)optval = 0;  // No error
+        *optlen = sizeof(int);
+        return 0;
+    }
+
+    SET_SOCKET_ERROR(SOCKET_ERROR_PROTOOPT);
     return -1;
 }
 
 int mock_setsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t optlen)
 {
-    // TODO
-    return -1;
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
+        return -1;
+    }
+
+    int idx = (int) fd;
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type == DESC_EMPTY) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);
+        return -1;
+    }
+
+    // Only support SOL_SOCKET level for now
+    if (level != SOL_SOCKET) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_PROTOOPT);  // Protocol not available
+        return -1;
+    }
+
+    // Most socket options are ignored in simulation
+    // Just validate the call but don't actually apply settings
+    (void)optval;
+    (void)optlen;
+    (void)optname;
+
+    return 0;  // Success (no-op)
 }
 
 int mock_recv(SOCKET fd, void *dst, int len, int flags)
 {
-    if (fd == INVALID_SOCKET) {
-        // TODO
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
-    if (flags) {
-        // TODO
+    if (flags != 0) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_OPNOTSUPP);  // Operation not supported
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_CONNECTION_SOCKET) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTCONN);  // Transport endpoint is not connected
         return -1;
     }
 
     if (desc->connection_state != CONNECTION_ESTABLISHED) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTCONN);
         return -1;
     }
 
     Descriptor *peer = handle_to_desc(desc->connection_peer);
     if (peer == NULL) {
-        // TODO
-        return -1;
+        // Peer closed - return 0 to indicate orderly shutdown
+        return 0;
     }
 
     DataQueue *input_data = &peer->output_data;
-    return data_queue_read(input_data, dst, len);
+    int bytes_read = data_queue_read(input_data, dst, len);
+
+    // If no data available, would block
+    if (bytes_read == 0) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);
+        return -1;
+    }
+
+    return bytes_read;
 }
 
 int mock_send(SOCKET fd, void *src, int len, int flags)
 {
-    if (fd == INVALID_SOCKET) {
-        // TODO
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
-    if (flags) {
-        // TODO
+    if (flags != 0) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_OPNOTSUPP);  // Operation not supported
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_CONNECTION_SOCKET) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTCONN);  // Transport endpoint is not connected
         return -1;
     }
 
     if (desc->connection_state != CONNECTION_ESTABLISHED) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTCONN);
         return -1;
     }
 
-    data_queue_write(&desc->output_data, src, len);
-    return len;
+    // Check if peer is still connected
+    Descriptor *peer = handle_to_desc(desc->connection_peer);
+    if (peer == NULL) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_PIPE);  // Broken pipe / connection shutdown
+        return -1;
+    }
+
+    // Write data to output queue
+    int bytes_written = data_queue_write(&desc->output_data, src, len);
+
+    // If queue is full, we would block
+    if (bytes_written < len) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);
+        return bytes_written > 0 ? bytes_written : -1;
+    }
+
+    return bytes_written;
 }
 
 int mock_connect(SOCKET fd, void *addr, size_t addr_len)
 {
-    if (fd == INVALID_SOCKET) {
-        // TODO
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
         return -1;
     }
 
     int idx = (int) fd;
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_SOCKET) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_ISCONN);  // Transport endpoint is already connected
         return -1;
     }
 
@@ -748,10 +886,12 @@ int mock_connect(SOCKET fd, void *addr, size_t addr_len)
     desc->connection_state = CONNECTION_DELAYED;
     desc->connect_address = convert_address(addr, addr_len);
     if (desc->connect_address.type == DESC_ADDR_VOID) {
-        // TODO
+        SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);  // Invalid argument
         return -1;
     }
 
+    // Return EINPROGRESS/WSAEWOULDBLOCK to indicate non-blocking connection in progress
+    SET_SOCKET_ERROR(SOCKET_ERROR_INPROGRESS);
     return -1;
 }
 
@@ -890,20 +1030,20 @@ HANDLE mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess,
 
 BOOL mock_CloseHandle(HANDLE handle)
 {
-    if (fd == INVALID_SOCKET) {
-        // TODO
-        return -1;
+    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
     }
-    int idx = (int) fd;
+    int idx = (int) handle;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
-        return -1;
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
     }
 
     close_desc(desc);
-    return 0;
+    return TRUE;
 }
 
 BOOL mock_LockFile(HANDLE hFile,
@@ -912,18 +1052,19 @@ BOOL mock_LockFile(HANDLE hFile,
     DWORD nNumberOfBytesToLockLow,
     DWORD nNumberOfBytesToLockHigh)
 {
-    if (handle == INVALID_HANDLE_VALUE) {
-        // TODO
+    if (hFile == INVALID_HANDLE_VALUE || (int)hFile < 0 || (int)hFile >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
-    int idx = (int) handle;
+    int idx = (int) hFile;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
-        return -1;
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
     }
 
+    // Forward to real LockFile, last error is set by the real call
     return LockFile(
         desc->real_fd,
         dwFileOffsetLow,
@@ -939,18 +1080,19 @@ BOOL mock_UnlockFile(
     DWORD  nNumberOfBytesToUnlockLow,
     DWORD  nNumberOfBytesToUnlockHigh)
 {
-    if (handle == INVALID_HANDLE_VALUE) {
-        // TODO
+    if (hFile == INVALID_HANDLE_VALUE || (int)hFile < 0 || (int)hFile >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
-    int idx = (int) handle;
+    int idx = (int) hFile;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
-        return -1;
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
     }
 
+    // Forward to real UnlockFile, last error is set by the real call
     return UnlockFile(
         desc->real_fd,
         dwFileOffsetLow,
@@ -961,69 +1103,73 @@ BOOL mock_UnlockFile(
 
 BOOL mock_FlushFileBuffers(HANDLE handle)
 {
-    if (handle == INVALID_HANDLE_VALUE) {
-        // TODO
+    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
     int idx = (int) handle;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
-        return -1;
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
     }
 
+    // Forward to real FlushFileBuffers, last error is set by the real call
     return FlushFileBuffers(desc->real_fd);
 }
 
 BOOL mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov)
 {
-    if (handle == INVALID_HANDLE_VALUE) {
-        // TODO
+    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
     int idx = (int) handle;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
-        return -1;
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
     }
 
+    // Forward to real ReadFile, last error is set by the real call
     return ReadFile(desc->real_fd, dst, len, num, ov);
 }
 
 BOOL mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov)
 {
-    if (handle == INVALID_HANDLE_VALUE) {
-        // TODO
+    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
     int idx = (int) handle;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
-        return -1;
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
     }
 
-    return WriteFile(desc->real_fd, src, len, num ov);
+    // Forward to real WriteFile, last error is set by the real call
+    return WriteFile(desc->real_fd, src, len, num, ov);
 }
 
 BOOL mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf)
 {
-    if (handle == INVALID_HANDLE_VALUE) {
-        // TODO
+    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
     int idx = (int) handle;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
-        return -1;
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
     }
 
+    // Forward to real GetFileSizeEx, last error is set by the real call
     return GetFileSizeEx(desc->real_fd, buf);
 }
 
@@ -1037,11 +1183,55 @@ int mock__mkdir(char *path)
     return _mkdir(path);
 }
 
+BOOL mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount)
+{
+    if (lpPerformanceCount == NULL) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    // Use simulated time to generate deterministic performance counter
+    // Frequency is 10 MHz (10,000,000 counts per second)
+    const LONGLONG frequency = 10000000LL;
+
+    LONGLONG count = (LONGLONG)simulated_time.tv_sec * frequency;
+    count += ((LONGLONG)simulated_time.tv_nsec * frequency) / 1000000000LL;
+
+    lpPerformanceCount->QuadPart = count;
+    return TRUE;
+}
+
+BOOL mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency)
+{
+    if (lpFrequency == NULL) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    // Return fixed frequency of 10 MHz for deterministic behavior
+    // This is a common frequency on modern systems
+    lpFrequency->QuadPart = 10000000LL;  // 10 million counts per second
+    return TRUE;
+}
+
 #else
 
 int mock_clock_gettime(clockid_t clockid, struct timespec *tp)
 {
-    // TODO
+    if (tp == NULL) {
+        errno = EFAULT;  // Bad address
+        return -1;
+    }
+
+    // Only support CLOCK_REALTIME and CLOCK_MONOTONIC for now
+    if (clockid != CLOCK_REALTIME && clockid != CLOCK_MONOTONIC) {
+        errno = EINVAL;  // Invalid clock ID
+        return -1;
+    }
+
+    // Return simulated time for deterministic behavior
+    *tp = simulated_time;
+    return 0;
 }
 
 int mock_open(char *path, int flags, int mode)
@@ -1054,97 +1244,119 @@ int mock_open(char *path, int flags, int mode)
 
 int mock_close(int fd)
 {
-    if (fd < 0) {
-        // TODO
+    if (fd < 0 || fd >= MAX_DESCRIPTORS) {
+        errno = EBADF;  // Bad file descriptor
         return -1;
     }
     int idx = (int) fd;
 
     Descriptor *desc = &current_process->desc[idx];
+    if (desc->type == DESC_EMPTY) {
+        errno = EBADF;
+        return -1;
+    }
+
     close_desc(desc);
     return 0;
 }
 
 int mock_flock(int fd, int op)
 {
-    if (fd < 0) {
-        // TODO
+    if (fd < 0 || fd >= MAX_DESCRIPTORS) {
+        errno = EBADF;  // Bad file descriptor
         return -1;
     }
     int idx = fd;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
+        errno = EBADF;  // Not a file descriptor
         return -1;
     }
 
+    // Forward to real flock, errno is set by the real call
     return flock(desc->real_fd, op);
 }
 
 int mock_fsync(int fd)
 {
-    if (fd < 0) {
-        // TODO
+    if (fd < 0 || fd >= MAX_DESCRIPTORS) {
+        errno = EBADF;  // Bad file descriptor
         return -1;
     }
     int idx = fd;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
+        errno = EINVAL;  // Invalid argument (not a file)
         return -1;
     }
 
+    // Forward to real fsync, errno is set by the real call
     return fsync(desc->real_fd);
 }
 
 int mock_read(int fd, char *dst, int len)
 {
-    if (fd < 0) {
-        // TODO
+    if (fd < 0 || fd >= MAX_DESCRIPTORS) {
+        errno = EBADF;  // Bad file descriptor
         return -1;
     }
     int idx = fd;
 
     Descriptor *desc = &current_process->desc[idx];
+    if (desc->type == DESC_EMPTY) {
+        errno = EBADF;
+        return -1;
+    }
+
     if (desc->type == DESC_FILE) {
+        // Forward to real read, errno is set by the real call
         return read(desc->real_fd, dst, len);
     } else {
+        // Socket read
         return mock_recv(fd, dst, len, 0);
     }
 }
 
 int mock_write(int fd, char *src, int len)
 {
-    if (fd < 0) {
-        // TODO
+    if (fd < 0 || fd >= MAX_DESCRIPTORS) {
+        errno = EBADF;  // Bad file descriptor
         return -1;
     }
     int idx = fd;
 
     Descriptor *desc = &current_process->desc[idx];
+    if (desc->type == DESC_EMPTY) {
+        errno = EBADF;
+        return -1;
+    }
+
     if (desc->type == DESC_FILE) {
+        // Forward to real write, errno is set by the real call
         return write(desc->real_fd, src, len);
     } else {
+        // Socket write
         return mock_send(fd, src, len, 0);
     }
 }
 
 int mock_fstat(int fd, struct stat *buf)
 {
-    if (fd < 0) {
-        // TODO
+    if (fd < 0 || fd >= MAX_DESCRIPTORS) {
+        errno = EBADF;  // Bad file descriptor
         return -1;
     }
     int idx = fd;
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
-        // TODO
+        errno = EBADF;  // Not a file descriptor
         return -1;
     }
 
+    // Forward to real fstat, errno is set by the real call
     return fstat(desc->real_fd, buf);
 }
 
