@@ -32,6 +32,7 @@
 
 #ifdef BUILD_TEST
 
+void   startup_simulation(void);
 int    spawn_simulated_process(char *args);
 void   update_simulation(void);
 void   cleanup_simulation(void);

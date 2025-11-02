@@ -35,8 +35,8 @@ typedef struct {
     PendingDownloadList pending_download_list;
 } ChunkServer;
 
-int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled);
+int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout);
 int chunk_server_free(ChunkServer *state);
-int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled);
+int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout);
 
 #endif // CHUNK_SERVER_INCLUDED

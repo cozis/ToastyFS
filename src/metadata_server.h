@@ -48,8 +48,8 @@ typedef struct {
 
 } MetadataServer;
 
-int metadata_server_init(MetadataServer *state, int argc, char **argv, void **contexts, struct pollfd *polled);
+int metadata_server_init(MetadataServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout);
 int metadata_server_free(MetadataServer *state);
-int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *polled, int num_polled);
+int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout);
 
 #endif // METADATA_SERVER_INCLUDED

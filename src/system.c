@@ -1,3 +1,5 @@
+#ifdef BUILD_TEST
+
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,6 +7,7 @@
 #include "system.h"
 #include "chunk_server.h"
 #include "metadata_server.h"
+#include "simulation_client.h"
 
 #ifdef _WIN32
 #define NATIVE_HANDLE HANDLE
@@ -131,6 +134,12 @@ typedef struct {
     int    line;
 } Allocation;
 
+typedef enum {
+    PROCESS_TYPE_METADATA_SERVER,
+    PROCESS_TYPE_CHUNK_SERVER,
+    PROCESS_TYPE_CLIENT,
+} ProcessType;
+
 struct Process {
 
     int num_desc;
@@ -141,10 +150,11 @@ struct Process {
 
     Time wakeup_time;
 
-    bool leader;
+    ProcessType type;
     union {
-        ChunkServer    chunk_server;
-        MetadataServer metadata_server;
+        ChunkServer      chunk_server;
+        MetadataServer   metadata_server;
+        SimulationClient simulation_client;
     };
 };
 
@@ -152,6 +162,14 @@ static int num_processes = 0;
 static Process *processes[MAX_PROCESSES];
 static Process *current_process = NULL;
 static uint64_t current_time = 1;
+
+#ifndef _WIN32
+// Simulated time for deterministic clock_gettime behavior
+static struct timespec simulated_time = {0, 0};
+#else
+// On Windows, simulated_time is used for QueryPerformanceCounter
+static struct timespec simulated_time = {0, 0};
+#endif
 
 // Helper to set socket errors correctly on Windows vs Linux
 #ifdef _WIN32
@@ -228,6 +246,14 @@ static bool is_leader(int argc, char **argv)
     return false;
 }
 
+static bool is_client(int argc, char **argv)
+{
+    for (int i = 0; i < argc; i++)
+        if (!strcmp("--client", argv[i]) || !strcmp("-c", argv[i]))
+            return true;
+    return false;
+}
+
 #define MAX_ARGS 128
 
 static bool is_space(char c)
@@ -275,12 +301,21 @@ int spawn_simulated_process(char *args)
     }
 
     bool leader = is_leader(argc, argv);
+    bool client = is_client(argc, argv);
 
     Process *process = malloc(sizeof(Process));
     if (process == NULL)
         return -1;
 
-    process->leader = leader;
+    // Determine process type
+    if (client) {
+        process->type = PROCESS_TYPE_CLIENT;
+    } else if (leader) {
+        process->type = PROCESS_TYPE_METADATA_SERVER;
+    } else {
+        process->type = PROCESS_TYPE_CHUNK_SERVER;
+    }
+
     process->num_desc = 0;
     process->num_allocs = 0;
 
@@ -290,18 +325,30 @@ int spawn_simulated_process(char *args)
     void *contexts[MAX_CONNS+1];
     struct pollfd polled[MAX_CONNS+1];
     int num_polled;
+    int timeout = -1;
 
     current_process = process;
-    int timeout = -1;
-    if (leader) {
-        num_polled = metadata_server_init(&process->metadata_server, argc, argv, contexts, polled, &timeout);
-    } else {
-        num_polled = chunk_server_init(&process->chunk_server, argc, argv, contexts, polled, &timeout);
+
+    switch (process->type) {
+        case PROCESS_TYPE_METADATA_SERVER:
+            num_polled = metadata_server_init(&process->metadata_server, argc, argv, contexts, polled, &timeout);
+            break;
+        case PROCESS_TYPE_CHUNK_SERVER:
+            num_polled = chunk_server_init(&process->chunk_server, argc, argv, contexts, polled, &timeout);
+            break;
+        case PROCESS_TYPE_CLIENT:
+            num_polled = simulation_client_init(&process->simulation_client, argc, argv, contexts, polled, &timeout);
+            break;
+        default:
+            num_polled = -1;
+            break;
     }
+
     current_process = NULL;
     if (num_polled < 0) {
         // TODO
     }
+
     if (timeout < 0) {
         process->wakeup_time = INVALID_TIME;
     } else {
@@ -311,22 +358,32 @@ int spawn_simulated_process(char *args)
     process_poll_array(process, contexts, polled, num_polled);
 
     processes[num_processes++] = process;
+    return 0;
 }
 
 static void free_process(Process *process)
 {
-    if (process->leader) {
-        metadata_server_free(&process->metadata_server);
-    } else {
-        chunk_server_free(&process->chunk_server);
+    switch (process->type) {
+        case PROCESS_TYPE_METADATA_SERVER:
+            metadata_server_free(&process->metadata_server);
+            break;
+        case PROCESS_TYPE_CHUNK_SERVER:
+            chunk_server_free(&process->chunk_server);
+            break;
+        case PROCESS_TYPE_CLIENT:
+            simulation_client_free(&process->simulation_client);
+            break;
     }
     free(process);
 }
 
 void cleanup_simulation(void)
 {
-    for (int i = 0; i < num_processes; i++)
+    for (int i = 0; i < num_processes; i++) {
+        current_process = processes[i];
         free_process(processes[i]);
+        current_process = NULL;
+    }
 }
 
 static bool addr_eql_2(DescriptorAddress a, DescriptorAddress b)
@@ -491,10 +548,16 @@ void update_simulation(void)
         }
 
         int timeout = -1;
-        if (current_process->leader) {
-            num_polled = metadata_server_step(&current_process->metadata_server, contexts, polled, num_polled, &timeout);
-        } else {
-            num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled, &timeout);
+        switch (current_process->type) {
+            case PROCESS_TYPE_METADATA_SERVER:
+                num_polled = metadata_server_step(&current_process->metadata_server, contexts, polled, num_polled, &timeout);
+                break;
+            case PROCESS_TYPE_CHUNK_SERVER:
+                num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled, &timeout);
+                break;
+            case PROCESS_TYPE_CLIENT:
+                num_polled = simulation_client_step(&current_process->simulation_client, contexts, polled, num_polled, &timeout);
+                break;
         }
 
         if (num_polled < 0) {
@@ -1401,4 +1464,6 @@ int mock_mkdir(char *path, mode_t mode)
     return mkdir(path, mode);
 }
 
-#endif
+#endif // !_WIN32
+
+#endif // BUILD_TEST
