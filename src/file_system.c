@@ -1,3 +1,7 @@
+#include <limits.h>
+#include <string.h>
+#include <assert.h>
+
 #include "system.h"
 #include "file_system.h"
 

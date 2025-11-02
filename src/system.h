@@ -1,4 +1,8 @@
+#ifndef SYSTEM_INCLUDED
+#define SYSTEM_INCLUDED
+
 #include <stdio.h>
+#include <stdlib.h>
 
 #ifdef _WIN32
 
@@ -15,6 +19,7 @@
 #include <time.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <sys/socket.h>
@@ -31,6 +36,11 @@ int    spawn_simulated_process(char *args);
 void   update_simulation(void);
 void   cleanup_simulation(void);
 
+void*  mock_malloc(size_t len);
+void*  mock_realloc(void *ptr, size_t len);
+void   mock_free(void *ptr);
+int    mock_remove(char *path);
+int    mock_rename(char *oldpath, char *newpath);
 SOCKET mock_socket(int domain, int type, int protocol);
 int    mock_bind(SOCKET fd, void *addr, size_t addr_len);
 int    mock_listen(SOCKET fd, int backlog);
@@ -40,6 +50,32 @@ int    mock_setsockopt(SOCKET fd, int level, int optname, void *optval, socklen_
 int    mock_recv(SOCKET fd, void *dst, int len, int flags);
 int    mock_send(SOCKET fd, void *src, int len, int flags);
 int    mock_connect(SOCKET fd, void *addr, size_t addr_len);
+
+#ifdef _WIN32
+int    mock_closesocket(SOCKET fd);
+HANDLE mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
+BOOL   mock_CloseHandle(HANDLE handle);
+BOOL   mock_LockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToLockLow, DWORD nNumberOfBytesToLockHigh);
+BOOL   mock_UnlockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToUnlockLow, DWORD nNumberOfBytesToUnlockHigh);
+BOOL   mock_FlushFileBuffers(HANDLE handle);
+BOOL   mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov);
+BOOL   mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov);
+BOOL   mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf);
+char*  mock__fullpath(char *path, char *dst, int cap);
+int    mock__mkdir(char *path);
+#else
+int    mock_clock_gettime(clockid_t clockid, struct timespec *tp);
+int    mock_open(char *path, int flags, int mode);
+int    mock_close(int fd);
+int    mock_flock(int fd, int op);
+int    mock_fsync(int fd);
+int    mock_read(int fd, char *dst, int len);
+int    mock_write(int fd, char *src, int len);
+int    mock_fstat(int fd, struct stat *buf);
+int    mock_mkstemp(char *path);
+char*  mock_realpath(char *path, char *dst);
+int    mock_mkdir(char *path, mode_t mode);
+#endif
 
 // Common
 #define sys_malloc           mock_malloc
@@ -132,3 +168,4 @@ int    mock_connect(SOCKET fd, void *addr, size_t addr_len);
 #define sys_clock_gettime    clock_gettime
 
 #endif
+#endif // SYSTEM_INCLUDED

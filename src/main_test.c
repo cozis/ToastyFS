@@ -1,4 +1,8 @@
 #ifdef BUILD_TEST
+
+#include <signal.h>
+#include <stdbool.h>
+
 #include "system.h"
 
 static sig_atomic_t simulation_should_stop = false;
