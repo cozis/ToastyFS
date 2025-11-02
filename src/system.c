@@ -1183,6 +1183,37 @@ int mock__mkdir(char *path)
     return _mkdir(path);
 }
 
+BOOL mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount)
+{
+    if (lpPerformanceCount == NULL) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    // Use simulated time to generate deterministic performance counter
+    // Frequency is 10 MHz (10,000,000 counts per second)
+    const LONGLONG frequency = 10000000LL;
+
+    LONGLONG count = (LONGLONG)simulated_time.tv_sec * frequency;
+    count += ((LONGLONG)simulated_time.tv_nsec * frequency) / 1000000000LL;
+
+    lpPerformanceCount->QuadPart = count;
+    return TRUE;
+}
+
+BOOL mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency)
+{
+    if (lpFrequency == NULL) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    // Return fixed frequency of 10 MHz for deterministic behavior
+    // This is a common frequency on modern systems
+    lpFrequency->QuadPart = 10000000LL;  // 10 million counts per second
+    return TRUE;
+}
+
 #else
 
 int mock_clock_gettime(clockid_t clockid, struct timespec *tp)

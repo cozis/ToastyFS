@@ -61,6 +61,8 @@ BOOL   mock_FlushFileBuffers(HANDLE handle);
 BOOL   mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov);
 BOOL   mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov);
 BOOL   mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf);
+BOOL   mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
+BOOL   mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
 char*  mock__fullpath(char *path, char *dst, int cap);
 int    mock__mkdir(char *path);
 #else
