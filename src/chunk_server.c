@@ -764,7 +764,7 @@ process_client_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView
     return -1;
 }
 
-int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled)
+int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
     (void) argc;
     (void) argv;
@@ -805,6 +805,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 
     state->metadata_server_disconnect_time = 0;
 
+    *timeout = -1;  // No timeout needed for chunk server initially
     return tcp_register_events(&state->tcp, contexts, polled);
 }
 
@@ -816,7 +817,7 @@ int chunk_server_free(ChunkServer *state)
     return 0;
 }
 
-int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled)
+int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout)
 {
     Event events[MAX_CONNS+1];
     int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
@@ -937,5 +938,6 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         }
     }
 
+    *timeout = -1;  // No timeout needed for chunk server
     return tcp_register_events(&state->tcp, contexts, polled);
 }

@@ -750,7 +750,7 @@ static bool is_chunk_server_message_type(uint16_t type)
     return false;
 }
 
-int metadata_server_init(MetadataServer *state, int argc, char **argv, void **contexts, struct pollfd *polled)
+int metadata_server_init(MetadataServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
     (void) argc;
     (void) argv;
@@ -778,6 +778,7 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
         return -1;
     }
 
+    *timeout = -1;  // No timeout needed for metadata server
     return tcp_register_events(&state->tcp, contexts, polled);
 }
 
@@ -788,7 +789,7 @@ int metadata_server_free(MetadataServer *state)
     return 0;
 }
 
-int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *polled, int num_polled)
+int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout)
 {
     Event events[MAX_CONNS+1];
     int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
@@ -852,5 +853,6 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
         }
     }
 
+    *timeout = -1;  // No timeout needed for metadata server
     return tcp_register_events(&state->tcp, contexts, polled);
 }

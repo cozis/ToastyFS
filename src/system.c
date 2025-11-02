@@ -323,26 +323,19 @@ int spawn_simulated_process(char *args)
     void *contexts[MAX_CONNS+1];
     struct pollfd polled[MAX_CONNS+1];
     int num_polled;
+    int timeout = -1;
 
     current_process = process;
 
     switch (process->type) {
         case PROCESS_TYPE_METADATA_SERVER:
-            num_polled = metadata_server_init(&process->metadata_server, argc, argv, contexts, polled);
+            num_polled = metadata_server_init(&process->metadata_server, argc, argv, contexts, polled, &timeout);
             break;
         case PROCESS_TYPE_CHUNK_SERVER:
-            num_polled = chunk_server_init(&process->chunk_server, argc, argv, contexts, polled);
+            num_polled = chunk_server_init(&process->chunk_server, argc, argv, contexts, polled, &timeout);
             break;
         case PROCESS_TYPE_CLIENT:
-        {
-            int timeout = -1;
             num_polled = simulation_client_init(&process->simulation_client, argc, argv, contexts, polled, &timeout);
-            if (timeout < 0) {
-                process->wakeup_time = INVALID_TIME;
-            } else {
-                process->wakeup_time = current_time + timeout;
-            }
-        }
             break;
         default:
             num_polled = -1;
@@ -352,6 +345,12 @@ int spawn_simulated_process(char *args)
     current_process = NULL;
     if (num_polled < 0) {
         // TODO
+    }
+
+    if (timeout < 0) {
+        process->wakeup_time = INVALID_TIME;
+    } else {
+        process->wakeup_time = current_time + timeout;
     }
 
     process_poll_array(process, contexts, polled, num_polled);
@@ -546,28 +545,27 @@ void update_simulation(void)
             }
         }
 
+        int timeout = -1;
         switch (current_process->type) {
             case PROCESS_TYPE_METADATA_SERVER:
-                num_polled = metadata_server_step(&current_process->metadata_server, contexts, polled, num_polled);
+                num_polled = metadata_server_step(&current_process->metadata_server, contexts, polled, num_polled, &timeout);
                 break;
             case PROCESS_TYPE_CHUNK_SERVER:
-                num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled);
+                num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled, &timeout);
                 break;
             case PROCESS_TYPE_CLIENT:
-            {
-                int timeout = -1;
                 num_polled = simulation_client_step(&current_process->simulation_client, contexts, polled, num_polled, &timeout);
-                if (timeout < 0) {
-                    current_process->wakeup_time = INVALID_TIME;
-                } else {
-                    current_process->wakeup_time = current_time + timeout;
-                }
-            }
                 break;
         }
 
         if (num_polled < 0) {
             // TODO
+        }
+
+        if (timeout < 0) {
+            current_process->wakeup_time = INVALID_TIME;
+        } else {
+            current_process->wakeup_time = current_time + timeout;
         }
 
         process_poll_array(current_process, contexts, polled, num_polled);
