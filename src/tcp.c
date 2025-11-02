@@ -90,6 +90,14 @@ void tcp_context_init(TCP *tcp)
 
 void tcp_context_free(TCP *tcp)
 {
+    // Free all connection byte queues without closing sockets
+    // (sockets are managed by the simulation and will be cleaned up separately)
+    for (int i = 0; i < tcp->num_conns; i++) {
+        byte_queue_free(&tcp->conns[i].input);
+        byte_queue_free(&tcp->conns[i].output);
+    }
+    tcp->num_conns = 0;
+
     if (tcp->listen_fd != INVALID_SOCKET)
         CLOSE_SOCKET(tcp->listen_fd);
 }
@@ -177,6 +185,7 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
 int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd *polled, int num_polled)
 {
     bool removed[MAX_CONNS+1];
+    memset(removed, 0, sizeof(removed));
 
     int num_events = 0;
     for (int i = 0; i < num_polled; i++) {

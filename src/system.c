@@ -319,8 +319,10 @@ int spawn_simulated_process(char *args)
     process->num_desc = 0;
     process->num_allocs = 0;
 
-    for (int i = 0; i < MAX_DESCRIPTORS; i++)
+    for (int i = 0; i < MAX_DESCRIPTORS; i++) {
         process->desc[i].type = DESC_EMPTY;
+        process->desc[i].generation = 0;
+    }
 
     void *contexts[MAX_CONNS+1];
     struct pollfd polled[MAX_CONNS+1];

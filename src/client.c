@@ -91,6 +91,9 @@ struct TinyDFS {
     Operation operations[MAX_OPERATIONS];
 };
 
+// Forward declaration
+static void request_queue_init(RequestQueue *reqs);
+
 TinyDFS *tinydfs_init(char *addr, uint16_t port)
 {
     TinyDFS *tdfs = sys_malloc(sizeof(TinyDFS));
@@ -117,6 +120,18 @@ TinyDFS *tinydfs_init(char *addr, uint16_t port)
 
     for (int i = 0; i < MAX_OPERATIONS; i++)
         tdfs->operations[i].type = OPERATION_TYPE_FREE;
+
+    // Initialize metadata server
+    tdfs->metadata_server.used = true;
+    tdfs->metadata_server.addr = addr2;
+    request_queue_init(&tdfs->metadata_server.reqs);
+
+    // Initialize chunk servers
+    tdfs->num_chunk_servers = 0;
+    for (int i = 0; i < MAX_CHUNK_SERVERS; i++) {
+        tdfs->chunk_servers[i].used = false;
+        request_queue_init(&tdfs->chunk_servers[i].reqs);
+    }
 
     return tdfs;
 }
