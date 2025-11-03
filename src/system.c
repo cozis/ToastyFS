@@ -119,6 +119,9 @@ typedef struct {
     // "DELAYED" state.
     DescriptorAddress connect_address;
 
+    // Error number when the connection is FAILED
+    int connect_errno;
+
     // Data written to this descriptor using "write"
     // or "send".
     DataQueue output_data;
@@ -354,7 +357,7 @@ int spawn_simulated_process(char *args)
     if (timeout < 0) {
         process->wakeup_time = INVALID_TIME;
     } else {
-        process->wakeup_time = current_time + timeout;
+        process->wakeup_time = current_time + timeout * 1000000;
     }
 
     process_poll_array(process, contexts, polled, num_polled);
@@ -475,6 +478,30 @@ static bool accept_queue_pop(AcceptQueue *accept_queue, DescriptorHandle *item)
     return true;
 }
 
+static void accept_queue_remove(AcceptQueue *queue, DescriptorHandle handle)
+{
+    int i = 0;
+    while (i < queue->used && (
+        queue->items[i].process != handle.process ||
+        queue->items[i].descriptor_index != handle.descriptor_index ||
+        queue->items[i].generation != handle.generation))
+        i++;
+
+    if (i == queue->used)
+        return;
+
+    for (; i < queue->used-1; i++) {
+        int u = (queue->head + i + 0) % queue->size;
+        int v = (queue->head + i + 1) % queue->size;
+        queue->items[u] = queue->items[v];
+    }
+}
+
+static bool accept_queue_empty(AcceptQueue *queue)
+{
+    return queue->used == 0;
+}
+
 static void data_queue_init(DataQueue *queue, int size)
 {
     queue->used = 0;
@@ -517,12 +544,38 @@ static int data_queue_write(DataQueue *queue, char *src, int len)
     return num;
 }
 
+static bool data_queue_empty(DataQueue *queue)
+{
+    return queue->used == 0;
+}
+
+static bool data_queue_full(DataQueue *queue)
+{
+    return queue->used == queue->size;
+}
+
+static int compare_processes(const void *p1, const void *p2)
+{
+    Process *a = *(Process**) p1;
+    Process *b = *(Process**) p2;
+    if (b->wakeup_time == INVALID_TIME) return -1;
+    if (a->wakeup_time == INVALID_TIME) return +1;
+    return a->wakeup_time - b->wakeup_time;
+}
+
 void update_simulation(void)
 {
-    // TODO: sort processes based on their wakeup time
+    // Order processes by wakeup time. Those with no
+    // wakeup time go last.
+    Process *ordered_processes[MAX_PROCESSES];
+    for (int i = 0; i < num_processes; i++)
+        ordered_processes[i] = processes[i];
+
+    qsort(ordered_processes, num_processes, sizeof(*ordered_processes), compare_processes);
 
     for (int i = 0; i < num_processes; i++) {
-        current_process = processes[i];
+
+        current_process = ordered_processes[i];
 
         void *contexts[MAX_CONNS+1];
         struct pollfd polled[MAX_CONNS+1];
@@ -535,18 +588,69 @@ void update_simulation(void)
                 continue;
             k++;
 
-            if (desc->type != DESC_SOCKET &&
-                desc->type != DESC_LISTEN_SOCKET &&
-                desc->type != DESC_CONNECTION_SOCKET)
-                continue;
+            int revents = 0;
+            switch (desc->type) {
 
-            int revents = desc->events & desc->revents;
+                case DESC_FILE:
+                // TODO: error
+                break;
+
+                case DESC_SOCKET:
+                // Ignore
+                break;
+
+                case DESC_LISTEN_SOCKET:
+                if (!accept_queue_empty(&desc->accept_queue))
+                    revents |= POLLIN;
+                break;
+
+                case DESC_CONNECTION_SOCKET:
+                switch (desc->connection_state) {
+
+                    case CONNECTION_DELAYED:
+                    break;
+
+                    case CONNECTION_QUEUED:
+                    break;
+
+                    case CONNECTION_ESTABLISHED:
+                    {
+                        Descriptor *peer = handle_to_desc(desc->connection_peer);
+                        if (peer == NULL) {
+                            // TODO
+                        }
+
+                        if (!data_queue_full(&desc->output_data))
+                            revents |= POLLOUT;
+
+                        if (!data_queue_empty(&peer->output_data))
+                            revents |= POLLIN;
+                    }
+                    break;
+
+                    case CONNECTION_FAILED:
+                    // TODO
+                    break;
+                }
+                break;
+            }
+
+            revents &= desc->events;
             if (revents) {
                 polled[num_polled].fd = (SOCKET) j;
                 polled[num_polled].events = desc->events;
                 polled[num_polled].revents = revents;
                 num_polled++;
             }
+        }
+
+        if (num_polled == 0) {
+
+            Time wakeup_time = current_process->wakeup_time;
+            if (wakeup_time == INVALID_TIME) continue;
+
+            assert(current_time <= wakeup_time);
+            current_time = wakeup_time;
         }
 
         int timeout = -1;
@@ -569,7 +673,7 @@ void update_simulation(void)
         if (timeout < 0) {
             current_process->wakeup_time = INVALID_TIME;
         } else {
-            current_process->wakeup_time = current_time + timeout;
+            current_process->wakeup_time = current_time + timeout * 1000000;
         }
 
         process_poll_array(current_process, contexts, polled, num_polled);
@@ -595,16 +699,22 @@ void update_simulation(void)
                 {
                     DescriptorHandle peer_handle;
                     if (!find_peer_by_address(desc->connect_address, &peer_handle)) {
+                        desc->revents |= POLLOUT;
                         desc->connection_state = CONNECTION_FAILED;
+                        desc->connect_errno = EHOSTUNREACH; // TODO: This only works on Linux, not Windows
+                        break;
+                    }
+                    Descriptor *peer = handle_to_desc(peer_handle);
+
+                    DescriptorHandle self_handle = { processes[i], j, desc->generation };
+                    if (!accept_queue_push(&peer->accept_queue, self_handle)) {
+                        desc->revents |= POLLOUT;
+                        desc->connection_state = CONNECTION_FAILED;
+                        desc->connect_errno = ECONNREFUSED; // TODO: This only works on Linux, not Windows
                         break;
                     }
 
-                    DescriptorHandle self_handle = { processes[i], j, desc->generation };
-                    Descriptor *peer = handle_to_desc(peer_handle);
-                    if (!accept_queue_push(&peer->accept_queue, self_handle)) {
-                        desc->connection_state = CONNECTION_FAILED;
-                        break;
-                    }
+                    peer->revents |= POLLIN;
 
                     desc->connection_state = CONNECTION_QUEUED;
                     desc->connection_peer = peer_handle;
@@ -615,7 +725,9 @@ void update_simulation(void)
                 {
                     if (handle_to_desc(desc->connection_peer) == NULL) {
                         // Listener closed before accepting
+                        desc->revents |= POLLOUT;
                         desc->connection_state = CONNECTION_FAILED;
+                        desc->connect_errno = ECONNREFUSED; // TODO: This only works on Linux, not Windows
                         break;
                     }
                 }
@@ -836,7 +948,44 @@ int mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *
             SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);
             return -1;
         }
-        *(int*)optval = 0;  // No error
+
+        int val;
+        switch (desc->type) {
+
+            case DESC_FILE:
+            SET_SOCKET_ERROR(SOCKET_ERROR_NOTSOCK);
+            return -1;
+
+            case DESC_SOCKET:
+            val = 0; // No error
+            break;
+
+            case DESC_LISTEN_SOCKET:
+            val = 0; // No error
+            break;
+
+            case DESC_CONNECTION_SOCKET:
+            switch (desc->connection_state) {
+
+                case CONNECTION_DELAYED:
+                val = 0; // No error
+                break;
+
+                case CONNECTION_QUEUED:
+                val = 0; // No error
+                break;
+
+                case CONNECTION_ESTABLISHED:
+                val = 0; // No error
+                break;
+
+                case CONNECTION_FAILED:
+                val = desc->connect_errno;
+                break;
+            }
+            break;
+        }
+        *(int*)optval = val;
         *optlen = sizeof(int);
         return 0;
     }
@@ -1005,25 +1154,6 @@ wrap_native_file_into_desc(NATIVE_HANDLE handle)
 
     current_process->num_desc++;
     return idx;
-}
-
-void accept_queue_remove(AcceptQueue *queue, DescriptorHandle handle)
-{
-    int i = 0;
-    while (i < queue->used && (
-        queue->items[i].process != handle.process ||
-        queue->items[i].descriptor_index != handle.descriptor_index ||
-        queue->items[i].generation != handle.generation))
-        i++;
-
-    if (i == queue->used)
-        return;
-
-    for (; i < queue->used-1; i++) {
-        int u = (queue->head + i + 0) % queue->size;
-        int v = (queue->head + i + 1) % queue->size;
-        queue->items[u] = queue->items[v];
-    }
 }
 
 static void close_desc(Descriptor *desc)

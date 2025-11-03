@@ -799,11 +799,13 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
         switch (events[i].type) {
 
             case EVENT_CONNECT:
+            printf("New connection to metadata server\n");
             tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_UNKNOWN);
             break;
 
             case EVENT_DISCONNECT:
             {
+                printf("Dropped connection to metadata server\n");
                 int tag = tcp_get_tag(&state->tcp, conn_idx);
                 if (tag >= 0) {
                     chunk_server_peer_free(&state->chunk_servers[tag]);
@@ -825,6 +827,8 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
                         tcp_close(&state->tcp, conn_idx);
                         break;
                     }
+
+                    printf("Processing message to metadata server\n");
 
                     if (tcp_get_tag(&state->tcp, conn_idx) == CONNECTION_TAG_UNKNOWN) {
                         if (is_chunk_server_message_type(msg_type)) {

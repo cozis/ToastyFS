@@ -831,11 +831,13 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         switch (events[i].type) {
 
             case EVENT_CONNECT:
+            printf("New connection to chunk server\n");
             if (tcp_get_tag(&state->tcp, conn_idx) == TAG_METADATA_SERVER)
                 state->metadata_server_disconnect_time = 0;
             break;
 
             case EVENT_DISCONNECT:
+            printf("Dropped connection to chunk server\n");
             switch (tcp_get_tag(&state->tcp, conn_idx)) {
                 case TAG_METADATA_SERVER:
                 state->metadata_server_disconnect_time = current_time;
@@ -866,6 +868,8 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
                         tcp_close(&state->tcp, conn_idx);
                         break;
                     }
+
+                    printf("Processing message to chunk server\n");
 
                     switch (tcp_get_tag(&state->tcp, conn_idx)) {
                         case TAG_METADATA_SERVER:

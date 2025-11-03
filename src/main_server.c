@@ -24,7 +24,7 @@ int metadata_server_main(int argc, char **argv)
         &state, argc, argv, contexts, polled, &timeout);
     if (num_polled < 0) return -1;
     for (;;) {
-        POLL(polled, num_polled, -1);
+        POLL(polled, num_polled, timeout);
         num_polled = metadata_server_step(
             &state, contexts, polled, num_polled, &timeout);
         if (num_polled < 0) return -1;
@@ -44,7 +44,7 @@ int chunk_server_main(int argc, char **argv)
         &state, argc, argv, contexts, polled, &timeout);
     if (num_polled < 0) return -1;
     for (;;) {
-        POLL(polled, num_polled, -1);
+        POLL(polled, num_polled, timeout);
         num_polled = chunk_server_step(
             &state, contexts, polled, num_polled, &timeout);
         if (num_polled < 0) return -1;

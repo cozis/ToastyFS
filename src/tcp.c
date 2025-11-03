@@ -178,7 +178,7 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
         }
     }
 
-    return 0;
+    return num_polled;
 }
 
 // The "events" array must be an array of capacity MAX_CONNS+1

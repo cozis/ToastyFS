@@ -15,26 +15,13 @@ int main(int argc, char **argv)
 
     // TODO: set simulation_should_stop=true on ctrl+C
 
-    fprintf(stderr, "=== Starting TinyDFS simulation ===\n");
-    fflush(stderr);
-
     startup_simulation();
 
     // Spawn metadata server (leader)
-    fprintf(stderr, "Spawning metadata server...\n");
-    fflush(stderr);
-    int ret = spawn_simulated_process("--addr 127.0.0.1 8080 --leader");
-    fprintf(stderr, "spawn returned: %d\n", ret);
-    fflush(stderr);
-    fprintf(stderr, "Metadata server spawned\n");
-    fflush(stderr);
+    spawn_simulated_process("--addr 127.0.0.1 8080 --leader");
 
     // Spawn chunk servers
-    fprintf(stderr, "Spawning chunk server 1...\n");
-    fflush(stderr);
     spawn_simulated_process("--addr 127.0.0.1 8081");
-    fprintf(stderr, "Spawning chunk server 2...\n");
-    fflush(stderr);
     spawn_simulated_process("--addr 127.0.0.1 8082");
     spawn_simulated_process("--addr 127.0.0.1 8083");
     spawn_simulated_process("--addr 127.0.0.1 8084");

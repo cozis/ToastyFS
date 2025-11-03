@@ -53,9 +53,8 @@ int simulation_client_init(SimulationClient *client, int argc, char **argv,
 
     printf("[Client] Initialized successfully\n");
 
-    // Return no polled descriptors for now; we'll handle them in step
     *timeout = 0;  // Wake up immediately to start processing
-    return 0;
+    return tinydfs_process_events(client->tdfs, contexts, polled, 0);
 }
 
 int simulation_client_step(SimulationClient *client, void **contexts,
@@ -75,7 +74,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             if (client->create_dir_op < 0) {
                 fprintf(stderr, "[Client] Failed to submit create directory operation\n");
                 client->state = CLIENT_STATE_DONE;
-                return -1;
+                break;
             }
             client->step++;
             break;
@@ -89,7 +88,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 } else {
                     fprintf(stderr, "[Client] Step 1: Failed to create directory\n");
                     client->state = CLIENT_STATE_DONE;
-                    return -1;
+                    break;
                 }
                 tinydfs_result_free(&result);
             }
@@ -102,7 +101,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             if (client->create_file_op < 0) {
                 fprintf(stderr, "[Client] Failed to submit create file operation\n");
                 client->state = CLIENT_STATE_DONE;
-                return -1;
+                break;
             }
             client->step++;
             break;
@@ -116,7 +115,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 } else {
                     fprintf(stderr, "[Client] Step 3: Failed to create file\n");
                     client->state = CLIENT_STATE_DONE;
-                    return -1;
+                    break;
                 }
                 tinydfs_result_free(&result);
             }
@@ -131,7 +130,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 if (client->write_op < 0) {
                     fprintf(stderr, "[Client] Failed to submit write operation\n");
                     client->state = CLIENT_STATE_DONE;
-                    return -1;
+                    break;
                 }
             }
             client->step++;
@@ -146,7 +145,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 } else {
                     fprintf(stderr, "[Client] Step 5: Failed to write data\n");
                     client->state = CLIENT_STATE_DONE;
-                    return -1;
+                    break;
                 }
                 tinydfs_result_free(&result);
             }
@@ -160,7 +159,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             if (client->read_op < 0) {
                 fprintf(stderr, "[Client] Failed to submit read operation\n");
                 client->state = CLIENT_STATE_DONE;
-                return -1;
+                break;
             }
             client->step++;
             break;
@@ -174,7 +173,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 } else {
                     fprintf(stderr, "[Client] Step 7: Failed to read data\n");
                     client->state = CLIENT_STATE_DONE;
-                    return -1;
+                    break;
                 }
                 tinydfs_result_free(&result);
             }
@@ -187,7 +186,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             if (client->list_op < 0) {
                 fprintf(stderr, "[Client] Failed to submit list operation\n");
                 client->state = CLIENT_STATE_DONE;
-                return -1;
+                break;
             }
             client->step++;
             break;
@@ -206,7 +205,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 } else {
                     fprintf(stderr, "[Client] Step 9: Failed to list directory\n");
                     client->state = CLIENT_STATE_DONE;
-                    return -1;
+                    break;
                 }
                 tinydfs_result_free(&result);
             }
@@ -219,7 +218,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             if (client->delete_op < 0) {
                 fprintf(stderr, "[Client] Failed to submit delete operation\n");
                 client->state = CLIENT_STATE_DONE;
-                return -1;
+                break;
             }
             client->step++;
             break;
@@ -233,7 +232,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 } else {
                     fprintf(stderr, "[Client] Step 11: Failed to delete file\n");
                     client->state = CLIENT_STATE_DONE;
-                    return -1;
+                    break;
                 }
                 tinydfs_result_free(&result);
             }
@@ -260,7 +259,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
     }
 
     // Return the poll array from the TinyDFS client
-    return num_polled;
+    return tinydfs_process_events(client->tdfs, contexts, polled, 0);
 }
 
 void simulation_client_free(SimulationClient *client)
