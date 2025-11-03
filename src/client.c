@@ -15,8 +15,7 @@
 #include "message.h"
 #include <TinyDFS.h>
 
-#define TAG_METADATA_SERVER -2
-#define TAG_METADATA_SERVER_TO_CLIENT -3
+#define TAG_METADATA_SERVER -1
 
 #define TAG_RETRIEVE_METADATA_FOR_READ  1
 #define TAG_RETRIEVE_METADATA_FOR_WRITE 2
@@ -977,7 +976,7 @@ int tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled
                 RequestQueue *reqs;
 
                 int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
-                if (tag == TAG_METADATA_SERVER_TO_CLIENT)
+                if (tag == TAG_METADATA_SERVER)
                     reqs = &tdfs->metadata_server.reqs;
                 else {
                     assert(tag > -1);
@@ -1006,7 +1005,7 @@ int tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled
                     RequestQueue *reqs;
 
                     int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
-                    if (tag == TAG_METADATA_SERVER_TO_CLIENT)
+                    if (tag == TAG_METADATA_SERVER)
                         reqs = &tdfs->metadata_server.reqs;
                     else {
                         assert(tag > -1);

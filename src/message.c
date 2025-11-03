@@ -15,7 +15,7 @@ bool binary_read(BinaryReader *reader, void *dst, int len)
 void message_writer_init(MessageWriter *writer, ByteQueue *output, uint16_t type)
 {
     uint16_t version = MESSAGE_VERSION;
-    uint16_t dummy = 0; // Dummy value
+    uint32_t dummy = 0; // Dummy value
     writer->output = output;
     writer->start  = byte_queue_offset(output);
     byte_queue_write(output, &version, sizeof(version));

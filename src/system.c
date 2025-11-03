@@ -640,6 +640,7 @@ void update_simulation(void)
                 polled[num_polled].fd = (SOCKET) j;
                 polled[num_polled].events = desc->events;
                 polled[num_polled].revents = revents;
+                contexts[num_polled] = desc->context;
                 num_polled++;
             }
         }
@@ -651,17 +652,22 @@ void update_simulation(void)
 
             assert(current_time <= wakeup_time);
             current_time = wakeup_time;
+
+            //printf("T=%2.2f ms\n", (float) current_time / 1000000);
         }
 
         int timeout = -1;
         switch (current_process->type) {
             case PROCESS_TYPE_METADATA_SERVER:
+                //printf("  Metadata server woke up\n");
                 num_polled = metadata_server_step(&current_process->metadata_server, contexts, polled, num_polled, &timeout);
                 break;
             case PROCESS_TYPE_CHUNK_SERVER:
+                //printf("  Chunk server woke up\n");
                 num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled, &timeout);
                 break;
             case PROCESS_TYPE_CLIENT:
+                //printf("  Client woke up\n");
                 num_polled = simulation_client_step(&current_process->simulation_client, contexts, polled, num_polled, &timeout);
                 break;
         }

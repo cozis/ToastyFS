@@ -224,25 +224,25 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
             } else {
 
                 if (polled[i].revents & POLLIN) {
+                    byte_queue_write_setmincap(&conn->input, 1<<9);
                     ByteView buf = byte_queue_write_buf(&conn->input);
                     int num = sys_recv(conn->fd, (char*) buf.ptr, buf.len, 0);
                     if (num == 0)
                         defer_close = true;
                     else if (num < 0) {
-                        if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)
+                        if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN) // TODO: does Windows return these error codes or not?
                             defer_close = true;
                         num = 0;
                     }
                     byte_queue_write_ack(&conn->input, num);
                     ByteView msg = byte_queue_read_buf(&conn->input);
                     int ret = message_peek(msg, NULL, NULL);
+                    byte_queue_read_ack(&conn->input, 0);
                     if (ret < 0) {
                         // Invalid message
-                        byte_queue_read_ack(&conn->input, 0);
                         defer_close = true;
                     } else if (ret == 0) {
                         // Still buffering
-                        byte_queue_read_ack(&conn->input, 0);
                         if (byte_queue_full(&conn->input))
                             defer_close = true;
                     } else {
@@ -265,6 +265,8 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
                         defer_close = true;
                 }
             }
+
+            // TODO: byte_queue_error here?
 
             removed[i] = defer_close;
             if (0) {}

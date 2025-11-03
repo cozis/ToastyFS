@@ -185,26 +185,26 @@ process_client_create(MetadataServer *state, int conn_idx, ByteView msg)
     char     path_mem[1<<10];
     uint16_t path_len;
 
-    if (binary_read(&reader, &path_len, sizeof(path_len)))
+    if (!binary_read(&reader, &path_len, sizeof(path_len)))
         return -1;
 
     if (path_len > sizeof(path_mem))
         return -2;
 
-    if (binary_read(&reader, &path_mem, path_len))
+    if (!binary_read(&reader, &path_mem, path_len))
         return -1;
 
     string path = { path_mem, path_len };
 
     uint8_t is_dir;
-    if (binary_read(&reader, &is_dir, sizeof(path_len)))
+    if (!binary_read(&reader, &is_dir, sizeof(is_dir)))
         return -1;
 
     uint32_t chunk_size;
     if (is_dir)
         chunk_size = 0;
     else {
-        if (binary_read(&reader, &chunk_size, sizeof(chunk_size)))
+        if (!binary_read(&reader, &chunk_size, sizeof(chunk_size)))
             return -1;
     }
 
@@ -256,13 +256,13 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
     char     path_mem[1<<10];
     uint16_t path_len;
 
-    if (binary_read(&reader, &path_len, sizeof(path_len)))
+    if (!binary_read(&reader, &path_len, sizeof(path_len)))
         return -1;
 
     if (path_len > sizeof(path_mem))
         return -2;
 
-    if (binary_read(&reader, &path_mem, path_len))
+    if (!binary_read(&reader, &path_mem, path_len))
         return -1;
 
     string path = { path_mem, path_len };
@@ -315,13 +315,13 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
     char     path_mem[1<<10];
     uint16_t path_len;
 
-    if (binary_read(&reader, &path_len, sizeof(path_len)))
+    if (!binary_read(&reader, &path_len, sizeof(path_len)))
         return -1;
 
     if (path_len > sizeof(path_mem))
         return -2;
 
-    if (binary_read(&reader, &path_mem, path_len))
+    if (!binary_read(&reader, &path_mem, path_len))
         return -1;
 
     string path = { path_mem, path_len };
@@ -401,23 +401,23 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
     char     path_mem[1<<10];
     uint16_t path_len;
 
-    if (binary_read(&reader, &path_len, sizeof(path_len)))
+    if (!binary_read(&reader, &path_len, sizeof(path_len)))
         return -1;
 
     if (path_len > sizeof(path_mem))
         return -2;
 
-    if (binary_read(&reader, &path_mem, path_len))
+    if (!binary_read(&reader, &path_mem, path_len))
         return -1;
 
     string path = { path_mem, path_len };
 
     uint32_t offset;
-    if (binary_read(&reader, &offset, sizeof(offset)))
+    if (!binary_read(&reader, &offset, sizeof(offset)))
         return -1;
 
     uint32_t length;
-    if (binary_read(&reader, &length, sizeof(length)))
+    if (!binary_read(&reader, &length, sizeof(length)))
         return -1;
 
     // Check that there are no more bytes to read
@@ -502,27 +502,27 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     char     path_mem[1<<10];
     uint16_t path_len;
 
-    if (binary_read(&reader, &path_len, sizeof(path_len)))
+    if (!binary_read(&reader, &path_len, sizeof(path_len)))
         return -1;
 
     if (path_len > sizeof(path_mem))
         return -2;
 
-    if (binary_read(&reader, &path_mem, path_len))
+    if (!binary_read(&reader, &path_mem, path_len))
         return -1;
 
     string path = { path_mem, path_len };
 
     uint32_t offset;
-    if (binary_read(&reader, &offset, sizeof(offset)))
+    if (!binary_read(&reader, &offset, sizeof(offset)))
         return -1;
 
     uint32_t length;
-    if (binary_read(&reader, &length, sizeof(length)))
+    if (!binary_read(&reader, &length, sizeof(length)))
         return -1;
 
     uint32_t num_chunks;
-    if (binary_read(&reader, &num_chunks, sizeof(num_chunks)))
+    if (!binary_read(&reader, &num_chunks, sizeof(num_chunks)))
         return -1;
 
     #define MAX_CHUNKS_PER_WRITE 32
@@ -534,29 +534,29 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     for (uint32_t i = 0; i < num_chunks; i++) {
 
         SHA256 old_hash;
-        if (binary_read(&reader, &old_hash, sizeof(old_hash)))
+        if (!binary_read(&reader, &old_hash, sizeof(old_hash)))
             return -1;
 
         SHA256 new_hash;
-        if (binary_read(&reader, &new_hash, sizeof(new_hash)))
+        if (!binary_read(&reader, &new_hash, sizeof(new_hash)))
             return -1;
 
         uint8_t is_ipv4;
-        if (binary_read(&reader, &is_ipv4, sizeof(is_ipv4)))
+        if (!binary_read(&reader, &is_ipv4, sizeof(is_ipv4)))
             return -1;
 
         Address addr;
         addr.is_ipv4 = is_ipv4;
 
         if (is_ipv4) {
-            if (binary_read(&reader, &addr.ipv4, sizeof(addr.ipv4)))
+            if (!binary_read(&reader, &addr.ipv4, sizeof(addr.ipv4)))
                 return -1;
         } else {
-            if (binary_read(&reader, &addr.ipv6, sizeof(addr.ipv6)))
+            if (!binary_read(&reader, &addr.ipv6, sizeof(addr.ipv6)))
                 return -1;
         }
 
-        if (binary_read(&reader, &addr.port, sizeof(addr.port)))
+        if (!binary_read(&reader, &addr.port, sizeof(addr.port)))
             return -1;
 
         addrs[i] = addr;
