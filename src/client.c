@@ -906,6 +906,7 @@ static void process_event_for_read(TinyDFS *tdfs,
         }
 
     } else {
+
         // Handle chunk download response
         int range_idx = request_tag;
         BinaryReader reader = { msg.ptr, msg.len, 0 };
@@ -1010,6 +1011,7 @@ static int start_upload(TinyDFS *tdfs, Operation *o)
             continue;
 
         found = i;
+        break;
     }
 
     if (found < 0)
@@ -1025,6 +1027,10 @@ static int start_upload(TinyDFS *tdfs, Operation *o)
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_CREATE_CHUNK);
 
+        string data = {
+            .ptr = xxx,
+            .len = yyy,
+        };
         uint32_t chunk_size = o->chunk_size;
         uint32_t target_off = 0; // TODO
         uint32_t target_len = 0; // TODO
@@ -1043,6 +1049,10 @@ static int start_upload(TinyDFS *tdfs, Operation *o)
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_UPLOAD_CHUNK);
 
+        string data = {
+            .ptr = xxx,
+            .len = yyy,
+        };
         SHA256   target_hash = o->uploads[found].hash;
         uint32_t target_off = 0; // TODO
         uint32_t target_len = 0; // TODO
