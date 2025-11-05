@@ -8,3 +8,4 @@
 - Make parallel uploads/downloads configurable
 - Recalculate next write locations whenever a write occurs, not at each read
 - Make sure there are no mixups with the default tag value for connections, which I think is -1?
+- avoid replay attacks
