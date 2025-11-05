@@ -6,3 +6,5 @@
 - When a client received metadata and starts reading or writing to a chunk server, it should try connecting to all addresses of a chunk servers, not just the first one.
 - Return the number of bytes read or written in the TinyDFS_Result struct
 - Make parallel uploads/downloads configurable
+- Recalculate next write locations whenever a write occurs, not at each read
+- Make sure there are no mixups with the default tag value for connections, which I think is -1?

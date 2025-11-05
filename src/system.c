@@ -241,22 +241,6 @@ static void process_poll_array(Process *process,
     }
 }
 
-static bool is_leader(int argc, char **argv)
-{
-    for (int i = 0; i < argc; i++)
-        if (!strcmp("--leader", argv[i]) || !strcmp("-l", argv[i]))
-            return true;
-    return false;
-}
-
-static bool is_client(int argc, char **argv)
-{
-    for (int i = 0; i < argc; i++)
-        if (!strcmp("--client", argv[i]) || !strcmp("-c", argv[i]))
-            return true;
-    return false;
-}
-
 #define MAX_ARGS 128
 
 static bool is_space(char c)
@@ -303,8 +287,8 @@ int spawn_simulated_process(char *args)
             cur++;
     }
 
-    bool leader = is_leader(argc, argv);
-    bool client = is_client(argc, argv);
+    bool leader = getargb(argc, argv, "--leader");
+    bool client = getargb(argc, argv, "--client");
 
     Process *process = malloc(sizeof(Process));
     if (process == NULL)

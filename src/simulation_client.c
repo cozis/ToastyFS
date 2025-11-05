@@ -34,11 +34,8 @@ int simulation_client_init(SimulationClient *client, int argc, char **argv,
     uint16_t port;
     parse_server_addr(argc, argv, &addr, &port);
 
-    printf("[Client] Initializing TinyDFS client, connecting to %s:%u\n", addr, port);
-
     client->tdfs = tinydfs_init(addr, port);
     if (client->tdfs == NULL) {
-        fprintf(stderr, "[Client] Failed to initialize TinyDFS client\n");
         return -1;
     }
 
@@ -51,7 +48,7 @@ int simulation_client_init(SimulationClient *client, int argc, char **argv,
     client->list_op = -1;
     client->delete_op = -1;
 
-    printf("[Client] Initialized successfully\n");
+    printf("Client set up (remote=%s:%d)\n", addr, port);
 
     *timeout = 0;  // Wake up immediately to start processing
     return tinydfs_process_events(client->tdfs, contexts, polled, 0);

@@ -1,3 +1,5 @@
+#include <string.h>
+
 #include "basic.h"
 #include "system.h"
 
@@ -53,4 +55,42 @@ Time get_current_time(void)
         return res;
     }
 #endif
+}
+
+bool getargb(int argc, char **argv, char *name)
+{
+    for (int i = 0; i < argc; i++)
+        if (!strcmp(argv[i], name))
+            return true;
+    return false;
+}
+
+string getargs(int argc, char **argv, char *name, char *fallback)
+{
+    for (int i = 0; i < argc; i++)
+        if (!strcmp(argv[i], name)) {
+            i++;
+            if (i == argc)
+                break;
+            return (string) { argv[i], strlen(argv[i]) };
+        }
+    return (string) { fallback, strlen(fallback) };
+}
+
+int getargi(int argc, char **argv, char *name, int fallback)
+{
+    for (int i = 0; i < argc; i++)
+        if (!strcmp(argv[i], name)) {
+
+            i++;
+            if (i == argc)
+                break;
+
+            int tmp = atoi(argv[i]);
+            if (tmp == 0 && argv[i][0] != '0') // best effort
+                break;
+
+            return tmp;
+        }
+    return fallback;
 }

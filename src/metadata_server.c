@@ -480,6 +480,9 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
         int locations[MAX_CHUNK_SERVERS];
         int num_locations = choose_servers_for_write(state, locations, state->replication_factor);
 
+        uint32_t tmp = num_locations;
+        message_write(&writer, &tmp, sizeof(tmp));
+
         for (int j = 0; j < num_locations; j++)
             message_write_server_addr(&writer, &state->chunk_servers[locations[j]]);
 
@@ -752,11 +755,11 @@ static bool is_chunk_server_message_type(uint16_t type)
 
 int metadata_server_init(MetadataServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
-    (void) argc;
-    (void) argv;
+    string addr = getargs(argc, argv, "--addr", "127.0.0.1");
+    int    port = getargi(argc, argv, "--port", 8080);
 
-    char addr[] = "127.0.0.1";
-    uint16_t port = 8080;
+    if (port <= 0 || port >= 1<<16)
+        return -1;
 
     state->replication_factor = 3;
     if (state->replication_factor > MAX_CHUNK_SERVERS)
@@ -777,6 +780,12 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
         tcp_context_free(&state->tcp);
         return -1;
     }
+
+    printf("Metadata server set up (local=%.*s:%d)\n",
+        addr.len,
+        addr.ptr,
+        port
+    );
 
     *timeout = -1;  // No timeout needed for metadata server
     return tcp_register_events(&state->tcp, contexts, polled);

@@ -18,45 +18,28 @@ int main(int argc, char **argv)
     startup_simulation();
 
     // Spawn metadata server (leader)
-    spawn_simulated_process("--addr 127.0.0.1 8080 --leader");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8080 --leader");
 
     // Spawn chunk servers
-    spawn_simulated_process("--addr 127.0.0.1 8081");
-    spawn_simulated_process("--addr 127.0.0.1 8082");
-    spawn_simulated_process("--addr 127.0.0.1 8083");
-    spawn_simulated_process("--addr 127.0.0.1 8084");
-    spawn_simulated_process("--addr 127.0.0.1 8085");
-    spawn_simulated_process("--addr 127.0.0.1 8086");
-    spawn_simulated_process("--addr 127.0.0.1 8087");
-    spawn_simulated_process("--addr 127.0.0.1 8088");
-    spawn_simulated_process("--addr 127.0.0.1 8089");
-    spawn_simulated_process("--addr 127.0.0.1 8090");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8081 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_0/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8082 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_1/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8083 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_2/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8084 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_3/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8085 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_4/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8086 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_5/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8087 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_6/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8088 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_7/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8089 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_8/");
+    spawn_simulated_process("--addr 127.0.0.1 --port 8090 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_9/");
 
     // Spawn simulation client
-    spawn_simulated_process("--client --server 127.0.0.1 8080");
+    spawn_simulated_process("--client --remote-addr 127.0.0.1 --remote-port 8080");
 
     printf("Running simulation (press Ctrl+C to stop)...\n");
-
-    // Run for a limited number of iterations for testing
-    int iteration = 0;
-    int max_iterations = 100000;  // Increased to allow client operations to complete
-    while (!simulation_should_stop && iteration < max_iterations) {
+    while (!simulation_should_stop)
         update_simulation();
-        iteration++;
-
-        // Print progress every 10000 iterations
-        if (iteration % 10000 == 0) {
-            fprintf(stderr, "Iteration %d...\n", iteration);
-            fflush(stderr);
-        }
-    }
-
-    if (iteration >= max_iterations) {
-        printf("\nSimulation stopped after %d iterations\n", max_iterations);
-    }
 
     cleanup_simulation();
-    printf("Simulation complete!\n");
     return 0;
 }
 

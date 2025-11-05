@@ -53,17 +53,9 @@ int chunk_server_main(int argc, char **argv)
     return 0;
 }
 
-bool is_leader(int argc, char **argv)
-{
-    for (int i = 1; i < argc; i++)
-        if (!strcmp(argv[i], "--leader") || !strcmp(argv[i], "-l"))
-            return true;
-    return false;
-}
-
 int main(int argc, char **argv)
 {
-    if (is_leader(argc, argv))
+    if (getargb(argc, argv, "--leader"))
         return metadata_server_main(argc, argv);
     else
         return chunk_server_main(argc, argv);

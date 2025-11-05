@@ -24,16 +24,22 @@ bool addr_eql(Address a, Address b)
     return true;
 }
 
-static SOCKET create_listen_socket(char *addr, uint16_t port)
+static SOCKET create_listen_socket(string addr, uint16_t port)
 {
     SOCKET fd = sys_socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET)
         return INVALID_SOCKET;
 
+    char tmp[1<<10];
+    if (addr.len >= (int) sizeof(tmp))
+        return INVALID_SOCKET;
+    memcpy(tmp, addr.ptr, addr.len);
+    tmp[addr.len] = '\0';
+
     struct sockaddr_in bind_buf;
     bind_buf.sin_family = AF_INET;
     bind_buf.sin_port   = htons(port);
-    if (inet_pton(AF_INET, addr, &bind_buf.sin_addr) != 1)
+    if (inet_pton(AF_INET, tmp, &bind_buf.sin_addr) != 1)
         return INVALID_SOCKET;
 
     if (sys_bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf)))
@@ -110,7 +116,7 @@ int tcp_index_from_tag(TCP *tcp, int tag)
     return -1;
 }
 
-int tcp_listen(TCP *tcp, char *addr, uint16_t port)
+int tcp_listen(TCP *tcp, string addr, uint16_t port)
 {
     SOCKET listen_fd = create_listen_socket(addr, port);
     if (listen_fd == INVALID_SOCKET)

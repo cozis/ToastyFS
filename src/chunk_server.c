@@ -766,15 +766,18 @@ process_client_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView
 
 int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
-    (void) argc;
-    (void) argv;
+    string addr = getargs(argc, argv, "--addr", "127.0.0.1");
+    int    port = getargi(argc, argv, "--port", 8081);
+    string path = getargs(argc, argv, "--path", "chunk_server_data/");
 
-    char addr[] = "127.0.0.1";
-    uint16_t port = 8080;
-    string path = S("chunk_server_data_0/");
+    string remote_addr = getargs(argc, argv, "--remote-addr", "127.0.0.1");
+    int    remote_port = getargi(argc, argv, "--remote-port", 8080);
 
-    char     metadata_server_addr[] = "127.0.0.1";
-    uint16_t metadata_server_port = 8081;
+    if (port <= 0 || port >= 1<<16)
+        return -1;
+
+    if (remote_port <= 0 || remote_port >= 1<<16)
+        return -1;
 
     tcp_context_init(&state->tcp);
 
@@ -793,17 +796,36 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     state->downloading = false;
     pending_download_list_init(&state->pending_download_list);
 
+    char tmp[1<<10];
+    if (remote_addr.len >= (int) sizeof(tmp)) {
+        tcp_context_free(&state->tcp);
+        return -1;
+    }
+    memcpy(tmp, remote_addr.ptr, remote_addr.len);
+    tmp[remote_addr.len] = '\0';
+
     // Initialize metadata server address
     // // TODO: This should also support IPv6
     state->metadata_server_addr.is_ipv4 = true;
-    if (inet_pton(AF_INET, metadata_server_addr, &state->metadata_server_addr.ipv4) != 1) {
+    if (inet_pton(AF_INET, tmp, &state->metadata_server_addr.ipv4) != 1) {
         tcp_context_free(&state->tcp);
         chunk_store_free(&state->store);
         return -1;
     }
-    state->metadata_server_addr.port = metadata_server_port;
+    state->metadata_server_addr.port = remote_port;
 
     state->metadata_server_disconnect_time = 0;
+
+    printf("Chunk server set up (local=%.*s:%d, remote=%.*s:%d, path=%.*s)\n",
+        addr.len,
+        addr.ptr,
+        port,
+        remote_addr.len,
+        remote_addr.ptr,
+        remote_port,
+        path.len,
+        path.ptr
+    );
 
     *timeout = -1;  // No timeout needed for chunk server initially
     return tcp_register_events(&state->tcp, contexts, polled);

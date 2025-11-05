@@ -25,4 +25,8 @@ typedef uint64_t Time;
 bool streq(string s1, string s2);
 Time get_current_time(void);
 
+bool   getargb(int argc, char **argv, char *name);
+string getargs(int argc, char **argv, char *name, char *fallback);
+int    getargi(int argc, char **argv, char *name, int fallback);
+
 #endif // BASIC_INCLUDED

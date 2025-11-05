@@ -1,3 +1,4 @@
+#include "basic.h"
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
@@ -39,6 +40,57 @@ typedef enum {
 } OperationType;
 
 typedef struct {
+    SHA256  hash;
+    char *  src;
+    int     len;
+    int     num_holders;
+    Address holders[MAX_CHUNK_HOLDERS][MAX_CHUNK_SERVER_ADDR];
+} WriteChunk;
+
+typedef enum {
+
+    // This upload wasn't started yet
+    UPLOAD_WAITING,
+
+    // This upload started
+    UPLOAD_PENDING,
+
+    // This upload was WAITING but then
+    // was marked as IGNORED
+    UPLOAD_IGNORED,
+
+    // Upload was PENDING and FAILED
+    UPLOAD_FAILED,
+
+    // Upload was PENDING, then COMPLETED
+    // successfully
+    UPLOAD_COMPLETED,
+
+} UploadScheduleStatus;
+
+typedef struct {
+    UploadScheduleStatus status;
+
+    // Location of the chunk to be patched.
+    // The server local ID is used to indicate
+    // that different addresses refer to the
+    // same server.
+    // The no_hash flag indicates that this is
+    // a new chunk and doesn't need to patch
+    // an old one.
+    int     server_lid;
+    bool    no_hash;
+    Address address;
+    SHA256  hash;
+
+    // The patch offset and data
+    char *src;
+    int   off;
+    int   len;
+
+} UploadSchedule;
+
+typedef struct {
 
     OperationType type;
 
@@ -50,6 +102,9 @@ typedef struct {
     int ranges_head;
     int ranges_count;
     int num_pending;
+
+    UploadSchedule *uploads;
+    int num_uploads;
 
     TinyDFS_Result result;
 } Operation;
@@ -129,7 +184,6 @@ TinyDFS *tinydfs_init(char *addr, uint16_t port)
     tdfs->num_chunk_servers = 0;
     for (int i = 0; i < MAX_CHUNK_SERVERS; i++) {
         tdfs->chunk_servers[i].used = false;
-        // Note: RequestQueue initialized in get_chunk_server_connection()
     }
 
     return tdfs;
@@ -885,6 +939,90 @@ static void process_event_for_read(TinyDFS *tdfs,
     }
 }
 
+static int start_upload(Operation *o)
+{
+    int found = -1;
+
+    // Find a PENDING operation that can be started
+    for (int i = 0; i < o->num_uploads; i++) {
+
+        if (o->status != UPLOAD_PENDING)
+            continue;
+
+        // Can't start uploads of a chunk to the
+        // same server twice.
+        bool invalid = false;
+        for (int j = 0; j < o->num_uploads; j++) {
+
+            if (j == i)
+                continue;
+
+            if (o->uploads[i].server_lid == o->uploads[j].server_lid ||
+                addr_eql(o->uploads[i].address, o->uploads[j].address)) {
+                invalid = true;
+                break;
+            }
+        }
+
+        if (invalid)
+            continue;
+
+        found = i;
+    }
+
+    if (found < 0)
+        return -1; // No upload can be started at this time
+
+    int ret = get_chunk_server_connection(tdfs, o->uploads[found].address);
+
+    int tag = xxx;
+
+    ByteQueue *output;
+    int ret = tcp_connect(tcp, o->uploads[found].address, tag, &output);
+    if (ret < 0)
+        return -1;
+
+    if (o->uploads[found].no_hash) {
+
+        MessageWriter writer;
+        message_writer_init(&writer, output, MESSAGE_TYPE_CREATE_CHUNK);
+
+        uint32_t chunk_size = xxx;
+        uint32_t target_off = 0;
+        uint32_t target_len = 0;
+
+        message_write(&writer, &chunk_size, sizeof(chunk_size));
+        message_write(&writer, &target_off, sizeof(target_off));
+        message_write(&writer, &target_len, sizeof(target_len));
+        message_write(&writer, data.ptr, data.len);
+
+        if (message_writer_free(&writer) < 0) {
+            // TODO
+        }
+
+    } else {
+
+        MessageWriter writer;
+        message_writer_init(&writer, output, MESSAGE_TYPE_UPLOAD_CHUNK);
+
+        SHA256   target_hash = xxx;
+        uint32_t target_off = 0;
+        uint32_t target_len = 0;
+
+        message_write(&writer, &target_hash, sizeof(target_hash));
+        message_write(&writer, &target_off, sizeof(target_off));
+        message_write(&writer, &target_len, sizeof(target_len));
+        message_write(&writer, data.ptr, data.len);
+
+        if (message_writer_free(&writer) < 0) {
+            // TODO
+        }
+    }
+
+    o->uploads[found].status = UPLOAD_PENDING;
+    return 0;
+}
+
 static void process_event_for_write(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
@@ -896,14 +1034,261 @@ static void process_event_for_write(TinyDFS *tdfs,
     switch (request_tag) {
 
         case TAG_RETRIEVE_METADATA_FOR_WRITE:
-        // Process metadata response and initiate chunk uploads
-        // This would involve:
-        // 1. Parsing the metadata response (chunk locations, hashes)
-        // 2. Computing new chunk data by patching existing chunks
-        // 3. Uploading new chunks to chunk servers
-        // 4. Committing the write to the metadata server with new hashes
-        // For now, this operation is not fully implemented
-        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+        {
+            // We are expecting one of:
+            //   MESSAGE_TYPE_READ_ERROR
+            //   MESSAGE_TYPE_READ_SUCCESS
+
+            BinaryReader reader = { msg.ptr, msg.len, 0 };
+
+            if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                return;
+            }
+
+            uint16_t type;
+            if (!binary_read(&reader, &type, sizeof(type))) {
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                return;
+            }
+
+            if (type != MESSAGE_TYPE_READ_SUCCESS) {
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                return;
+            }
+
+            if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                return;
+            }
+
+            uint32_t chunk_size;
+            if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                return;
+            }
+
+            uint32_t num_hashes;
+            if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                return;
+            }
+
+            // TODO: !!! IMPORTANT !!! This should also account for new chunks, not patched. It does not do so at the moment
+            // TODO: This may overestimate by a lot the actual memory required by the array
+            client->operations[opidx].uploads = sys_malloc(num_hashes * MAX_CHUNK_HOLDERS * MAX_CHUNK_SERVER_ADDR * sizeof(UploadSchedule));
+            if (client->operations[opidx].uploads == NULL) {
+                // TODO
+            }
+
+            int next_server_lid = 0;
+            client->operations[opidx].num_uploads = 0;
+            for (uint32_t i = 0; i < num_hashes; i++) {
+
+                void *src = xxx;
+                int   off = xxx;
+                int   len = xxx;
+
+                SHA256 hash;
+                if (!binary_read(&reader, &hash, sizeof(hash))) {
+                    tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                    return;
+                }
+
+                uint32_t num_holders;
+                if (!binary_read(&reader, &num_holders, sizeof(num_holders))) {
+                    tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                    return;
+                }
+
+                for (uint32_t j = 0; j < num_holders; j++) {
+
+                    int server_lid = next_server_lid;
+                    next_server_lid++;
+
+                    uint32_t num_ipv4;
+                    if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+
+                    for (uint32_t k = 0; k < num_ipv4; k++) {
+
+                        IPv4 ipv4;
+                        if (!binary_read(&reader, &ipv4, sizeof(ipv4))) {
+                            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                            return;
+                        }
+
+                        uint16_t port;
+                        if (!binary_read(&reader, &port, sizeof(port))) {
+                            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                            return;
+                        }
+
+                        UploadSchedule upload;
+                        upload.status = UPLOAD_WAITING;
+                        upload.server_lid = server_lid;
+                        upload.no_hash = false;
+                        upload.address.is_ipv4 = true;
+                        upload.address.ipv4 = ipv4;
+                        upload.address.port = port;
+                        upload.hash = hash;
+                        upload.src = src;
+                        upload.off = off;
+                        upload.len = len;
+                        int n = client->operations[opidx].num_uploads++;
+                        client->operations[opidx].uploads[n] = upload;
+                    }
+
+                    uint32_t num_ipv6;
+                    if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+
+                    for (uint32_t k = 0; k < num_ipv6; k++) {
+
+                        IPv6 ipv6;
+                        if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
+                            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                            return;
+                        }
+
+                        uint16_t port;
+                        if (!binary_read(&reader, &port, sizeof(port))) {
+                            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                            return;
+                        }
+
+                        UploadSchedule upload;
+                        upload.status = UPLOAD_WAITING;
+                        upload.server_lid = server_lid;
+                        upload.no_hash = false;
+                        upload.address.is_ipv4 = false;
+                        upload.address.ipv6 = ipv6;
+                        upload.address.port = port;
+                        upload.hash = hash;
+                        upload.src = src;
+                        upload.off = off;
+                        upload.len = len;
+                        int n = client->operations[opidx].num_uploads++;
+                        client->operations[opidx].uploads[n] = upload;
+                    }
+                }
+            }
+
+            uint32_t num_locations;
+            if (!binary_read(&reader, &num_locations, sizeof(num_locations))) {
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                return;
+            }
+
+            for (uint32_t i = 0; i < num_locations; i++) {
+
+                uint32_t num_ipv4;
+                if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
+                    tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                    return;
+                }
+
+                for (uint32_t k = 0; k < num_ipv4; k++) {
+
+                    IPv4 ipv4;
+                    if (!binary_read(&reader, &ipv4, sizeof(ipv4))) {
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+
+                    uint16_t port;
+                    if (!binary_read(&reader, &port, sizeof(port))) {
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+
+                    // TODO
+                }
+
+                uint32_t num_ipv6;
+                if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
+                    tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                    return;
+                }
+
+                for (uint32_t k = 0; k < num_ipv6; k++) {
+
+                    IPv6 ipv6;
+                    if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+
+                    uint16_t port;
+                    if (!binary_read(&reader, &port, sizeof(port))) {
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+
+                    // TODO
+                }
+            }
+
+            // Now start the first batch of uploads
+            int started = 0;
+            for (int i = 0; i < xxx; i++) {
+                if (start_upload(&tdfs->operations[opidx]) == 0)
+                    started++;
+            }
+
+            if (started == 0) {
+                // We already failed
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                return;
+            }
+
+            // TODO: Now we need to upload the patches to N of the
+            //       chunk servers that are holding each old chunk
+            //       All new chunks need to be written to the specified
+            //       locations at least N times. If any upload fails,
+            //       the write fails. If all writes succede, the client
+            //       sends the metadata server a WRITE operation
+            //       swapping the old hashes with the new ones.
+            //
+            // The algorithm should go like this:
+            //   - Iterate over each chunk
+            //     - Pick the first N holders of the chunk. If less than N
+            //       are available, pick M.
+            //     - For each pick, take the first address and start the
+            //       chunk upload
+            //
+            // If an upload fails,
+            //
+            //
+            //
+            // example upload schedule:
+            //   chunk_A server_A addr_0
+            //   chunk_A server_A addr_1
+            //   chunk_A server_B addr_0
+            //   chunk_A server_B addr_1
+            //   chunk_A server_B addr_2
+            //   chunk_A server_C addr_0
+            //   chunk_B server_D addr_0
+            //   chunk_B server_E addr_0
+            //   chunk_B server_E addr_1
+            //   chunk_B server_F addr_0
+            //
+            // If an upload succedes, all uploads of the chunk to the same server
+            // are removed and if this was the N-th successful upload of a chunk,
+            // all uploads of the same chunk are removed.
+            //
+            // Uploads to the same chunk server with different addresses can't
+            // be parallelized, so
+
+            // The client should not try any random N chunk servers
+            // for upload. It must try all chunk servers until N respond
+
+            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+        }
         return;
 
         default:
