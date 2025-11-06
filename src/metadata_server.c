@@ -509,7 +509,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
         return -1;
 
     if (path_len > sizeof(path_mem))
-        return -2;
+        return -2; // TODO: what is this -2 business?
 
     if (!binary_read(&reader, &path_mem, path_len))
         return -1;

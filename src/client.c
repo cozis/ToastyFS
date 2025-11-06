@@ -1,5 +1,6 @@
 #include "basic.h"
 #include <assert.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -62,18 +63,25 @@ typedef struct {
     // The server local ID is used to indicate
     // that different addresses refer to the
     // same server.
-    // The no_hash flag indicates that this is
-    // a new chunk and doesn't need to patch
-    // an old one.
+    //
+    // The hash_lid is the index into the array
+    // of hashes held by the parent operation struct.
+    // This is necessary to duplicate chunks with
+    // the same hash in the write.
     int     server_lid;
     bool    no_hash;
     Address address;
-    SHA256  hash;
+    int     hash_lid;
 
     // The patch offset and data
     char *src;
     int   off;
     int   len;
+
+    // When the upload is successfull, this will
+    // hold the hash of the newly created or modified
+    // patch.
+    SHA256 final_hash;
 
 } UploadSchedule;
 
@@ -100,6 +108,8 @@ typedef struct {
     int num_pending;
 
     // Write fields
+    SHA256 *hashes;
+    int num_hashes;
     uint32_t chunk_size;
     UploadSchedule *uploads;
     int num_uploads;
@@ -1138,6 +1148,13 @@ static void process_event_for_write(TinyDFS *tdfs,
             return;
         }
 
+
+        tdfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
+        tdfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
+        if (tdfs->operations[opidx].hashes == NULL) {
+            // TODO
+        }
+
         // TODO: !!! IMPORTANT !!! This should also account for new chunks, not patched. It does not do so at the moment
         // TODO: This may overestimate by a lot the actual memory required by the array
         tdfs->operations[opidx].uploads = sys_malloc(num_hashes * MAX_CHUNK_SERVERS * MAX_SERVER_ADDRS * sizeof(UploadSchedule));
@@ -1207,11 +1224,10 @@ static void process_event_for_write(TinyDFS *tdfs,
                     UploadSchedule upload;
                     upload.status = UPLOAD_WAITING;
                     upload.server_lid = server_lid;
-                    upload.no_hash = false;
                     upload.address.is_ipv4 = true;
                     upload.address.ipv4 = ipv4;
                     upload.address.port = port;
-                    upload.hash = hash;
+                    upload.hash_lid = i;
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
@@ -1241,11 +1257,10 @@ static void process_event_for_write(TinyDFS *tdfs,
                     UploadSchedule upload;
                     upload.status = UPLOAD_WAITING;
                     upload.server_lid = server_lid;
-                    upload.no_hash = false;
                     upload.address.is_ipv4 = false;
                     upload.address.ipv6 = ipv6;
                     upload.address.port = port;
-                    upload.hash = hash;
+                    upload.hash_lid = i;
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
@@ -1375,19 +1390,135 @@ static void process_event_for_write(TinyDFS *tdfs,
         //     need performing anymore, then start new uploads
         //   - On error, return an overall error
 
-        // Count the number of PENDING uploads and
-        // start uploads until N are pending.
-        int parallel_limit = 5; // TODO: make configurable
-        int num_pending = count_pending_uploads(tdfs, opidx);
-        int newly_started = 0;
-        for (int i = 0; i < parallel_limit - num_pending; i++) {
-            if (start_upload(tdfs, opidx) < 0)
-                break;
-            newly_started++;
+        // TODO: Should differentiate between chunk creation
+        //       and chunk update.
+
+        BinaryReader reader = { msg.ptr, msg.len, 0 };
+
+        // version
+        if (!binary_read(&reader, NULL, sizeof(uint16_t)))
+            return NULL;
+
+        uint16_t type;
+        if (!binary_read(&reader, &type, sizeof(uint16_t)))
+            return NULL;
+
+        // length
+        if (!binary_read(&reader, NULL, sizeof(uint32_t)))
+            return NULL;
+
+        // Check that there is nothing else to read
+        if (binary_read(&reader, NULL, 1))
+            return NULL;
+
+        if (type != MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS) {
+            tdfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
+        } else {
+            tdfs->operations[opidx].uploads[found].status = UPLOAD_COMPLETED;
+            for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++) {
+
+                if (tdfs->operations[opidx].uploads[i].status == UPLOAD_WAITING
+                    && tdfs->operations[opidx].uploads[i].hash_lid == tdfs->operations[opidx].uploads[found].hash_lid
+                    && (addr_eql(tdfs->operations[opidx].uploads[i].addr, tdfs->operations[opidx].uploads[found].addr)
+                    || tdfs->operations[opidx].uploads[i].server_lid == tdfs->operations[opidx].uploads[found].server_lid))
+                    tdfs->operations[opidx].uploads[i].status = UPLOAD_IGNORED;
+            }
+
+            // TODO: the new chunk hash should be stored in
+            //       the upload struct here
         }
 
-        if (num_pending + newly_started == 0)
-            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+        // Count the number of PENDING uploads and
+        // start uploads until N are pending or an
+        // error occurs
+        int parallel_limit = 5; // TODO: make configurable
+        int num_pending = count_pending_uploads(tdfs, opidx);
+        while (num_pending < parallel_limit) {
+            if (start_upload(tdfs, opidx) < 0)
+                break;
+            num_pending++;
+        }
+
+        if (num_pending == 0) {
+
+            // TODO: Check whether we managed to replicate
+            //       all chunks.
+            //
+            // We need to make sure that every chunk was
+            // uploaded to at least N different servers
+
+            typedef struct {
+                SHA256 old_hash;
+                SHA256 new_hash;
+                int replication;
+            } ChunkUploadResult;
+
+            int num_upload_results = tdfs->operations[opidx].num_hashes;
+            ChunkUploadResult *upload_results = sys_malloc(num_upload_results * sizeof(ChunkUploadResult));
+            if (upload_results == NULL) {
+                // TODO
+            }
+
+            for (int i = 0; i < num_upload_results; i++) {
+                upload_results[i].old_hash = tdfs->operations[opidx].hashes[i];
+                upload_results[i].replication = 0;
+            }
+
+            for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++)
+                if (tdfs->operations[opidx].uploads[i].status == UPLOAD_COMPLETED) {
+                    upload_results[tdfs->operations[opidx].uploads[i].hash_lid].new_hash = tdfs->operations[opidx].uploads[i].final_hash;
+                    upload_results[tdfs->operations[opidx].uploads[i].hash_lid].replication++;
+                }
+
+            // Now check that each chunk is replicated
+            // at least N times
+
+            bool ok = false;
+            for (int i = 0; i < num_upload_results; i++) {
+                if (upload_results[i].replication < min_replication) {
+                    ok = false;
+                    break;
+                }
+            }
+
+            if (!ok) {
+                tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                free(upload_results);
+                return;
+            }
+
+            MessageWriter writer;
+            metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_WRITE);
+
+            string   path   = xxx;
+            uint32_t offset = xxx;
+            uint32_t length = xxx;
+
+            if (path.len > UINT16_MAX) {
+                // TODO
+            }
+            uint16_t path_len = path.len;
+
+            uint32_t num_chunks = num_upload_results;
+
+            message_write(&writer, &path_len, sizeof(path_len));
+            message_write(&writer, path.ptr, path.len);
+            message_write(&writer, &offset, sizeof(offset));
+            message_write(&writer, &length, sizeof(length));
+            message_write(&writer, &num_chunks, sizeof(num_chunks));
+
+            for (int i = 0; i < num_upload_results; i++) {
+                message_write(&writer, &upload_results[i].old_hash, sizeof(upload_results[i].old_hash));
+                message_write(&writer, &upload_results[i].new_hash, sizeof(upload_results[i].new_hash));
+                // TODO
+            }
+
+            free(upload_results);
+
+            if (metadata_server_request_end(tdfs, &writer, opidx, TAG_COMMIT_WRITE) < 0) {
+                // TODO
+            }
+        }
 
     } else {
 
