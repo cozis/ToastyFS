@@ -26,6 +26,9 @@
 #define TAG_UPLOAD_CHUNK_MIN 1000
 #define TAG_UPLOAD_CHUNK_MAX 2000
 
+#define PARALLEL_LIMIT 5
+#define REPLICATION_FACTOR 3
+
 typedef struct {
     SHA256   hash;
     char*    dst;
@@ -69,7 +72,6 @@ typedef struct {
     // This is necessary to duplicate chunks with
     // the same hash in the write.
     int     server_lid;
-    bool    no_hash;
     Address address;
     int     hash_lid;
 
@@ -98,6 +100,7 @@ typedef struct {
 
     OperationType type;
 
+    string path; // Only set for writes
     void *ptr;
     int   off;
     int   len;
@@ -355,7 +358,7 @@ static int send_download_chunk(TinyDFS *tdfs, int chunk_server_idx,
 
 static void close_chunk_server(TinyDFS *tdfs, int chunk_server_idx)
 {
-    int conn_idx = tcp_index_from_tag(&tdfs->tcp, xxx);
+    int conn_idx = tcp_index_from_tag(&tdfs->tcp, chunk_server_idx);
     tcp_close(&tdfs->tcp, conn_idx);
 }
 
@@ -519,6 +522,8 @@ int tinydfs_submit_write(TinyDFS *tdfs, char *path, int path_len, int off, void 
     OperationType type = OPERATION_TYPE_WRITE;
     int opidx = alloc_operation(tdfs, type, off, src, len);
     if (opidx < 0) return -1;
+
+    tdfs->operations[opidx].path = (string) { path, path_len }; // TODO: must be a copy
 
     if (send_read_message(tdfs, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, (string) { path, path_len }, off, len) < 0) {
         free_operation(tdfs, opidx);
@@ -1046,20 +1051,20 @@ static int start_upload(TinyDFS *tdfs, int opidx)
         return -1;
     }
 
-    if (tdfs->operations[opidx].uploads[found].no_hash) {
+    if (tdfs->operations[opidx].uploads[found].hash_lid < 0) {
 
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_CREATE_CHUNK);
 
-        string   data       = tdfs->operations[opidx].uploads[found].data;
+        char    *data_ptr   = tdfs->operations[opidx].uploads[found].src;
         uint32_t chunk_size = tdfs->operations[opidx].chunk_size;
         uint32_t target_off = tdfs->operations[opidx].uploads[found].off;
-        uint32_t target_len = data.len;
+        uint32_t target_len = tdfs->operations[opidx].uploads[found].len;
 
         message_write(&writer, &chunk_size, sizeof(chunk_size));
         message_write(&writer, &target_off, sizeof(target_off));
         message_write(&writer, &target_len, sizeof(target_len));
-        message_write(&writer, data.ptr, data.len);
+        message_write(&writer, data_ptr, target_len);
 
         if (!message_writer_free(&writer)) {
             close_chunk_server(tdfs, chunk_server_idx);
@@ -1072,15 +1077,15 @@ static int start_upload(TinyDFS *tdfs, int opidx)
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_UPLOAD_CHUNK);
 
-        string   data        = tdfs->operations[opidx].uploads[found].data;
-        SHA256   target_hash = tdfs->operations[opidx].uploads[found].hash;
+        char    *data_ptr    = tdfs->operations[opidx].uploads[found].src;
+        SHA256   target_hash = tdfs->operations[opidx].hashes[tdfs->operations[opidx].uploads[found].hash_lid];
         uint32_t target_off  = tdfs->operations[opidx].uploads[found].off;
-        uint32_t target_len  = data.len;
+        uint32_t target_len  = tdfs->operations[opidx].uploads[found].len;
 
         message_write(&writer, &target_hash, sizeof(target_hash));
         message_write(&writer, &target_off,  sizeof(target_off));
         message_write(&writer, &target_len,  sizeof(target_len));
-        message_write(&writer, data.ptr, data.len);
+        message_write(&writer, data_ptr, target_len);
 
         if (!message_writer_free(&writer)) {
             close_chunk_server(tdfs, chunk_server_idx);
@@ -1326,7 +1331,7 @@ static void process_event_for_write(TinyDFS *tdfs,
 
         // Now start the first batch of uploads
         int started = 0;
-        for (int i = 0; i < xxx; i++) {
+        for (int i = 0; i < PARALLEL_LIMIT; i++) {
             if (start_upload(tdfs, opidx) == 0)
                 started++;
         }
@@ -1396,20 +1401,28 @@ static void process_event_for_write(TinyDFS *tdfs,
         BinaryReader reader = { msg.ptr, msg.len, 0 };
 
         // version
-        if (!binary_read(&reader, NULL, sizeof(uint16_t)))
-            return NULL;
+        if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
+            // TODO
+            return;
+        }
 
         uint16_t type;
-        if (!binary_read(&reader, &type, sizeof(uint16_t)))
-            return NULL;
+        if (!binary_read(&reader, &type, sizeof(uint16_t))) {
+            // TODO
+            return;
+        }
 
         // length
-        if (!binary_read(&reader, NULL, sizeof(uint32_t)))
-            return NULL;
+        if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
+            // TODO
+            return;
+        }
 
         // Check that there is nothing else to read
-        if (binary_read(&reader, NULL, 1))
-            return NULL;
+        if (binary_read(&reader, NULL, 1)) {
+            // TODO
+            return;
+        }
 
         if (type != MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS) {
             tdfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
@@ -1419,7 +1432,7 @@ static void process_event_for_write(TinyDFS *tdfs,
 
                 if (tdfs->operations[opidx].uploads[i].status == UPLOAD_WAITING
                     && tdfs->operations[opidx].uploads[i].hash_lid == tdfs->operations[opidx].uploads[found].hash_lid
-                    && (addr_eql(tdfs->operations[opidx].uploads[i].addr, tdfs->operations[opidx].uploads[found].addr)
+                    && (addr_eql(tdfs->operations[opidx].uploads[i].address, tdfs->operations[opidx].uploads[found].address)
                     || tdfs->operations[opidx].uploads[i].server_lid == tdfs->operations[opidx].uploads[found].server_lid))
                     tdfs->operations[opidx].uploads[i].status = UPLOAD_IGNORED;
             }
@@ -1431,9 +1444,8 @@ static void process_event_for_write(TinyDFS *tdfs,
         // Count the number of PENDING uploads and
         // start uploads until N are pending or an
         // error occurs
-        int parallel_limit = 5; // TODO: make configurable
         int num_pending = count_pending_uploads(tdfs, opidx);
-        while (num_pending < parallel_limit) {
+        while (num_pending < PARALLEL_LIMIT) {
             if (start_upload(tdfs, opidx) < 0)
                 break;
             num_pending++;
@@ -1475,7 +1487,7 @@ static void process_event_for_write(TinyDFS *tdfs,
 
             bool ok = false;
             for (int i = 0; i < num_upload_results; i++) {
-                if (upload_results[i].replication < min_replication) {
+                if (upload_results[i].replication < REPLICATION_FACTOR) {
                     ok = false;
                     break;
                 }
@@ -1490,9 +1502,9 @@ static void process_event_for_write(TinyDFS *tdfs,
             MessageWriter writer;
             metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_WRITE);
 
-            string   path   = xxx;
-            uint32_t offset = xxx;
-            uint32_t length = xxx;
+            string   path   = tdfs->operations[opidx].path;
+            uint32_t offset = tdfs->operations[opidx].off;
+            uint32_t length = tdfs->operations[opidx].len;
 
             if (path.len > UINT16_MAX) {
                 // TODO
