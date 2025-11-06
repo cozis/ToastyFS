@@ -99,6 +99,7 @@ typedef struct {
     int ranges_count;
     int num_pending;
 
+    // Write fields
     uint32_t chunk_size;
     UploadSchedule *uploads;
     int num_uploads;
@@ -267,7 +268,7 @@ have_insertection(Address *a, int a_num, Address *b, int b_num)
 }
 
 // Get or create connection to a chunk server
-static ByteQueue *get_chunk_server_output_buffer(TinyDFS *tdfs, Address *addrs, int num_addrs)
+static int get_chunk_server(TinyDFS *tdfs, Address *addrs, int num_addrs, ByteQueue **output)
 {
     // Check if already connected
 
@@ -283,16 +284,18 @@ static ByteQueue *get_chunk_server_output_buffer(TinyDFS *tdfs, Address *addrs, 
         }
     }
 
-    ByteQueue *output;
     if (found == -1) {
 
         if (tdfs->num_chunk_servers == MAX_CHUNK_SERVERS)
-            return NULL;
+            return -1;
 
         // Find free slot
         found = 0;
         while (tdfs->chunk_servers[found].used)
             found++;
+
+        if (tcp_connect(&tdfs->tcp, addrs[0], found, output) < 0)
+            return -1;
 
         if (num_addrs > MAX_SERVER_ADDRS)
             num_addrs = MAX_SERVER_ADDRS;
@@ -307,19 +310,15 @@ static ByteQueue *get_chunk_server_output_buffer(TinyDFS *tdfs, Address *addrs, 
 
         tdfs->num_chunk_servers++;
 
-        if (tcp_connect(&tdfs->tcp, addrs[0], found, &output) < 0) {
-            // TODO
-            return NULL;
-        }
-
     } else {
+
         int conn_idx = tcp_index_from_tag(&tdfs->tcp, found);
         assert(conn_idx > -1);
 
-        output = tcp_output_buffer(&tdfs->tcp, conn_idx);
+        *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
     }
 
-    return output;
+    return found;
 }
 
 // Send download request for a chunk
@@ -342,6 +341,12 @@ static int send_download_chunk(TinyDFS *tdfs, int chunk_server_idx,
 
     RequestQueue *reqs = &tdfs->chunk_servers[chunk_server_idx].reqs;
     return request_queue_push(reqs, (Request) { range_idx, opidx });
+}
+
+static void close_chunk_server(TinyDFS *tdfs, int chunk_server_idx)
+{
+    int conn_idx = tcp_index_from_tag(&tdfs->tcp, xxx);
+    tcp_close(&tdfs->tcp, conn_idx);
 }
 
 static void
@@ -882,7 +887,7 @@ static void process_event_for_read(TinyDFS *tdfs,
         // Start first download
         if (num_ranges_with_data > 0) {
             Range *r = &ranges[0];
-            int cs_idx = get_chunk_server_connection(tdfs, r->server_addr);
+            int cs_idx = get_chunk_server(tdfs, &r->server_addr, 1, NULL);
             if (cs_idx < 0) {
                 sys_free(ranges);
                 tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_READ_ERROR };
@@ -962,7 +967,7 @@ static void process_event_for_read(TinyDFS *tdfs,
         if (next_idx < tdfs->operations[opidx].ranges_count) {
             Range *r = &tdfs->operations[opidx].ranges[next_idx];
 
-            int cs_idx = get_chunk_server_connection(tdfs, r->server_addr);
+            int cs_idx = get_chunk_server(tdfs, &r->server_addr, 1, NULL);
             if (cs_idx >= 0) {
                 r->chunk_server_idx = cs_idx;
                 if (send_download_chunk(tdfs, cs_idx, r->hash, r->offset_within_chunk,
@@ -982,26 +987,26 @@ static void process_event_for_read(TinyDFS *tdfs,
     }
 }
 
-static int start_upload(TinyDFS *tdfs, Operation *o)
+static int start_upload(TinyDFS *tdfs, int opidx)
 {
     int found = -1;
 
     // Find a PENDING operation that can be started
-    for (int i = 0; i < o->num_uploads; i++) {
+    for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++) {
 
-        if (o->uploads[i].status != UPLOAD_PENDING)
+        if (tdfs->operations[opidx].uploads[i].status != UPLOAD_WAITING)
             continue;
 
         // Can't start uploads of a chunk to the
         // same server twice.
         bool invalid = false;
-        for (int j = 0; j < o->num_uploads; j++) {
+        for (int j = 0; j < tdfs->operations[opidx].num_uploads; j++) {
 
             if (j == i)
                 continue;
 
-            if (o->uploads[i].server_lid == o->uploads[j].server_lid ||
-                addr_eql(o->uploads[i].address, o->uploads[j].address)) {
+            if (tdfs->operations[opidx].uploads[i].server_lid == tdfs->operations[opidx].uploads[j].server_lid ||
+                addr_eql(tdfs->operations[opidx].uploads[i].address, tdfs->operations[opidx].uploads[j].address)) {
                 invalid = true;
                 break;
             }
@@ -1017,23 +1022,29 @@ static int start_upload(TinyDFS *tdfs, Operation *o)
     if (found < 0)
         return -1; // No upload can be started at this time
 
-    ByteQueue *output = get_chunk_server_output_buffer(tdfs, &o->uploads[found].address, 1);
-    if (output == NULL) {
-        // TODO
+    int tag = TAG_UPLOAD_CHUNK_MIN + found;
+    assert(tag <= TAG_UPLOAD_CHUNK_MAX);
+
+    ByteQueue *output;
+    int chunk_server_idx = get_chunk_server(tdfs, &tdfs->operations[opidx].uploads[found].address, 1, &output);
+    if (chunk_server_idx < 0)
+        return -1;
+
+    RequestQueue *reqs = &tdfs->chunk_servers[chunk_server_idx].reqs;
+    if (!request_queue_push(reqs, (Request) { tag, opidx })) {
+        close_chunk_server(tdfs, chunk_server_idx);
+        return -1;
     }
 
-    if (o->uploads[found].no_hash) {
+    if (tdfs->operations[opidx].uploads[found].no_hash) {
 
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_CREATE_CHUNK);
 
-        string data = {
-            .ptr = xxx,
-            .len = yyy,
-        };
-        uint32_t chunk_size = o->chunk_size;
-        uint32_t target_off = 0; // TODO
-        uint32_t target_len = 0; // TODO
+        string   data       = tdfs->operations[opidx].uploads[found].data;
+        uint32_t chunk_size = tdfs->operations[opidx].chunk_size;
+        uint32_t target_off = tdfs->operations[opidx].uploads[found].off;
+        uint32_t target_len = data.len;
 
         message_write(&writer, &chunk_size, sizeof(chunk_size));
         message_write(&writer, &target_off, sizeof(target_off));
@@ -1041,7 +1052,9 @@ static int start_upload(TinyDFS *tdfs, Operation *o)
         message_write(&writer, data.ptr, data.len);
 
         if (!message_writer_free(&writer)) {
-            // TODO
+            close_chunk_server(tdfs, chunk_server_idx);
+            request_queue_pop(reqs, NULL);
+            return -1;
         }
 
     } else {
@@ -1049,27 +1062,24 @@ static int start_upload(TinyDFS *tdfs, Operation *o)
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_UPLOAD_CHUNK);
 
-        string data = {
-            .ptr = xxx,
-            .len = yyy,
-        };
-        SHA256   target_hash = o->uploads[found].hash;
-        uint32_t target_off = 0; // TODO
-        uint32_t target_len = 0; // TODO
+        string   data        = tdfs->operations[opidx].uploads[found].data;
+        SHA256   target_hash = tdfs->operations[opidx].uploads[found].hash;
+        uint32_t target_off  = tdfs->operations[opidx].uploads[found].off;
+        uint32_t target_len  = data.len;
 
         message_write(&writer, &target_hash, sizeof(target_hash));
-        message_write(&writer, &target_off, sizeof(target_off));
-        message_write(&writer, &target_len, sizeof(target_len));
+        message_write(&writer, &target_off,  sizeof(target_off));
+        message_write(&writer, &target_len,  sizeof(target_len));
         message_write(&writer, data.ptr, data.len);
 
         if (!message_writer_free(&writer)) {
-            // TODO
+            close_chunk_server(tdfs, chunk_server_idx);
+            request_queue_pop(reqs, NULL);
+            return -1;
         }
     }
 
-    // TODO: push request tag to chunk server request queue
-
-    o->uploads[found].status = UPLOAD_PENDING;
+    tdfs->operations[opidx].uploads[found].status = UPLOAD_PENDING;
     return 0;
 }
 
@@ -1082,10 +1092,6 @@ static void process_event_for_write(TinyDFS *tdfs,
     }
 
     if (request_tag == TAG_RETRIEVE_METADATA_FOR_WRITE) {
-
-        // We are expecting one of:
-        //   MESSAGE_TYPE_READ_ERROR
-        //   MESSAGE_TYPE_READ_SUCCESS
 
         BinaryReader reader = { msg.ptr, msg.len, 0 };
 
@@ -1130,13 +1136,27 @@ static void process_event_for_write(TinyDFS *tdfs,
             // TODO
         }
 
+        char *full_ptr = tdfs->operations[opidx].ptr;
+        int   full_off = tdfs->operations[opidx].off;
+        int   full_len = tdfs->operations[opidx].len;
+
+        int relative_off = 0;
+
         int next_server_lid = 0;
         tdfs->operations[opidx].num_uploads = 0;
         for (uint32_t i = 0; i < num_hashes; i++) {
 
-            void *src = xxx;
-            int   off = xxx;
-            int   len = xxx;
+            char *src = full_ptr + relative_off;
+
+            int off = 0;
+            if (i == 0)
+               off = full_off % chunk_size;
+
+            int len = full_len - relative_off;
+            if (len > chunk_size)
+                len = chunk_size;
+
+            relative_off += len;
 
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
@@ -1186,8 +1206,7 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    int n = tdfs->operations[opidx].num_uploads++;
-                    tdfs->operations[opidx].uploads[n] = upload;
+                    tdfs->operations[opidx].uploads[tdfs->operations[opidx].num_uploads++] = upload;
                 }
 
                 uint32_t num_ipv6;
@@ -1221,8 +1240,7 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    int n = tdfs->operations[opidx].num_uploads++;
-                    tdfs->operations[opidx].uploads[n] = upload;
+                    tdfs->operations[opidx].uploads[tdfs->operations[opidx].num_uploads++] = upload;
                 }
             }
         }
@@ -1285,7 +1303,7 @@ static void process_event_for_write(TinyDFS *tdfs,
         // Now start the first batch of uploads
         int started = 0;
         for (int i = 0; i < xxx; i++) {
-            if (start_upload(tdfs, &tdfs->operations[opidx]) == 0)
+            if (start_upload(tdfs, opidx) == 0)
                 started++;
         }
 
@@ -1354,12 +1372,29 @@ static void process_event(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
     switch (tdfs->operations[opidx].type) {
-        case OPERATION_TYPE_CREATE: process_event_for_create(tdfs, opidx, request_tag, msg); break;
-        case OPERATION_TYPE_DELETE: process_event_for_delete(tdfs, opidx, request_tag, msg); break;
-        case OPERATION_TYPE_LIST  : process_event_for_list  (tdfs, opidx, request_tag, msg); break;
-        case OPERATION_TYPE_READ  : process_event_for_read  (tdfs, opidx, request_tag, msg); break;
-        case OPERATION_TYPE_WRITE : process_event_for_write (tdfs, opidx, request_tag, msg); break;
-        default: UNREACHABLE;
+
+        case OPERATION_TYPE_CREATE:
+        process_event_for_create(tdfs, opidx, request_tag, msg);
+        break;
+
+        case OPERATION_TYPE_DELETE:
+        process_event_for_delete(tdfs, opidx, request_tag, msg);
+        break;
+
+        case OPERATION_TYPE_LIST:
+        process_event_for_list(tdfs, opidx, request_tag, msg);
+        break;
+
+        case OPERATION_TYPE_READ:
+        process_event_for_read(tdfs, opidx, request_tag, msg);
+        break;
+
+        case OPERATION_TYPE_WRITE:
+        process_event_for_write(tdfs, opidx, request_tag, msg);
+        break;
+
+        default:
+        UNREACHABLE;
     }
 }
 
@@ -1487,10 +1522,8 @@ int tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled
                     int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
                     if (tag == TAG_METADATA_SERVER)
                         reqs = &tdfs->metadata_server.reqs;
-                    else {
-                        assert(tag > -1);
+                    else
                         reqs = &tdfs->chunk_servers[tag].reqs;
-                    }
 
                     Request req;
                     if (request_queue_pop(reqs, &req) < 0) {

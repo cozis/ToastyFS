@@ -343,6 +343,8 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
 void tcp_close(TCP *tcp, int conn_idx)
 {
     tcp->conns[conn_idx].closing = true;
+    // TODO: if no event will be triggered, the connection will not be closed
+    //       if the output buffer is empty, the connection should be closed here.
 }
 
 void tcp_set_tag(TCP *tcp, int conn_idx, int tag)

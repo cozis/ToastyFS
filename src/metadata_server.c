@@ -480,8 +480,8 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
         int locations[MAX_CHUNK_SERVERS];
         int num_locations = choose_servers_for_write(state, locations, state->replication_factor);
 
-        uint32_t tmp = num_locations;
-        message_write(&writer, &tmp, sizeof(tmp));
+        uint32_t tmp_u32 = num_locations;
+        message_write(&writer, &tmp_u32, sizeof(tmp_u32));
 
         for (int j = 0; j < num_locations; j++)
             message_write_server_addr(&writer, &state->chunk_servers[locations[j]]);
