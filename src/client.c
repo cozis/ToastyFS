@@ -1083,6 +1083,15 @@ static int start_upload(TinyDFS *tdfs, int opidx)
     return 0;
 }
 
+static int count_pending_uploads(TinyDFS *tdfs, int opidx)
+{
+    int n = 0;
+    for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++)
+        if (tdfs->operations[opidx].uploads[i].status == UPLOAD_PENDING)
+            n++;
+    return n;
+}
+
 static void process_event_for_write(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
@@ -1356,15 +1365,34 @@ static void process_event_for_write(TinyDFS *tdfs,
 
     } else if (request_tag >= TAG_UPLOAD_CHUNK_MIN && request_tag <= TAG_UPLOAD_CHUNK_MAX) {
 
-        // TODO
+        int found = request_tag - TAG_UPLOAD_CHUNK_MIN;
+
+        // Upload complete
+        //
+        // TODO:
+        //   - Mark upload as complete or failed
+        //   - If successful, ignore other uploads that don't
+        //     need performing anymore, then start new uploads
+        //   - On error, return an overall error
+
+        // Count the number of PENDING uploads and
+        // start uploads until N are pending.
+        int parallel_limit = 5; // TODO: make configurable
+        int num_pending = count_pending_uploads(tdfs, opidx);
+        int newly_started = 0;
+        for (int i = 0; i < parallel_limit - num_pending; i++) {
+            if (start_upload(tdfs, opidx) < 0)
+                break;
+            newly_started++;
+        }
+
+        if (num_pending + newly_started == 0)
+            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
 
     } else {
 
         assert(request_tag == TAG_COMMIT_WRITE);
-
-        // TODO
-
-        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_SUCCESS };
     }
 }
 
