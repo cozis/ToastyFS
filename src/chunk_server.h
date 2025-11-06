@@ -27,7 +27,7 @@ typedef struct {
 
 typedef struct {
     Address    metadata_server_addr;
-    Time       metadata_server_disconnect_time;
+    Time       disconnect_time;
     TCP        tcp;
     ChunkStore store;
 

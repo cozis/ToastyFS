@@ -1153,7 +1153,6 @@ static void process_event_for_write(TinyDFS *tdfs,
             return;
         }
 
-
         tdfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
         tdfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
         if (tdfs->operations[opidx].hashes == NULL) {

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#include "basic.h"
 #include "sha256.h"
 #include "message.h"
 #include "file_system.h"
@@ -764,6 +765,51 @@ process_client_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView
     return -1;
 }
 
+static void
+start_connecting_to_metadata_server(ChunkServer *state)
+{
+    printf("Chunk server is connecting to the metadata server\n");
+
+    Time current_time = get_current_time();
+
+    ByteQueue *output;
+    if (tcp_connect(&state->tcp, state->metadata_server_addr, TAG_METADATA_SERVER, &output) < 0) {
+        state->disconnect_time = current_time;
+        return;
+    }
+
+    // Send AUTH message to authenticate with metadata server
+    MessageWriter writer;
+    message_writer_init(&writer, output, MESSAGE_TYPE_AUTH);
+
+    // Send our listening address(es)
+    // For now, we only support IPv4 (as noted in program_init)
+    uint32_t num_ipv4 = 1;
+    message_write(&writer, &num_ipv4, sizeof(num_ipv4));
+
+    // Write our IPv4 address and port
+    IPv4 our_ipv4;
+    if (inet_pton(AF_INET, "127.0.0.1", &our_ipv4) == 1) {
+        message_write(&writer, &our_ipv4, sizeof(our_ipv4));
+        uint16_t our_port = 8080; // From program_init
+        message_write(&writer, &our_port, sizeof(our_port));
+    } else {
+        // Failed to parse our address, send 0 IPv4s
+        num_ipv4 = 0;
+        // We already wrote 1, this is an error case
+        // For now, continue with the bad data
+    }
+
+    // No IPv6 addresses for now
+    uint32_t num_ipv6 = 0;
+    message_write(&writer, &num_ipv6, sizeof(num_ipv6));
+
+    if (message_writer_free(&writer))
+        state->disconnect_time = INVALID_TIME;
+    else
+        state->disconnect_time = current_time;
+}
+
 int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
     string addr = getargs(argc, argv, "--addr", "127.0.0.1");
@@ -813,8 +859,9 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
         return -1;
     }
     state->metadata_server_addr.port = remote_port;
+    state->disconnect_time = INVALID_TIME;
 
-    state->metadata_server_disconnect_time = 0;
+    start_connecting_to_metadata_server(state);
 
     printf("Chunk server set up (local=%.*s:%d, remote=%.*s:%d, path=%.*s)\n",
         addr.len,
@@ -827,7 +874,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
         path.ptr
     );
 
-    *timeout = -1;  // No timeout needed for chunk server initially
+    *timeout = 0;
     return tcp_register_events(&state->tcp, contexts, polled);
 }
 
@@ -855,14 +902,15 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
             case EVENT_CONNECT:
             printf("New connection to chunk server\n");
             if (tcp_get_tag(&state->tcp, conn_idx) == TAG_METADATA_SERVER)
-                state->metadata_server_disconnect_time = 0;
+                state->disconnect_time = 0;
             break;
 
             case EVENT_DISCONNECT:
             printf("Dropped connection to chunk server\n");
             switch (tcp_get_tag(&state->tcp, conn_idx)) {
+
                 case TAG_METADATA_SERVER:
-                state->metadata_server_disconnect_time = current_time;
+                state->disconnect_time = current_time;
                 break;
 
                 case TAG_CHUNK_SERVER:
@@ -924,46 +972,17 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
     // TODO: periodically start downloads if some are pending and weren't started yet
     // start_download_if_necessary(state);
 
-    if (state->metadata_server_disconnect_time > 0 && current_time - state->metadata_server_disconnect_time > CHUNK_SERVER_RECONNECT_TIME) {
-        ByteQueue *output;
-        if (tcp_connect(&state->tcp, state->metadata_server_addr, TAG_METADATA_SERVER, &output) < 0)
-            state->metadata_server_disconnect_time = current_time;
-        else {
-            state->metadata_server_disconnect_time = 0;
+    if (state->disconnect_time != INVALID_TIME && (current_time - state->disconnect_time) / 1000000 >= CHUNK_SERVER_RECONNECT_TIME)
+        start_connecting_to_metadata_server(state);
 
-            // Send AUTH message to authenticate with metadata server
-            MessageWriter writer;
-            message_writer_init(&writer, output, MESSAGE_TYPE_AUTH);
-
-            // Send our listening address(es)
-            // For now, we only support IPv4 (as noted in program_init)
-            uint32_t num_ipv4 = 1;
-            message_write(&writer, &num_ipv4, sizeof(num_ipv4));
-
-            // Write our IPv4 address and port
-            IPv4 our_ipv4;
-            if (inet_pton(AF_INET, "127.0.0.1", &our_ipv4) == 1) {
-                message_write(&writer, &our_ipv4, sizeof(our_ipv4));
-                uint16_t our_port = 8080; // From program_init
-                message_write(&writer, &our_port, sizeof(our_port));
-            } else {
-                // Failed to parse our address, send 0 IPv4s
-                num_ipv4 = 0;
-                // We already wrote 1, this is an error case
-                // For now, continue with the bad data
-            }
-
-            // No IPv6 addresses for now
-            uint32_t num_ipv6 = 0;
-            message_write(&writer, &num_ipv6, sizeof(num_ipv6));
-
-            if (!message_writer_free(&writer)) {
-                // Failed to send AUTH, will retry on next reconnect
-                state->metadata_server_disconnect_time = current_time;
-            }
-        }
+    if (state->disconnect_time == INVALID_TIME)
+        *timeout = -1;
+    else {
+        int elapsed = current_time - state->disconnect_time;
+        if (elapsed > 100)
+            *timeout = 0;
+        else
+            *timeout = 100 - elapsed / 1000000;
     }
-
-    *timeout = -1;  // No timeout needed for chunk server
     return tcp_register_events(&state->tcp, contexts, polled);
 }

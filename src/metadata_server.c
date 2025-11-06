@@ -659,6 +659,8 @@ chunk_server_from_conn(MetadataServer *state, int conn_idx)
 static int process_chunk_server_auth(MetadataServer *state,
     int conn_idx, ByteView msg)
 {
+    printf("Received auth message from chunk server\n"); // TODO
+
     ChunkServerPeer *chunk_server = chunk_server_from_conn(state, conn_idx);
     chunk_server->num_addrs = 0;
 
@@ -841,6 +843,7 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
 
                     if (tcp_get_tag(&state->tcp, conn_idx) == CONNECTION_TAG_UNKNOWN) {
                         if (is_chunk_server_message_type(msg_type)) {
+                            printf("Metadata server determined peer is a chunk server\n"); // TODO
                             int chunk_server_idx = state->num_chunk_servers++;
                             chunk_server_peer_init(&state->chunk_servers[chunk_server_idx]);
                             tcp_set_tag(&state->tcp, conn_idx, chunk_server_idx);
