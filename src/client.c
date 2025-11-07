@@ -1007,7 +1007,7 @@ static int start_upload(TinyDFS *tdfs, int opidx)
 {
     int found = -1;
 
-    // Find a PENDING operation that can be started
+    // Find a WAITING operation that can be started
     for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++) {
 
         if (tdfs->operations[opidx].uploads[i].status != UPLOAD_WAITING)
@@ -1019,6 +1019,9 @@ static int start_upload(TinyDFS *tdfs, int opidx)
         for (int j = 0; j < tdfs->operations[opidx].num_uploads; j++) {
 
             if (j == i)
+                continue;
+
+            if (tdfs->operations[opidx].uploads[j].status != UPLOAD_PENDING)
                 continue;
 
             if (tdfs->operations[opidx].uploads[i].server_lid == tdfs->operations[opidx].uploads[j].server_lid ||
@@ -1047,7 +1050,7 @@ static int start_upload(TinyDFS *tdfs, int opidx)
         return -1;
 
     RequestQueue *reqs = &tdfs->chunk_servers[chunk_server_idx].reqs;
-    if (!request_queue_push(reqs, (Request) { tag, opidx })) {
+    if (request_queue_push(reqs, (Request) { tag, opidx }) < 0) {
         close_chunk_server(tdfs, chunk_server_idx);
         return -1;
     }
@@ -1268,7 +1271,8 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.off = off;
                     upload.len = len;
                     if (schedule_upload(tdfs, opidx, upload) < 0) {
-                        // TODO
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
                     }
                 }
 
@@ -1303,8 +1307,10 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.off = off;
                     upload.len = len;
                     if (schedule_upload(tdfs, opidx, upload) < 0) {
-                        // TODO
-                    }                }
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+                }
             }
         }
 
@@ -1366,8 +1372,10 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.off = off;
                     upload.len = len;
                     if (schedule_upload(tdfs, opidx, upload) < 0) {
-                        // TODO
-                    }                }
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+                }
 
                 relative_off = old_relative_off;
             }
@@ -1419,8 +1427,10 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.off = off;
                     upload.len = len;
                     if (schedule_upload(tdfs, opidx, upload) < 0) {
-                        // TODO
-                    }                }
+                        tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+                        return;
+                    }
+                }
 
                 relative_off = old_relative_off;
             }
