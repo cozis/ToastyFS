@@ -34,8 +34,10 @@ pending_download_list_add(PendingDownloadList *list, Address addr, SHA256 hash)
     if (list->count == list->capacity) {
 
         int new_capacity;
-        if (list->capacity == 0) new_capacity = 8;
-        else                     new_capacity = 2 * list->capacity;
+        if (list->capacity == 0)
+            new_capacity = 8;
+        else
+            new_capacity = 2 * list->capacity;
 
         PendingDownload *new_items = sys_malloc(new_capacity * sizeof(PendingDownload));
         if (new_items == NULL)
@@ -276,6 +278,7 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
 
     // Process add_list: ensure chunks exist and move from orphaned if needed
     for (uint32_t i = 0; i < add_count; i++) {
+
         char main_path[PATH_MAX];
         char orphaned_path[PATH_MAX];
 
@@ -679,6 +682,7 @@ process_client_upload_chunk(ChunkServer *state, int conn_idx, ByteView msg)
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_UPLOAD_CHUNK_ERROR, S("Invalid message"));
 
     string data = { (char*) reader.src + reader.cur, data_len };
+    // TODO: Shoudn't we skip the data here? binary_read(&reader, NULL, data_len)
 
     // Check that there are no more bytes to read
     if (binary_read(&reader, NULL, 1))
@@ -757,10 +761,17 @@ static int
 process_client_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView msg)
 {
     switch (type) {
-        case MESSAGE_TYPE_CREATE_CHUNK: return process_client_create_chunk(state, conn_idx, msg);
-        case MESSAGE_TYPE_UPLOAD_CHUNK: return process_client_upload_chunk(state, conn_idx, msg);
-        case MESSAGE_TYPE_DOWNLOAD_CHUNK: return process_client_download_chunk(state, conn_idx, msg);
-        default:break;
+        case MESSAGE_TYPE_CREATE_CHUNK:
+        return process_client_create_chunk(state, conn_idx, msg);
+
+        case MESSAGE_TYPE_UPLOAD_CHUNK:
+        return process_client_upload_chunk(state, conn_idx, msg);
+
+        case MESSAGE_TYPE_DOWNLOAD_CHUNK:
+        return process_client_download_chunk(state, conn_idx, msg);
+
+        default:
+        break;
     }
     return -1;
 }
@@ -768,8 +779,6 @@ process_client_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView
 static void
 start_connecting_to_metadata_server(ChunkServer *state)
 {
-    printf("Chunk server is connecting to the metadata server\n");
-
     Time current_time = get_current_time();
 
     ByteQueue *output;
@@ -900,13 +909,11 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         switch (events[i].type) {
 
             case EVENT_CONNECT:
-            printf("New connection to chunk server\n");
             if (tcp_get_tag(&state->tcp, conn_idx) == TAG_METADATA_SERVER)
-                state->disconnect_time = 0;
+                state->disconnect_time = INVALID_TIME;
             break;
 
             case EVENT_DISCONNECT:
-            printf("Dropped connection to chunk server\n");
             switch (tcp_get_tag(&state->tcp, conn_idx)) {
 
                 case TAG_METADATA_SERVER:
@@ -938,8 +945,6 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
                         tcp_close(&state->tcp, conn_idx);
                         break;
                     }
-
-                    printf("Processing message to chunk server\n");
 
                     switch (tcp_get_tag(&state->tcp, conn_idx)) {
                         case TAG_METADATA_SERVER:

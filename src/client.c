@@ -116,6 +116,7 @@ typedef struct {
     uint32_t chunk_size;
     UploadSchedule *uploads;
     int num_uploads;
+    int cap_uploads;
 
     TinyDFS_Result result;
 } Operation;
@@ -1107,6 +1108,37 @@ static int count_pending_uploads(TinyDFS *tdfs, int opidx)
     return n;
 }
 
+static int schedule_upload(TinyDFS *tdfs, int opidx, UploadSchedule upload)
+{
+    if (tdfs->operations[opidx].num_uploads == tdfs->operations[opidx].cap_uploads) {
+
+        int new_cap_uploads;
+        if (tdfs->operations[opidx].uploads == NULL)
+            new_cap_uploads = 0;
+        else
+            new_cap_uploads = 2 * tdfs->operations[opidx].cap_uploads;
+
+        UploadSchedule *uploads = sys_malloc(new_cap_uploads * sizeof(UploadSchedule));
+        if (uploads == NULL)
+            return -1;
+
+        if (tdfs->operations[opidx].num_uploads > 0) {
+            memcpy(
+                uploads,
+                tdfs->operations[opidx].uploads,
+                tdfs->operations[opidx].num_uploads * sizeof(UploadSchedule)
+            );
+            free(tdfs->operations[opidx].uploads);
+        }
+
+        tdfs->operations[opidx].uploads = uploads;
+        tdfs->operations[opidx].cap_uploads = new_cap_uploads;
+    }
+
+    tdfs->operations[opidx].uploads[tdfs->operations[opidx].num_uploads++] = upload;
+    return 0;
+}
+
 static void process_event_for_write(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
@@ -1153,18 +1185,18 @@ static void process_event_for_write(TinyDFS *tdfs,
             return;
         }
 
+        uint32_t num_all_hasehs = (tdfs->operations[opidx].len + tdfs->operations[opidx].chunk_size - 1) / tdfs->operations[opidx].chunk_size;
+        uint32_t num_new_hashes = num_all_hasehs - num_hashes;
+
         tdfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
         tdfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
         if (tdfs->operations[opidx].hashes == NULL) {
             // TODO
         }
 
-        // TODO: !!! IMPORTANT !!! This should also account for new chunks, not patched. It does not do so at the moment
-        // TODO: This may overestimate by a lot the actual memory required by the array
-        tdfs->operations[opidx].uploads = sys_malloc(num_hashes * MAX_CHUNK_SERVERS * MAX_SERVER_ADDRS * sizeof(UploadSchedule));
-        if (tdfs->operations[opidx].uploads == NULL) {
-            // TODO
-        }
+        tdfs->operations[opidx].uploads = NULL;
+        tdfs->operations[opidx].num_uploads = 0;
+        tdfs->operations[opidx].cap_uploads = 0;
 
         char *full_ptr = tdfs->operations[opidx].ptr;
         int   full_off = tdfs->operations[opidx].off;
@@ -1235,7 +1267,9 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    tdfs->operations[opidx].uploads[tdfs->operations[opidx].num_uploads++] = upload;
+                    if (schedule_upload(tdfs, opidx, upload) < 0) {
+                        // TODO
+                    }
                 }
 
                 uint32_t num_ipv6;
@@ -1268,8 +1302,9 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    tdfs->operations[opidx].uploads[tdfs->operations[opidx].num_uploads++] = upload;
-                }
+                    if (schedule_upload(tdfs, opidx, upload) < 0) {
+                        // TODO
+                    }                }
             }
         }
 
@@ -1280,6 +1315,9 @@ static void process_event_for_write(TinyDFS *tdfs,
         }
 
         for (uint32_t i = 0; i < num_locations; i++) {
+
+            int server_lid = next_server_lid;
+            next_server_lid++;
 
             uint32_t num_ipv4;
             if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
@@ -1301,7 +1339,37 @@ static void process_event_for_write(TinyDFS *tdfs,
                     return;
                 }
 
-                // TODO
+                int old_relative_off = relative_off;
+
+                for (int w = 0; w < num_new_hashes; w++) {
+
+                    char *src = full_ptr + relative_off;
+
+                    int off = 0;
+                    if (num_hashes == 0 && w == 0)
+                       off = full_off % chunk_size;
+
+                    int len = full_len - relative_off;
+                    if (len > chunk_size)
+                        len = chunk_size;
+
+                    relative_off += len;
+
+                    UploadSchedule upload;
+                    upload.status = UPLOAD_WAITING;
+                    upload.server_lid = server_lid;
+                    upload.address.is_ipv4 = true;
+                    upload.address.ipv4 = ipv4;
+                    upload.address.port = port;
+                    upload.hash_lid = -1;
+                    upload.src = src;
+                    upload.off = off;
+                    upload.len = len;
+                    if (schedule_upload(tdfs, opidx, upload) < 0) {
+                        // TODO
+                    }                }
+
+                relative_off = old_relative_off;
             }
 
             uint32_t num_ipv6;
@@ -1311,6 +1379,8 @@ static void process_event_for_write(TinyDFS *tdfs,
             }
 
             for (uint32_t k = 0; k < num_ipv6; k++) {
+
+                char *src = full_ptr + relative_off;
 
                 IPv6 ipv6;
                 if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
@@ -1324,7 +1394,35 @@ static void process_event_for_write(TinyDFS *tdfs,
                     return;
                 }
 
-                // TODO
+                int old_relative_off = relative_off;
+
+                for (int w = 0; w < num_new_hashes; w++) {
+
+                    int off = 0;
+                    if (num_hashes == 0 && w == 0)
+                       off = full_off % chunk_size;
+
+                    int len = full_len - relative_off;
+                    if (len > chunk_size)
+                        len = chunk_size;
+
+                    relative_off += len;
+
+                    UploadSchedule upload;
+                    upload.status = UPLOAD_WAITING;
+                    upload.server_lid = server_lid;
+                    upload.address.is_ipv4 = false;
+                    upload.address.ipv6 = ipv6;
+                    upload.address.port = port;
+                    upload.hash_lid = -1;
+                    upload.src = src;
+                    upload.off = off;
+                    upload.len = len;
+                    if (schedule_upload(tdfs, opidx, upload) < 0) {
+                        // TODO
+                    }                }
+
+                relative_off = old_relative_off;
             }
         }
 

@@ -423,14 +423,19 @@ int file_tree_read(FileTree *ft, string path,
     uint64_t first_chunk_index = off / f->chunk_size;
     uint64_t  last_chunk_index = (off + len - 1) / f->chunk_size;
 
+    if (first_chunk_index >= f->num_chunks)
+        return 0;
+
+    if (last_chunk_index >= f->num_chunks) {
+        if (f->num_chunks == 0)
+            return 0;
+        last_chunk_index = f->num_chunks-1;
+    }
+
     int num_hashes = 0;
     for (uint32_t i = first_chunk_index; i <= last_chunk_index; i++) {
 
-        SHA256 hash;
-        if (i >= f->num_chunks)
-            hash = ZERO_HASH;
-        else
-            hash = f->chunks[i];
+        SHA256 hash = f->chunks[i];
 
         if (num_hashes < max_hashes)
             hashes[num_hashes] = hash;

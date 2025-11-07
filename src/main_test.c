@@ -35,7 +35,6 @@ int main(int argc, char **argv)
     // Spawn simulation client
     spawn_simulated_process("--client --remote-addr 127.0.0.1 --remote-port 8080");
 
-    printf("Running simulation (press Ctrl+C to stop)...\n");
     while (!simulation_should_stop)
         update_simulation();
 

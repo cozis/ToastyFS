@@ -28,7 +28,11 @@ static int hash_list_insert(HashList *hash_list, SHA256 hash)
 
     if (hash_list->count == hash_list->capacity) {
 
-        int new_capacity = hash_list->capacity ? hash_list->capacity * 2 : 16;
+        int new_capacity;
+        if (hash_list->items == NULL)
+            new_capacity = 16;
+        else
+            new_capacity = 2 * hash_list->capacity;
 
         SHA256 *new_items = sys_realloc(hash_list->items, new_capacity * sizeof(SHA256));
         if (new_items == NULL)
@@ -448,9 +452,9 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
 
     } else {
 
-        MessageWriter writer;
-
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+
+        MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_READ_SUCCESS);
 
         if (chunk_size > UINT32_MAX) {
@@ -659,8 +663,6 @@ chunk_server_from_conn(MetadataServer *state, int conn_idx)
 static int process_chunk_server_auth(MetadataServer *state,
     int conn_idx, ByteView msg)
 {
-    printf("Received auth message from chunk server\n"); // TODO
-
     ChunkServerPeer *chunk_server = chunk_server_from_conn(state, conn_idx);
     chunk_server->num_addrs = 0;
 
@@ -810,13 +812,11 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
         switch (events[i].type) {
 
             case EVENT_CONNECT:
-            printf("New connection to metadata server\n");
             tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_UNKNOWN);
             break;
 
             case EVENT_DISCONNECT:
             {
-                printf("Dropped connection to metadata server\n");
                 int tag = tcp_get_tag(&state->tcp, conn_idx);
                 if (tag >= 0) {
                     chunk_server_peer_free(&state->chunk_servers[tag]);
@@ -839,11 +839,8 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
                         break;
                     }
 
-                    printf("Processing message to metadata server\n");
-
                     if (tcp_get_tag(&state->tcp, conn_idx) == CONNECTION_TAG_UNKNOWN) {
                         if (is_chunk_server_message_type(msg_type)) {
-                            printf("Metadata server determined peer is a chunk server\n"); // TODO
                             int chunk_server_idx = state->num_chunk_servers++;
                             chunk_server_peer_init(&state->chunk_servers[chunk_server_idx]);
                             tcp_set_tag(&state->tcp, conn_idx, chunk_server_idx);

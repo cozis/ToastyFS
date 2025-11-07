@@ -636,8 +636,6 @@ void update_simulation(void)
 
             assert(current_time <= wakeup_time);
             current_time = wakeup_time;
-
-            //printf("T=%2.2f ms\n", (float) current_time / 1000000);
         }
 
         int timeout = -1;
