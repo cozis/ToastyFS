@@ -66,14 +66,9 @@ typedef struct {
     // The server local ID is used to indicate
     // that different addresses refer to the
     // same server.
-    //
-    // The hash_lid is the index into the array
-    // of hashes held by the parent operation struct.
-    // This is necessary to duplicate chunks with
-    // the same hash in the write.
     int     server_lid;
     Address address;
-    int     hash_lid;
+    int     chunk_index;
 
     // The patch offset and data
     char *src;
@@ -112,7 +107,8 @@ typedef struct {
 
     // Write fields
     SHA256 *hashes;
-    int num_hashes;
+    int      num_hashes;
+    uint32_t num_chunks;
     uint32_t chunk_size;
     UploadSchedule *uploads;
     int num_uploads;
@@ -1005,27 +1001,29 @@ static void process_event_for_read(TinyDFS *tdfs,
 
 static int start_upload(TinyDFS *tdfs, int opidx)
 {
+    Operation *o = &tdfs->operations[opidx];
+
     int found = -1;
 
     // Find a WAITING operation that can be started
-    for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++) {
+    for (int i = 0; i < o->num_uploads; i++) {
 
-        if (tdfs->operations[opidx].uploads[i].status != UPLOAD_WAITING)
+        if (o->uploads[i].status != UPLOAD_WAITING)
             continue;
 
         // Can't start uploads of a chunk to the
         // same server twice.
         bool invalid = false;
-        for (int j = 0; j < tdfs->operations[opidx].num_uploads; j++) {
+        for (int j = 0; j < o->num_uploads; j++) {
 
             if (j == i)
                 continue;
 
-            if (tdfs->operations[opidx].uploads[j].status != UPLOAD_PENDING)
+            if (o->uploads[j].status != UPLOAD_PENDING)
                 continue;
 
-            if (tdfs->operations[opidx].uploads[i].server_lid == tdfs->operations[opidx].uploads[j].server_lid ||
-                addr_eql(tdfs->operations[opidx].uploads[i].address, tdfs->operations[opidx].uploads[j].address)) {
+            if (o->uploads[i].server_lid == o->uploads[j].server_lid ||
+                addr_eql(o->uploads[i].address, o->uploads[j].address)) {
                 invalid = true;
                 break;
             }
@@ -1045,7 +1043,7 @@ static int start_upload(TinyDFS *tdfs, int opidx)
     assert(tag <= TAG_UPLOAD_CHUNK_MAX);
 
     ByteQueue *output;
-    int chunk_server_idx = get_chunk_server(tdfs, &tdfs->operations[opidx].uploads[found].address, 1, &output);
+    int chunk_server_idx = get_chunk_server(tdfs, &o->uploads[found].address, 1, &output);
     if (chunk_server_idx < 0)
         return -1;
 
@@ -1055,21 +1053,19 @@ static int start_upload(TinyDFS *tdfs, int opidx)
         return -1;
     }
 
-    if (tdfs->operations[opidx].uploads[found].hash_lid < 0) {
+    if (o->uploads[found].chunk_index >= o->num_hashes) {
+
+        char    *data_ptr   = o->uploads[found].src;
+        uint32_t chunk_size = o->chunk_size;
+        uint32_t target_off = o->uploads[found].off;
+        uint32_t target_len = o->uploads[found].len;
 
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_CREATE_CHUNK);
-
-        char    *data_ptr   = tdfs->operations[opidx].uploads[found].src;
-        uint32_t chunk_size = tdfs->operations[opidx].chunk_size;
-        uint32_t target_off = tdfs->operations[opidx].uploads[found].off;
-        uint32_t target_len = tdfs->operations[opidx].uploads[found].len;
-
         message_write(&writer, &chunk_size, sizeof(chunk_size));
         message_write(&writer, &target_off, sizeof(target_off));
         message_write(&writer, &target_len, sizeof(target_len));
         message_write(&writer, data_ptr, target_len);
-
         if (!message_writer_free(&writer)) {
             close_chunk_server(tdfs, chunk_server_idx);
             request_queue_pop(reqs, NULL);
@@ -1078,19 +1074,17 @@ static int start_upload(TinyDFS *tdfs, int opidx)
 
     } else {
 
+        char    *data_ptr    = o->uploads[found].src;
+        SHA256   target_hash = o->hashes[o->uploads[found].chunk_index];
+        uint32_t target_off  = o->uploads[found].off;
+        uint32_t target_len  = o->uploads[found].len;
+
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_UPLOAD_CHUNK);
-
-        char    *data_ptr    = tdfs->operations[opidx].uploads[found].src;
-        SHA256   target_hash = tdfs->operations[opidx].hashes[tdfs->operations[opidx].uploads[found].hash_lid];
-        uint32_t target_off  = tdfs->operations[opidx].uploads[found].off;
-        uint32_t target_len  = tdfs->operations[opidx].uploads[found].len;
-
         message_write(&writer, &target_hash, sizeof(target_hash));
         message_write(&writer, &target_off,  sizeof(target_off));
         message_write(&writer, &target_len,  sizeof(target_len));
         message_write(&writer, data_ptr, target_len);
-
         if (!message_writer_free(&writer)) {
             close_chunk_server(tdfs, chunk_server_idx);
             request_queue_pop(reqs, NULL);
@@ -1098,7 +1092,7 @@ static int start_upload(TinyDFS *tdfs, int opidx)
         }
     }
 
-    tdfs->operations[opidx].uploads[found].status = UPLOAD_PENDING;
+    o->uploads[found].status = UPLOAD_PENDING;
     return 0;
 }
 
@@ -1113,32 +1107,34 @@ static int count_pending_uploads(TinyDFS *tdfs, int opidx)
 
 static int schedule_upload(TinyDFS *tdfs, int opidx, UploadSchedule upload)
 {
-    if (tdfs->operations[opidx].num_uploads == tdfs->operations[opidx].cap_uploads) {
+    Operation *o = &tdfs->operations[opidx];
+
+    if (o->num_uploads == o->cap_uploads) {
 
         int new_cap_uploads;
-        if (tdfs->operations[opidx].uploads == NULL)
+        if (o->uploads == NULL)
             new_cap_uploads = 8;
         else
-            new_cap_uploads = 2 * tdfs->operations[opidx].cap_uploads;
+            new_cap_uploads = 2 * o->cap_uploads;
 
         UploadSchedule *uploads = sys_malloc(new_cap_uploads * sizeof(UploadSchedule));
         if (uploads == NULL)
             return -1;
 
-        if (tdfs->operations[opidx].num_uploads > 0) {
+        if (o->num_uploads > 0) {
             memcpy(
                 uploads,
-                tdfs->operations[opidx].uploads,
-                tdfs->operations[opidx].num_uploads * sizeof(UploadSchedule)
+                o->uploads,
+                o->num_uploads * sizeof(UploadSchedule)
             );
-            free(tdfs->operations[opidx].uploads);
+            free(o->uploads);
         }
 
-        tdfs->operations[opidx].uploads = uploads;
-        tdfs->operations[opidx].cap_uploads = new_cap_uploads;
+        o->uploads = uploads;
+        o->cap_uploads = new_cap_uploads;
     }
 
-    tdfs->operations[opidx].uploads[tdfs->operations[opidx].num_uploads++] = upload;
+    o->uploads[o->num_uploads++] = upload;
     return 0;
 }
 
@@ -1190,6 +1186,7 @@ static void process_event_for_write(TinyDFS *tdfs,
 
         uint32_t num_all_hasehs = (tdfs->operations[opidx].len + tdfs->operations[opidx].chunk_size - 1) / tdfs->operations[opidx].chunk_size;
         uint32_t num_new_hashes = num_all_hasehs - num_hashes;
+        tdfs->operations[opidx].num_chunks = num_all_hasehs;
 
         tdfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
         tdfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
@@ -1266,7 +1263,7 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.address.is_ipv4 = true;
                     upload.address.ipv4 = ipv4;
                     upload.address.port = port;
-                    upload.hash_lid = i;
+                    upload.chunk_index = i;
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
@@ -1302,7 +1299,7 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.address.is_ipv4 = false;
                     upload.address.ipv6 = ipv6;
                     upload.address.port = port;
-                    upload.hash_lid = i;
+                    upload.chunk_index = i;
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
@@ -1367,7 +1364,7 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.address.is_ipv4 = true;
                     upload.address.ipv4 = ipv4;
                     upload.address.port = port;
-                    upload.hash_lid = -1;
+                    upload.chunk_index = num_hashes + w;
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
@@ -1422,7 +1419,7 @@ static void process_event_for_write(TinyDFS *tdfs,
                     upload.address.is_ipv4 = false;
                     upload.address.ipv6 = ipv6;
                     upload.address.port = port;
-                    upload.hash_lid = -1;
+                    upload.chunk_index = num_hashes + w;
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
@@ -1531,14 +1528,20 @@ static void process_event_for_write(TinyDFS *tdfs,
             return;
         }
 
-        if (type != MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS) {
+        uint16_t expected_type;
+        if (tdfs->operations[opidx].uploads[found].chunk_index >= tdfs->operations[opidx].num_hashes)
+            expected_type = MESSAGE_TYPE_CREATE_CHUNK_SUCCESS;
+        else
+            expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
+
+        if (type != expected_type) {
             tdfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
         } else {
             tdfs->operations[opidx].uploads[found].status = UPLOAD_COMPLETED;
             for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++) {
 
                 if (tdfs->operations[opidx].uploads[i].status == UPLOAD_WAITING
-                    && tdfs->operations[opidx].uploads[i].hash_lid == tdfs->operations[opidx].uploads[found].hash_lid
+                    && tdfs->operations[opidx].uploads[i].chunk_index == tdfs->operations[opidx].uploads[found].chunk_index
                     && (addr_eql(tdfs->operations[opidx].uploads[i].address, tdfs->operations[opidx].uploads[found].address)
                     || tdfs->operations[opidx].uploads[i].server_lid == tdfs->operations[opidx].uploads[found].server_lid))
                     tdfs->operations[opidx].uploads[i].status = UPLOAD_IGNORED;
@@ -1572,7 +1575,7 @@ static void process_event_for_write(TinyDFS *tdfs,
                 int replication;
             } ChunkUploadResult;
 
-            int num_upload_results = tdfs->operations[opidx].num_hashes;
+            int num_upload_results = tdfs->operations[opidx].num_chunks;
             ChunkUploadResult *upload_results = sys_malloc(num_upload_results * sizeof(ChunkUploadResult));
             if (upload_results == NULL) {
                 // TODO
@@ -1585,8 +1588,8 @@ static void process_event_for_write(TinyDFS *tdfs,
 
             for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++)
                 if (tdfs->operations[opidx].uploads[i].status == UPLOAD_COMPLETED) {
-                    upload_results[tdfs->operations[opidx].uploads[i].hash_lid].new_hash = tdfs->operations[opidx].uploads[i].final_hash;
-                    upload_results[tdfs->operations[opidx].uploads[i].hash_lid].replication++;
+                    upload_results[tdfs->operations[opidx].uploads[i].chunk_index].new_hash = tdfs->operations[opidx].uploads[i].final_hash;
+                    upload_results[tdfs->operations[opidx].uploads[i].chunk_index].replication++;
                 }
 
             // Now check that each chunk is replicated
