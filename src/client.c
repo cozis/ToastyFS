@@ -1114,7 +1114,7 @@ static int schedule_upload(TinyDFS *tdfs, int opidx, UploadSchedule upload)
 
         int new_cap_uploads;
         if (tdfs->operations[opidx].uploads == NULL)
-            new_cap_uploads = 0;
+            new_cap_uploads = 8;
         else
             new_cap_uploads = 2 * tdfs->operations[opidx].cap_uploads;
 

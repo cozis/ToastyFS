@@ -116,10 +116,13 @@ static int compare_chunk_servers(const void *p1, const void *p2, void *data)
 // Returns the indices of chunk servers with lowest load in
 // the "out" array. The return value is the number of indices
 // written, but no more than "max" are written.
-static int choose_servers_for_write(MetadataServer *state, int *out, int max)
+static int
+choose_servers_for_write(MetadataServer *state, int *out, int max)
 {
     int num = state->num_chunk_servers;
+
     int indices[MAX_CHUNK_SERVERS];
+    assert(num <= MAX_CHUNK_SERVERS);
 
     for (int i = 0; i < num; i++)
         indices[i] = i;
@@ -130,10 +133,10 @@ static int choose_servers_for_write(MetadataServer *state, int *out, int max)
     qsort_r(indices, num, sizeof(*indices), compare_chunk_servers, state);
 #endif
 
-    if (max > num) max = num;
-
-    for (int i = 0; i < max; i++)
-        out[i] = indices[i]; // Or maybe the other way around? indices[max - i - 1]?
+    for (int i = 0; i < num; i++) {
+        if (i < max)
+            out[i] = indices[i]; // Or maybe the other way around? indices[max - i - 1]?
+    }
 
     return num;
 }
@@ -281,9 +284,9 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
 
         string desc = file_tree_strerror(ret);
 
-        MessageWriter writer;
-
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+
+        MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_DELETE_ERROR);
 
         uint16_t len = desc.len;
@@ -295,11 +298,10 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
 
     } else {
 
-        MessageWriter writer;
-
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
-        message_writer_init(&writer, output, MESSAGE_TYPE_DELETE_SUCCESS);
 
+        MessageWriter writer;
+        message_writer_init(&writer, output, MESSAGE_TYPE_DELETE_SUCCESS);
         if (!message_writer_free(&writer))
             return -1;
     }
@@ -471,24 +473,46 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
 
             int holders[MAX_CHUNK_SERVERS];
             int num_holders = all_chunk_servers_holding_chunk(state, hashes[i], holders, state->replication_factor);
+            assert(num_holders > -1 && num_holders < MAX_CHUNK_SERVERS);
 
             message_write(&writer, &hashes[i], sizeof(hashes[i]));
 
             uint32_t tmp = num_holders;
             message_write(&writer, &tmp, sizeof(tmp));
 
-            for (int j = 0; j < num_holders; j++)
-                message_write_server_addr(&writer, &state->chunk_servers[holders[j]]);
+            for (int j = 0; j < num_holders; j++) {
+
+                int k = holders[j];
+
+                assert(k > -1 && k < state->num_chunk_servers);
+                assert(state->chunk_servers[k].auth == true);
+                assert(state->chunk_servers[k].num_addrs > 0);
+
+                message_write_server_addr(&writer, &state->chunk_servers[k]);
+            }
         }
 
         int locations[MAX_CHUNK_SERVERS];
         int num_locations = choose_servers_for_write(state, locations, state->replication_factor);
 
+        assert(num_locations > -1 && num_locations < MAX_CHUNK_SERVERS);
+        if (num_locations > state->replication_factor)
+            num_locations = state->replication_factor;
+
         uint32_t tmp_u32 = num_locations;
         message_write(&writer, &tmp_u32, sizeof(tmp_u32));
 
-        for (int j = 0; j < num_locations; j++)
-            message_write_server_addr(&writer, &state->chunk_servers[locations[j]]);
+        for (int j = 0; j < num_locations; j++) {
+
+            int k = locations[j];
+
+            assert(k > -1);
+            assert(k < state->num_chunk_servers);
+            assert(state->chunk_servers[k].auth == true);
+            assert(state->chunk_servers[k].num_addrs > 0);
+
+            message_write_server_addr(&writer, &state->chunk_servers[k]);
+        }
 
         if (!message_writer_free(&writer))
             return -1;
@@ -624,9 +648,9 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
             }
         }
 
-        MessageWriter writer;
-
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+
+        MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_WRITE_SUCCESS);
 
         if (!message_writer_free(&writer))
