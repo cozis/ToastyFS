@@ -1,3 +1,4 @@
+#include "tcp.h"
 #ifdef BUILD_TEST
 
 #include <assert.h>
@@ -213,11 +214,22 @@ static struct timespec simulated_time = {0, 0};
 #define SOCKET_ERROR_PIPE EPIPE
 #endif
 
+static int count_non_empty_desc(Process *p)
+{
+    int n = 0;
+    for (int i = 0; i < MAX_DESCRIPTORS; i++)
+        if (p->desc[i].type != DESC_EMPTY)
+            n++;
+    return n;
+}
+#define CHECK_NON_EMPTY_DESC_INVARIANT assert(count_non_empty_desc(current_process) == current_process->num_desc);
+
 static void process_poll_array(Process *process,
     void **contexts, struct pollfd *polled, int num_polled)
 {
     for (int i = 0, j = 0; j < process->num_desc; i++) {
 
+        assert(i < MAX_DESCRIPTORS);
         Descriptor *desc = &process->desc[i];
         if (desc->type == DESC_EMPTY)
             continue;
@@ -570,6 +582,7 @@ void update_simulation(void)
 
         for (int j = 0, k = 0; k < current_process->num_desc; j++) {
 
+            assert(j < MAX_DESCRIPTORS);
             Descriptor *desc = &current_process->desc[j];
             if (desc->type == DESC_EMPTY)
                 continue;
@@ -645,15 +658,33 @@ void update_simulation(void)
         switch (current_process->type) {
             case PROCESS_TYPE_METADATA_SERVER:
                 printf("metadata_server_step\n");
-                num_polled = metadata_server_step(&current_process->metadata_server, contexts, polled, num_polled, &timeout);
+                num_polled = metadata_server_step(
+                    &current_process->metadata_server,
+                    contexts,
+                    polled,
+                    num_polled,
+                    &timeout
+                );
                 break;
             case PROCESS_TYPE_CHUNK_SERVER:
                 printf("chunk_server_step\n");
-                num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled, &timeout);
+                num_polled = chunk_server_step(
+                    &current_process->chunk_server,
+                    contexts,
+                    polled,
+                    num_polled,
+                    &timeout
+                );
                 break;
             case PROCESS_TYPE_CLIENT:
                 //printf("simulation_client_step\n");
-                num_polled = simulation_client_step(&current_process->simulation_client, contexts, polled, num_polled, &timeout);
+                num_polled = simulation_client_step(
+                    &current_process->simulation_client,
+                    contexts,
+                    polled,
+                    num_polled,
+                    &timeout
+                );
                 break;
         }
 
@@ -785,8 +816,10 @@ SOCKET mock_socket(int domain, int type, int protocol)
     }
 
     int idx = 0;
-    while (current_process->desc[idx].type != DESC_EMPTY)
+    while (current_process->desc[idx].type != DESC_EMPTY) {
         idx++;
+        assert(idx < MAX_DESCRIPTORS);
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     desc->type = DESC_SOCKET;
@@ -796,6 +829,8 @@ SOCKET mock_socket(int domain, int type, int protocol)
     desc->address = (DescriptorAddress) { .type=DESC_ADDR_VOID };
 
     current_process->num_desc++;
+
+    CHECK_NON_EMPTY_DESC_INVARIANT;
     return (SOCKET) idx;
 }
 
@@ -908,8 +943,10 @@ SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
         return INVALID_SOCKET;
     }
     int new_idx = 0;
-    while (current_process->desc[new_idx].type != DESC_EMPTY)
+    while (current_process->desc[new_idx].type != DESC_EMPTY) {
         new_idx++;
+        assert(new_idx < MAX_DESCRIPTORS);
+    }
     Descriptor *new_desc = &current_process->desc[new_idx];
     new_desc->type = DESC_CONNECTION_SOCKET;
     new_desc->events = 0;
@@ -926,6 +963,7 @@ SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
     data_queue_init(&peer->output_data, DATA_QUEUE_SIZE);
 
     current_process->num_desc++;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
     return (SOCKET) new_idx;
 }
 
@@ -1151,8 +1189,10 @@ wrap_native_file_into_desc(NATIVE_HANDLE handle)
     }
 
     int idx = 0;
-    while (current_process->desc[idx].type != DESC_EMPTY)
+    while (current_process->desc[idx].type != DESC_EMPTY) {
         idx++;
+        assert(idx < MAX_DESCRIPTORS);
+    }
 
     Descriptor *desc = &current_process->desc[idx];
 
@@ -1160,6 +1200,7 @@ wrap_native_file_into_desc(NATIVE_HANDLE handle)
     desc->real_fd = handle;
 
     current_process->num_desc++;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
     return idx;
 }
 
@@ -1239,6 +1280,8 @@ int mock_closesocket(SOCKET fd)
     }
 
     close_desc(desc);
+    current_process->num_desc--;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
     return 0;
 }
 
@@ -1271,6 +1314,8 @@ BOOL mock_CloseHandle(HANDLE handle)
     }
 
     close_desc(desc);
+    current_process->num_desc--;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
     return TRUE;
 }
 
@@ -1485,6 +1530,8 @@ int mock_close(int fd)
     }
 
     close_desc(desc);
+    current_process->num_desc--;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
     return 0;
 }
 

@@ -324,7 +324,8 @@ static int get_chunk_server(TinyDFS *tdfs, Address *addrs, int num_addrs, ByteQu
         int conn_idx = tcp_index_from_tag(&tdfs->tcp, found);
         assert(conn_idx > -1);
 
-        *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
+        if (output)
+            *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
     }
 
     return found;
@@ -1601,7 +1602,10 @@ static void process_event_for_write(TinyDFS *tdfs,
             }
 
             for (int i = 0; i < num_upload_results; i++) {
-                upload_results[i].old_hash = tdfs->operations[opidx].hashes[i];
+                if (i < tdfs->operations[opidx].num_hashes)
+                    upload_results[i].old_hash = tdfs->operations[opidx].hashes[i];
+                else
+                    memset(&upload_results[i].old_hash, 0, sizeof(SHA256));
                 upload_results[i].num_locations = 0;
             }
 
