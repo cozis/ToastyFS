@@ -1181,10 +1181,11 @@ static void process_event_for_write(TinyDFS *tdfs,
             return;
         }
 
-        uint32_t num_all_hasehs = (tdfs->operations[opidx].len + tdfs->operations[opidx].chunk_size - 1) / tdfs->operations[opidx].chunk_size;
+        uint32_t num_all_hasehs = (tdfs->operations[opidx].len + chunk_size - 1) / chunk_size;
         uint32_t num_new_hashes = num_all_hasehs - num_hashes;
-        tdfs->operations[opidx].num_chunks = num_all_hasehs;
+        assert(num_all_hasehs >= num_hashes);
 
+        tdfs->operations[opidx].num_chunks = num_all_hasehs;
         tdfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
         tdfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
         if (tdfs->operations[opidx].hashes == NULL) {
@@ -1212,8 +1213,12 @@ static void process_event_for_write(TinyDFS *tdfs,
                off = full_off % chunk_size;
 
             int len = full_len - relative_off;
-            if (len > chunk_size)
-                len = chunk_size;
+            if (len > chunk_size - off)
+                len = chunk_size - off;
+
+            assert(len <= chunk_size);
+            assert(off <= chunk_size);
+            assert(off + len <= chunk_size);
 
             relative_off += len;
 
@@ -1356,8 +1361,12 @@ static void process_event_for_write(TinyDFS *tdfs,
                        off = full_off % chunk_size;
 
                     int len = full_len - relative_off;
-                    if (len > chunk_size)
-                        len = chunk_size;
+                    if (len > chunk_size - off)
+                        len = chunk_size - off;
+
+                    assert(len <= chunk_size);
+                    assert(off <= chunk_size);
+                    assert(off + len <= chunk_size);
 
                     relative_off += len;
 
@@ -1417,8 +1426,12 @@ static void process_event_for_write(TinyDFS *tdfs,
                        off = full_off % chunk_size;
 
                     int len = full_len - relative_off;
-                    if (len > chunk_size)
-                        len = chunk_size;
+                    if (len > chunk_size - off)
+                        len = chunk_size - off;
+
+                    assert(len <= chunk_size);
+                    assert(off <= chunk_size);
+                    assert(off + len <= chunk_size);
 
                     relative_off += len;
 
