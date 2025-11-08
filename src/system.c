@@ -412,6 +412,7 @@ static bool find_peer_by_address(DescriptorAddress address, DescriptorHandle *ha
 
         for (int j = 0, k = 0; k < processes[i]->num_desc; j++) {
 
+            assert(j < MAX_DESCRIPTORS);
             Descriptor *desc = &processes[i]->desc[j];
             if (desc->type == DESC_EMPTY)
                 continue;
