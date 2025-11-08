@@ -76,8 +76,8 @@ static void append_hex_as_str(char *out, SHA256 hash)
 {
     char table[] = "0123456789abcdef";
     for (int i = 0; i < (int) sizeof(hash); i++) {
-        out[(i << 1) + 0] = table[hash.data[i] >> 4];
-        out[(i << 1) + 1] = table[hash.data[i] & 0xF];
+        out[(i << 1) + 0] = table[(uint8_t) hash.data[i] >> 4];
+        out[(i << 1) + 1] = table[(uint8_t) hash.data[i] & 0xF];
     }
 }
 
@@ -698,6 +698,8 @@ process_client_upload_chunk(ChunkServer *state, int conn_idx, ByteView msg)
 
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
     message_writer_init(&writer, output, MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS);
+
+    message_write(&writer, &new_hash, sizeof(new_hash));
 
     if (!message_writer_free(&writer))
         return -1;

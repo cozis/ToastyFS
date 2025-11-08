@@ -1590,7 +1590,10 @@ int mock_fstat(int fd, struct stat *buf)
 
 int mock_mkstemp(char *path)
 {
-    return mkstemp(path);
+    int fd = mkstemp(path);
+    if (fd < 0) return fd;
+
+    return wrap_native_file_into_desc(fd);
 }
 
 char* mock_realpath(char *path, char *dst)

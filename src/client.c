@@ -1534,22 +1534,29 @@ static void process_event_for_write(TinyDFS *tdfs,
             return;
         }
 
+        SHA256 hash;
+        uint16_t expected_type;
+        if (tdfs->operations[opidx].uploads[found].chunk_index >= tdfs->operations[opidx].num_hashes)
+            expected_type = MESSAGE_TYPE_CREATE_CHUNK_SUCCESS;
+        else {
+            expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
+
+            if (!binary_read(&reader, &hash, sizeof(hash))) {
+                // TODO
+                return;
+            }
+        }
         // Check that there is nothing else to read
         if (binary_read(&reader, NULL, 1)) {
             // TODO
             return;
         }
 
-        uint16_t expected_type;
-        if (tdfs->operations[opidx].uploads[found].chunk_index >= tdfs->operations[opidx].num_hashes)
-            expected_type = MESSAGE_TYPE_CREATE_CHUNK_SUCCESS;
-        else
-            expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
-
         if (type != expected_type) {
             tdfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
         } else {
             tdfs->operations[opidx].uploads[found].status = UPLOAD_COMPLETED;
+            tdfs->operations[opidx].uploads[found].final_hash = hash;
             for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++) {
 
                 if (tdfs->operations[opidx].uploads[i].status == UPLOAD_WAITING
