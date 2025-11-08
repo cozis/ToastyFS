@@ -782,7 +782,7 @@ start_connecting_to_metadata_server(ChunkServer *state)
     Time current_time = get_current_time();
 
     ByteQueue *output;
-    if (tcp_connect(&state->tcp, state->metadata_server_addr, TAG_METADATA_SERVER, &output) < 0) {
+    if (tcp_connect(&state->tcp, state->remote_addr, TAG_METADATA_SERVER, &output) < 0) {
         state->disconnect_time = current_time;
         return;
     }
@@ -797,17 +797,8 @@ start_connecting_to_metadata_server(ChunkServer *state)
     message_write(&writer, &num_ipv4, sizeof(num_ipv4));
 
     // Write our IPv4 address and port
-    IPv4 our_ipv4;
-    if (inet_pton(AF_INET, "127.0.0.1", &our_ipv4) == 1) {
-        message_write(&writer, &our_ipv4, sizeof(our_ipv4));
-        uint16_t our_port = 8080; // From program_init
-        message_write(&writer, &our_port, sizeof(our_port));
-    } else {
-        // Failed to parse our address, send 0 IPv4s
-        num_ipv4 = 0;
-        // We already wrote 1, this is an error case
-        // For now, continue with the bad data
-    }
+    message_write(&writer, &state->local_addr.ipv4, sizeof(state->local_addr.ipv4));
+    message_write(&writer, &state->local_addr.port, sizeof(state->local_addr.port));
 
     // No IPv6 addresses for now
     uint32_t num_ipv6 = 0;
@@ -852,22 +843,35 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     pending_download_list_init(&state->pending_download_list);
 
     char tmp[1<<10];
+    if (addr.len >= (int) sizeof(tmp)) {
+        tcp_context_free(&state->tcp);
+        return -1;
+    }
+    memcpy(tmp, addr.ptr, addr.len);
+    tmp[addr.len] = '\0';
+    state->local_addr.is_ipv4 = true;
+    if (inet_pton(AF_INET, tmp, &state->local_addr.ipv4) != 1) {
+        tcp_context_free(&state->tcp);
+        chunk_store_free(&state->store);
+        return -1;
+    }
+    state->local_addr.port = port;
+
+    // Initialize metadata server address
+    // // TODO: This should also support IPv6
     if (remote_addr.len >= (int) sizeof(tmp)) {
         tcp_context_free(&state->tcp);
         return -1;
     }
     memcpy(tmp, remote_addr.ptr, remote_addr.len);
     tmp[remote_addr.len] = '\0';
-
-    // Initialize metadata server address
-    // // TODO: This should also support IPv6
-    state->metadata_server_addr.is_ipv4 = true;
-    if (inet_pton(AF_INET, tmp, &state->metadata_server_addr.ipv4) != 1) {
+    state->remote_addr.is_ipv4 = true;
+    if (inet_pton(AF_INET, tmp, &state->remote_addr.ipv4) != 1) {
         tcp_context_free(&state->tcp);
         chunk_store_free(&state->store);
         return -1;
     }
-    state->metadata_server_addr.port = remote_port;
+    state->remote_addr.port = remote_port;
     state->disconnect_time = INVALID_TIME;
 
     start_connecting_to_metadata_server(state);

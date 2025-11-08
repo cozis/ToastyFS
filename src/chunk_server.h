@@ -26,11 +26,11 @@ typedef struct {
 } PendingDownloadList;
 
 typedef struct {
-    Address    metadata_server_addr;
+    Address    local_addr;
+    Address    remote_addr;
     Time       disconnect_time;
     TCP        tcp;
     ChunkStore store;
-
     bool downloading;
     PendingDownloadList pending_download_list;
 } ChunkServer;

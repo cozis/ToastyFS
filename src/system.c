@@ -652,7 +652,7 @@ void update_simulation(void)
                 num_polled = chunk_server_step(&current_process->chunk_server, contexts, polled, num_polled, &timeout);
                 break;
             case PROCESS_TYPE_CLIENT:
-                printf("simulation_client_step\n");
+                //printf("simulation_client_step\n");
                 num_polled = simulation_client_step(&current_process->simulation_client, contexts, polled, num_polled, &timeout);
                 break;
         }
@@ -688,7 +688,17 @@ void update_simulation(void)
 
                 case CONNECTION_DELAYED:
                 {
-                    printf("Resolving connect\n"); // TODO
+                    switch (desc->connect_address.type) {
+                        char ip_str[INET_ADDRSTRLEN];
+                        case DESC_ADDR_IPV4:
+                        inet_ntop(AF_INET, &desc->connect_address.ipv4.sin_addr, ip_str, sizeof(ip_str));
+                        printf("Resolving connect %s:%d\n", ip_str, ntohs(desc->connect_address.ipv4.sin_port));
+                        break;
+                        case DESC_ADDR_IPV6:
+                        inet_ntop(AF_INET6, &desc->connect_address.ipv6.sin6_addr, ip_str, sizeof(ip_str));
+                        printf("Resolving connect %s:%d\n", ip_str, ntohs(desc->connect_address.ipv6.sin6_port));
+                        break;
+                    }
 
                     DescriptorHandle peer_handle;
                     if (!find_peer_by_address(desc->connect_address, &peer_handle)) {

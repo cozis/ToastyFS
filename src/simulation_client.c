@@ -252,8 +252,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
         *timeout = -1;
     } else {
         // Wake up soon to continue processing
-        //*timeout = 10;  // 10ms
-        *timeout = -1; // TODO
+        *timeout = 10;  // 10ms
     }
 
     // Return the poll array from the TinyDFS client

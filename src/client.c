@@ -1341,7 +1341,13 @@ static void process_event_for_write(TinyDFS *tdfs,
                     tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
                     return;
                 }
-
+#if 1
+                {
+                    char ip_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &ipv4, ip_str, sizeof(ip_str));
+                    printf("write location %s:%d\n", ip_str, port);
+                }
+#endif
                 int old_relative_off = relative_off;
 
                 for (int w = 0; w < num_new_hashes; w++) {
@@ -1398,7 +1404,13 @@ static void process_event_for_write(TinyDFS *tdfs,
                     tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
                     return;
                 }
-
+#if 1
+                {
+                    char ip_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET6, &ipv6, ip_str, sizeof(ip_str));
+                    printf("write location %s:%d\n", ip_str, port);
+                }
+#endif
                 int old_relative_off = relative_off;
 
                 for (int w = 0; w < num_new_hashes; w++) {
