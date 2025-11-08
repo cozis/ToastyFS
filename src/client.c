@@ -219,8 +219,10 @@ alloc_operation(TinyDFS *tdfs, OperationType type, int off, void *ptr, int len)
     if (tdfs->num_operations == MAX_OPERATIONS)
         return -1;
     Operation *o = tdfs->operations;
-    while (o->type != OPERATION_TYPE_FREE)
+    while (o - tdfs->operations < MAX_OPERATIONS && o->type != OPERATION_TYPE_FREE)
         o++;
+    if (o - tdfs->operations >= MAX_OPERATIONS)
+        return -1;
     o->type = type;
     o->ptr  = ptr;
     o->off  = off;
@@ -418,7 +420,7 @@ int tinydfs_submit_create(TinyDFS *tdfs, char *path, int path_len,
         return -1;
     }
 
-    return 0;
+    return opidx;
 }
 
 int tinydfs_submit_delete(TinyDFS *tdfs, char *path, int path_len)
@@ -444,7 +446,7 @@ int tinydfs_submit_delete(TinyDFS *tdfs, char *path, int path_len)
         return -1;
     }
 
-    return 0;
+    return opidx;
 }
 
 int tinydfs_submit_list(TinyDFS *tdfs, char *path, int path_len)
@@ -471,7 +473,7 @@ int tinydfs_submit_list(TinyDFS *tdfs, char *path, int path_len)
         return -1;
     }
 
-    return 0;
+    return opidx;
 }
 
 static int send_read_message(TinyDFS *tdfs, int opidx, int tag, string path, uint32_t offset, uint32_t length)
@@ -504,7 +506,7 @@ int tinydfs_submit_read(TinyDFS *tdfs, char *path, int path_len, int off, void *
         return -1;
     }
 
-    return 0;
+    return opidx;
 }
 
 int tinydfs_submit_write(TinyDFS *tdfs, char *path, int path_len, int off, void *src, int len)
@@ -522,7 +524,7 @@ int tinydfs_submit_write(TinyDFS *tdfs, char *path, int path_len, int off, void 
         return -1;
     }
 
-    return 0;
+    return opidx;
 }
 
 void tinydfs_result_free(TinyDFS_Result *result)
