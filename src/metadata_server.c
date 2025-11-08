@@ -92,9 +92,11 @@ all_chunk_servers_holding_chunk(MetadataServer *state, SHA256 hash, int *out, in
 {
     int num = 0;
     for (int i = 0; i < state->num_chunk_servers; i++) {
-        if (num < max && chunk_server_peer_contains(&state->chunk_servers[i], hash))
-            out[num] = i;
-        num++;
+        if (chunk_server_peer_contains(&state->chunk_servers[i], hash)) {
+            if (num < max)
+                out[num] = i;
+            num++;
+        }
     }
     return num;
 }
@@ -579,6 +581,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
         results[i].old_hash = old_hash;
         results[i].new_hash = new_hash;
+        results[i].num_addrs = 0;
 
         uint32_t num_locations;
         if (!binary_read(&reader, &num_locations, sizeof(num_locations)))
@@ -590,7 +593,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
             if (!binary_read(&reader, &is_ipv4, sizeof(is_ipv4)))
                 return -1;
 
-            Address addr;
+            Address addr = {0};
             addr.is_ipv4 = is_ipv4;
 
             if (is_ipv4) {
@@ -736,9 +739,13 @@ static int process_chunk_server_auth(MetadataServer *state,
             if (!binary_read(&reader, &port, sizeof(port)))
                 return -1;
 
-            if (chunk_server->num_addrs < MAX_SERVER_ADDRS)
-                chunk_server->addrs[chunk_server->num_addrs++] =
-                    (Address) { .ipv4=ipv4, .is_ipv4=true, .port=port };
+            if (chunk_server->num_addrs < MAX_SERVER_ADDRS) {
+                Address addr = {0};
+                addr.ipv4 = ipv4;
+                addr.is_ipv4 = true;
+                addr.port = port;
+                chunk_server->addrs[chunk_server->num_addrs++] = addr;
+            }
         }
     }
 
@@ -758,9 +765,13 @@ static int process_chunk_server_auth(MetadataServer *state,
             if (!binary_read(&reader, &port, sizeof(port)))
                 return -1;
 
-            if (chunk_server->num_addrs < MAX_SERVER_ADDRS)
-                chunk_server->addrs[chunk_server->num_addrs++] =
-                    (Address) { .is_ipv4=true, .ipv6=ipv6, .port=port };
+            if (chunk_server->num_addrs < MAX_SERVER_ADDRS) {
+                Address addr = {0};
+                addr.ipv6 = ipv6;
+                addr.is_ipv4 = false;
+                addr.port = port;
+                chunk_server->addrs[chunk_server->num_addrs++] = addr;
+            }
         }
     }
 
