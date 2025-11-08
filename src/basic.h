@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 typedef struct {
-    char data[64];
+    char data[32];
 } SHA256;
 
 typedef struct {
