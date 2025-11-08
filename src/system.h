@@ -9,6 +9,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <direct.h> // _mkdir
+#include <bcrypt.h>
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -23,6 +24,7 @@
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/random.h>
 #include <arpa/inet.h>
 
 #define SOCKET int
@@ -32,10 +34,11 @@
 
 #ifdef BUILD_TEST
 
-void   startup_simulation(void);
-int    spawn_simulated_process(char *args);
-void   update_simulation(void);
-void   cleanup_simulation(void);
+void startup_simulation(uint64_t seed_);
+int  spawn_simulated_process(char *args);
+void update_simulation(void);
+void cleanup_simulation(void);
+uint64_t simulation_random_number(void);
 
 void*  mock_malloc(size_t len);
 void*  mock_realloc(void *ptr, size_t len);
@@ -53,31 +56,31 @@ int    mock_send(SOCKET fd, void *src, int len, int flags);
 int    mock_connect(SOCKET fd, void *addr, size_t addr_len);
 
 #ifdef _WIN32
-int    mock_closesocket(SOCKET fd);
-HANDLE mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
-BOOL   mock_CloseHandle(HANDLE handle);
-BOOL   mock_LockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToLockLow, DWORD nNumberOfBytesToLockHigh);
-BOOL   mock_UnlockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToUnlockLow, DWORD nNumberOfBytesToUnlockHigh);
-BOOL   mock_FlushFileBuffers(HANDLE handle);
-BOOL   mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov);
-BOOL   mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov);
-BOOL   mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf);
-BOOL   mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
-BOOL   mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
-char*  mock__fullpath(char *path, char *dst, int cap);
-int    mock__mkdir(char *path);
+int      mock_closesocket(SOCKET fd);
+HANDLE   mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
+BOOL     mock_CloseHandle(HANDLE handle);
+BOOL     mock_LockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToLockLow, DWORD nNumberOfBytesToLockHigh);
+BOOL     mock_UnlockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToUnlockLow, DWORD nNumberOfBytesToUnlockHigh);
+BOOL     mock_FlushFileBuffers(HANDLE handle);
+BOOL     mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov);
+BOOL     mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov);
+BOOL     mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf);
+BOOL     mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
+BOOL     mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
+char*    mock__fullpath(char *path, char *dst, int cap);
+int      mock__mkdir(char *path);
 #else
-int    mock_clock_gettime(clockid_t clockid, struct timespec *tp);
-int    mock_open(char *path, int flags, int mode);
-int    mock_close(int fd);
-int    mock_flock(int fd, int op);
-int    mock_fsync(int fd);
-int    mock_read(int fd, char *dst, int len);
-int    mock_write(int fd, char *src, int len);
-int    mock_fstat(int fd, struct stat *buf);
-int    mock_mkstemp(char *path);
-char*  mock_realpath(char *path, char *dst);
-int    mock_mkdir(char *path, mode_t mode);
+int     mock_clock_gettime(clockid_t clockid, struct timespec *tp);
+int     mock_open(char *path, int flags, int mode);
+int     mock_close(int fd);
+int     mock_flock(int fd, int op);
+int     mock_fsync(int fd);
+int     mock_read(int fd, char *dst, int len);
+int     mock_write(int fd, char *src, int len);
+int     mock_fstat(int fd, struct stat *buf);
+int     mock_mkstemp(char *path);
+char*   mock_realpath(char *path, char *dst);
+int     mock_mkdir(char *path, mode_t mode);
 #endif
 
 // Common
@@ -123,6 +126,7 @@ int    mock_mkdir(char *path, mode_t mode);
 #define sys_mkstemp          mock_mkstemp
 #define sys_realpath         mock_realpath
 #define sys_clock_gettime    mock_clock_gettime
+#define sys_getrandom        mock_getrandom
 
 #else
 

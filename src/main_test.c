@@ -15,7 +15,7 @@ int main(int argc, char **argv)
 
     // TODO: set simulation_should_stop=true on ctrl+C
 
-    startup_simulation();
+    startup_simulation(1);
 
     // Spawn metadata server (leader)
     spawn_simulated_process("--addr 127.0.0.1 --port 8080 --leader");
@@ -33,6 +33,10 @@ int main(int argc, char **argv)
     spawn_simulated_process("--addr 127.0.0.1 --port 8090 --remote-addr 127.0.0.1 --remote-port 8080 --path chunk_server_data_9/");
 
     // Spawn simulation client
+    spawn_simulated_process("--client --remote-addr 127.0.0.1 --remote-port 8080");
+    spawn_simulated_process("--client --remote-addr 127.0.0.1 --remote-port 8080");
+    spawn_simulated_process("--client --remote-addr 127.0.0.1 --remote-port 8080");
+    spawn_simulated_process("--client --remote-addr 127.0.0.1 --remote-port 8080");
     spawn_simulated_process("--client --remote-addr 127.0.0.1 --remote-port 8080");
 
     while (!simulation_should_stop)

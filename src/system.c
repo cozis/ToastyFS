@@ -166,7 +166,9 @@ static int num_processes = 0;
 static Process *processes[MAX_PROCESSES];
 static Process *current_process = NULL;
 static uint64_t current_time = 1;
+static uint64_t seed;
 
+// TODO: use current_time instead of these fields
 #ifndef _WIN32
 // Simulated time for deterministic clock_gettime behavior
 static struct timespec simulated_time = {0, 0};
@@ -260,10 +262,24 @@ static bool is_space(char c)
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-void startup_simulation(void)
+void startup_simulation(uint64_t seed_)
 {
+    seed = seed_;
+    if (seed == 0)
+        seed = 1;
+
     num_processes = 0;
     current_process = NULL;
+}
+
+uint64_t simulation_random_number(void)
+{
+    uint64_t x = seed;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    seed = x;
+    return x;
 }
 
 int spawn_simulated_process(char *args)
@@ -332,15 +348,12 @@ int spawn_simulated_process(char *args)
 
     switch (process->type) {
         case PROCESS_TYPE_METADATA_SERVER:
-            printf("metadata_server_init\n");
             num_polled = metadata_server_init(&process->metadata_server, argc, argv, contexts, polled, &timeout);
             break;
         case PROCESS_TYPE_CHUNK_SERVER:
-            printf("chunk_server_init\n");
             num_polled = chunk_server_init(&process->chunk_server, argc, argv, contexts, polled, &timeout);
             break;
         case PROCESS_TYPE_CLIENT:
-            printf("simulation_client_init\n");
             num_polled = simulation_client_init(&process->simulation_client, argc, argv, contexts, polled, &timeout);
             break;
         default:
@@ -658,7 +671,6 @@ void update_simulation(void)
         int timeout = -1;
         switch (current_process->type) {
             case PROCESS_TYPE_METADATA_SERVER:
-                printf("metadata_server_step\n");
                 num_polled = metadata_server_step(
                     &current_process->metadata_server,
                     contexts,
@@ -668,7 +680,6 @@ void update_simulation(void)
                 );
                 break;
             case PROCESS_TYPE_CHUNK_SERVER:
-                printf("chunk_server_step\n");
                 num_polled = chunk_server_step(
                     &current_process->chunk_server,
                     contexts,
@@ -678,7 +689,6 @@ void update_simulation(void)
                 );
                 break;
             case PROCESS_TYPE_CLIENT:
-                //printf("simulation_client_step\n");
                 num_polled = simulation_client_step(
                     &current_process->simulation_client,
                     contexts,
@@ -720,21 +730,8 @@ void update_simulation(void)
 
                 case CONNECTION_DELAYED:
                 {
-                    switch (desc->connect_address.type) {
-                        char ip_str[INET_ADDRSTRLEN];
-                        case DESC_ADDR_IPV4:
-                        inet_ntop(AF_INET, &desc->connect_address.ipv4.sin_addr, ip_str, sizeof(ip_str));
-                        printf("Resolving connect %s:%d\n", ip_str, ntohs(desc->connect_address.ipv4.sin_port));
-                        break;
-                        case DESC_ADDR_IPV6:
-                        inet_ntop(AF_INET6, &desc->connect_address.ipv6.sin6_addr, ip_str, sizeof(ip_str));
-                        printf("Resolving connect %s:%d\n", ip_str, ntohs(desc->connect_address.ipv6.sin6_port));
-                        break;
-                    }
-
                     DescriptorHandle peer_handle;
                     if (!find_peer_by_address(desc->connect_address, &peer_handle)) {
-                        printf("connect failed (line %d)\n", __LINE__); // TODO
                         desc->revents |= POLLOUT;
                         desc->connection_state = CONNECTION_FAILED;
                         desc->connect_errno = EHOSTUNREACH; // TODO: This only works on Linux, not Windows
@@ -744,14 +741,11 @@ void update_simulation(void)
 
                     DescriptorHandle self_handle = { processes[i], j, desc->generation };
                     if (!accept_queue_push(&peer->accept_queue, self_handle)) {
-                        printf("connect failed (line %d)\n", __LINE__); // TODO
                         desc->revents |= POLLOUT;
                         desc->connection_state = CONNECTION_FAILED;
                         desc->connect_errno = ECONNREFUSED; // TODO: This only works on Linux, not Windows
                         break;
                     }
-
-                    printf("connect succeded\n"); // TODO
 
                     peer->revents |= POLLIN;
 

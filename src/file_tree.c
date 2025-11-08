@@ -291,6 +291,7 @@ int file_tree_create_entity(FileTree *ft, string path,
     return 0;
 }
 
+// TODO: this should return the list of unreferenced hashes
 int file_tree_delete_entity(FileTree *ft, string path)
 {
     int num_comps;

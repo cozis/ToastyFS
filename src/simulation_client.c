@@ -35,23 +35,21 @@ int simulation_client_init(SimulationClient *client, int argc, char **argv,
     parse_server_addr(argc, argv, &addr, &port);
 
     client->tdfs = tinydfs_init(addr, port);
-    if (client->tdfs == NULL) {
+    if (client->tdfs == NULL)
         return -1;
-    }
 
-    client->state = CLIENT_STATE_INIT;
-    client->step = 0;
-    client->create_dir_op = -1;
-    client->create_file_op = -1;
-    client->write_op = -1;
-    client->read_op = -1;
-    client->list_op = -1;
-    client->delete_op = -1;
+    client->num_pending = 0;
 
     printf("Client set up (remote=%s:%d)\n", addr, port);
 
-    *timeout = 0;  // Wake up immediately to start processing
+    *timeout = 0;
     return tinydfs_process_events(client->tdfs, contexts, polled, 0);
+}
+
+static int random_in_range(int min, int max)
+{
+    uint64_t n = simulation_random_number();
+    return min + n % (max - min + 1);
 }
 
 int simulation_client_step(SimulationClient *client, void **contexts,
@@ -62,209 +60,204 @@ int simulation_client_step(SimulationClient *client, void **contexts,
     // Process any pending events from the network and get new poll descriptors
     num_polled = tinydfs_process_events(client->tdfs, contexts, polled, num_polled);
 
-    // State machine for running test operations
-    switch (client->step) {
-        case 0:
-            // Step 0: Create a directory
-            printf("[Client] Step 0: Creating directory /test_dir\n");
-            client->create_dir_op = tinydfs_submit_create(client->tdfs, "/test_dir", -1, true, 0);
-            if (client->create_dir_op < 0) {
-                fprintf(stderr, "[Client] Failed to submit create directory operation\n");
-                client->state = CLIENT_STATE_DONE;
-                break;
-            }
-            client->step++;
+    for (int i = 0; i < client->num_pending; i++) {
+
+        TinyDFS_Result result;
+        if (!tinydfs_isdone(client->tdfs, client->pending[i].opidx, &result))
+            continue;
+
+        PendingOperation pending = client->pending[i];
+        switch (result.type) {
+
+            case TINYDFS_RESULT_EMPTY:
+            assert(0);
             break;
 
-        case 1:
-            // Step 1: Wait for directory creation to complete
-            if (tinydfs_isdone(client->tdfs, client->create_dir_op, &result)) {
-                if (result.type == TINYDFS_RESULT_CREATE_SUCCESS) {
-                    printf("[Client] Step 1: Directory created successfully\n");
-                    client->step++;
-                } else {
-                    fprintf(stderr, "[Client] Step 1: Failed to create directory\n");
-                    client->state = CLIENT_STATE_DONE;
-                    break;
-                }
-                tinydfs_result_free(&result);
-            }
+            case TINYDFS_RESULT_CREATE_ERROR:
+            assert(pending.type == PENDING_OPERATION_CREATE);
+            printf("[Client] create error\n");
             break;
 
-        case 2:
-            // Step 2: Create a file
-            printf("[Client] Step 2: Creating file /test_dir/test_file.txt\n");
-            client->create_file_op = tinydfs_submit_create(client->tdfs, "/test_dir/test_file.txt", -1, false, 1024);
-            if (client->create_file_op < 0) {
-                fprintf(stderr, "[Client] Failed to submit create file operation\n");
-                client->state = CLIENT_STATE_DONE;
-                break;
-            }
-            client->step++;
+            case TINYDFS_RESULT_CREATE_SUCCESS:
+            assert(pending.type == PENDING_OPERATION_CREATE);
+            printf("[Client] create success\n");
             break;
 
-        case 3:
-            // Step 3: Wait for file creation to complete
-            if (tinydfs_isdone(client->tdfs, client->create_file_op, &result)) {
-                if (result.type == TINYDFS_RESULT_CREATE_SUCCESS) {
-                    printf("[Client] Step 3: File created successfully\n");
-                    client->step++;
-                } else {
-                    fprintf(stderr, "[Client] Step 3: Failed to create file\n");
-                    client->state = CLIENT_STATE_DONE;
-                    break;
-                }
-                tinydfs_result_free(&result);
-            }
+            case TINYDFS_RESULT_DELETE_ERROR:
+            assert(pending.type == PENDING_OPERATION_DELETE);
+            printf("[Client] delete error\n");
             break;
 
-        case 4:
-            // Step 4: Write data to the file
-            printf("[Client] Step 4: Writing data to /test_dir/test_file.txt\n");
-            {
-                const char *data = "Hello, TinyDFS! This is a test.";
-                client->write_op = tinydfs_submit_write(client->tdfs, "/test_dir/test_file.txt", -1, 0, (void *)data, strlen(data));
-                if (client->write_op < 0) {
-                    fprintf(stderr, "[Client] Failed to submit write operation\n");
-                    client->state = CLIENT_STATE_DONE;
-                    break;
-                }
-            }
-            client->step++;
+            case TINYDFS_RESULT_DELETE_SUCCESS:
+            assert(pending.type == PENDING_OPERATION_DELETE);
+            printf("[Client] delete success\n");
             break;
 
-        case 5:
-            // Step 5: Wait for write to complete
-            if (tinydfs_isdone(client->tdfs, client->write_op, &result)) {
-                if (result.type == TINYDFS_RESULT_WRITE_SUCCESS) {
-                    printf("[Client] Step 5: Data written successfully\n");
-                    client->step++;
-                } else {
-                    fprintf(stderr, "[Client] Step 5: Failed to write data\n");
-                    client->state = CLIENT_STATE_DONE;
-                    break;
-                }
-                tinydfs_result_free(&result);
-            }
+            case TINYDFS_RESULT_LIST_ERROR:
+            assert(pending.type == PENDING_OPERATION_LIST);
+            printf("[Client] list error\n");
             break;
 
-        case 6:
-            // Step 6: Read data from the file
-            printf("[Client] Step 6: Reading data from /test_dir/test_file.txt\n");
-            memset(client->read_buffer, 0, sizeof(client->read_buffer));
-            client->read_op = tinydfs_submit_read(client->tdfs, "/test_dir/test_file.txt", -1, 0, client->read_buffer, sizeof(client->read_buffer) - 1);
-            if (client->read_op < 0) {
-                fprintf(stderr, "[Client] Failed to submit read operation\n");
-                client->state = CLIENT_STATE_DONE;
-                break;
-            }
-            client->step++;
+            case TINYDFS_RESULT_LIST_SUCCESS:
+            assert(pending.type == PENDING_OPERATION_LIST);
+            printf("[Client] list success\n");
             break;
 
-        case 7:
-            // Step 7: Wait for read to complete
-            if (tinydfs_isdone(client->tdfs, client->read_op, &result)) {
-                if (result.type == TINYDFS_RESULT_READ_SUCCESS) {
-                    printf("[Client] Step 7: Data read successfully: '%s'\n", client->read_buffer);
-                    client->step++;
-                } else {
-                    fprintf(stderr, "[Client] Step 7: Failed to read data\n");
-                    client->state = CLIENT_STATE_DONE;
-                    break;
-                }
-                tinydfs_result_free(&result);
-            }
+            case TINYDFS_RESULT_READ_ERROR:
+            assert(pending.type == PENDING_OPERATION_READ);
+            printf("[Client] read error\n");
             break;
 
-        case 8:
-            // Step 8: List directory contents
-            printf("[Client] Step 8: Listing /test_dir\n");
-            client->list_op = tinydfs_submit_list(client->tdfs, "/test_dir", -1);
-            if (client->list_op < 0) {
-                fprintf(stderr, "[Client] Failed to submit list operation\n");
-                client->state = CLIENT_STATE_DONE;
-                break;
-            }
-            client->step++;
+            case TINYDFS_RESULT_READ_SUCCESS:
+            assert(pending.type == PENDING_OPERATION_READ);
+            printf("[Client] read success\n");
             break;
 
-        case 9:
-            // Step 9: Wait for list to complete
-            if (tinydfs_isdone(client->tdfs, client->list_op, &result)) {
-                if (result.type == TINYDFS_RESULT_LIST_SUCCESS) {
-                    printf("[Client] Step 9: Directory listing:\n");
-                    for (int i = 0; i < result.num_entities; i++) {
-                        printf("[Client]   - %s %s\n",
-                               result.entities[i].is_dir ? "[DIR]" : "[FILE]",
-                               result.entities[i].name);
-                    }
-                    client->step++;
-                } else {
-                    fprintf(stderr, "[Client] Step 9: Failed to list directory\n");
-                    client->state = CLIENT_STATE_DONE;
-                    break;
-                }
-                tinydfs_result_free(&result);
-            }
+            case TINYDFS_RESULT_WRITE_ERROR:
+            assert(pending.type == PENDING_OPERATION_WRITE);
+            printf("[Client] write error\n");
             break;
 
-        case 10:
-            // Step 10: Delete the file
-            printf("[Client] Step 10: Deleting /test_dir/test_file.txt\n");
-            client->delete_op = tinydfs_submit_delete(client->tdfs, "/test_dir/test_file.txt", -1);
-            if (client->delete_op < 0) {
-                fprintf(stderr, "[Client] Failed to submit delete operation\n");
-                client->state = CLIENT_STATE_DONE;
-                break;
-            }
-            client->step++;
+            case TINYDFS_RESULT_WRITE_SUCCESS:
+            assert(pending.type == PENDING_OPERATION_WRITE);
+            printf("[Client] write success\n");
             break;
-
-        case 11:
-            // Step 11: Wait for delete to complete
-            if (tinydfs_isdone(client->tdfs, client->delete_op, &result)) {
-                if (result.type == TINYDFS_RESULT_DELETE_SUCCESS) {
-                    printf("[Client] Step 11: File deleted successfully\n");
-                    client->step++;
-                } else {
-                    fprintf(stderr, "[Client] Step 11: Failed to delete file\n");
-                    client->state = CLIENT_STATE_DONE;
-                    break;
-                }
-                tinydfs_result_free(&result);
-            }
-            break;
-
-        case 12:
-            // All operations complete
-            printf("[Client] All operations completed successfully!\n");
-            client->state = CLIENT_STATE_DONE;
-            client->step++;
-            break;
-
-        default:
-            // Stay in DONE state
-            break;
+        }
+        free(pending.ptr);
+        tinydfs_result_free(&result);
+        client->pending[i--] = client->pending[--client->num_pending];
     }
 
-    // If we're done, no need to wake up again
-    if (client->state == CLIENT_STATE_DONE) {
+    while (client->num_pending < MAX_PENDING_OPERATION) {
+
+        typedef struct {
+            char *path;
+            bool is_dir;
+        } TableEntry;
+
+        static const TableEntry table[] = {
+            { "/f0",    false },
+            { "/f1",    false },
+            { "/d0",    true  },
+            { "/d1",    true  },
+            { "/d0/f1", false },
+            { "/d0/f2", false },
+            { "/d0/d0", true  },
+            { "/d0/d1", true  },
+            { "/d1/f1", false },
+            { "/d1/f2", false },
+            { "/d1/d0", true  },
+            { "/d1/d1", true  },
+        };
+        static const int table_len = sizeof(table) / sizeof(table[0]);
+
+        static const PendingOperationType type_table[] = {
+            PENDING_OPERATION_CREATE,
+            PENDING_OPERATION_DELETE,
+            PENDING_OPERATION_LIST,
+            PENDING_OPERATION_READ,
+            PENDING_OPERATION_WRITE,
+        };
+        static const int type_table_len = sizeof(type_table)/sizeof(type_table[0]);
+
+        void *ptr = NULL;
+        int off = 0;
+        int len = 0;
+        int ret;
+
+        PendingOperationType type = type_table[random_in_range(0, type_table_len-1)];
+        switch (type) {
+
+            TableEntry entry;
+            uint32_t chunk_size;
+
+            case PENDING_OPERATION_CREATE:
+            entry = table[random_in_range(0, table_len-1)];
+            chunk_size = entry.is_dir ? 0 : random_in_range(0, 5000);
+            ret = tinydfs_submit_create(
+                client->tdfs,
+                entry.path,
+                -1,
+                entry.is_dir,
+                chunk_size
+            );
+            printf("[Client] submit create (path=%s, is_dir=%s, chunk_size=%d)\n", entry.path, entry.is_dir ? "true" : "false", chunk_size);
+            break;
+
+            case PENDING_OPERATION_DELETE:
+            entry = table[random_in_range(0, table_len-1)];
+            ret = tinydfs_submit_delete(
+                client->tdfs,
+                entry.path,
+                -1
+            );
+            printf("[Client] submit delete (path=%s)\n", entry.path);
+            break;
+
+            case PENDING_OPERATION_LIST:
+            entry = table[random_in_range(0, table_len-1)];
+            ret = tinydfs_submit_list(
+                client->tdfs,
+                entry.path,
+                -1
+            );
+            printf("[Client] submit list   (path=%s)\n", entry.path);
+            break;
+
+            case PENDING_OPERATION_READ:
+            entry = table[random_in_range(0, table_len-1)];
+            off = random_in_range(0, 10000);
+            len = random_in_range(0, 5000);
+            ptr = malloc(len);
+            if (ptr == NULL) assert(0);
+            ret = tinydfs_submit_read(client->tdfs,
+                entry.path,
+                -1,
+                off,
+                ptr,
+                len
+            );
+            printf("[Client] submit read   (path=%s, off=%d, len=%d)\n", entry.path, off, len);
+            break;
+
+            case PENDING_OPERATION_WRITE:
+            entry = table[random_in_range(0, table_len-1)];
+            off = random_in_range(0, 10000);
+            len = random_in_range(0, 5000);
+            ptr = malloc(len);
+            if (ptr == NULL) assert(0);
+            memset(ptr, 'a', len);
+            ret = tinydfs_submit_write(
+                client->tdfs,
+                entry.path,
+                -1,
+                off,
+                ptr,
+                len
+            );
+            printf("[Client] submit write  (path=%s, off=%d, len=%d)\n", entry.path, off, len);
+            break;
+        }
+        if (ret < 0)
+            break;
+        PendingOperation pending = {
+            .type = type,
+            .opidx = ret,
+            .ptr = ptr,
+        };
+        client->pending[client->num_pending++] = pending;
+    }
+
+    if (client->num_pending == 0)
+        *timeout = 10;
+    else
         *timeout = -1;
-    } else {
-        // Wake up soon to continue processing
-        *timeout = 10;  // 10ms
-    }
-
-    // Return the poll array from the TinyDFS client
     return tinydfs_process_events(client->tdfs, contexts, polled, 0);
 }
 
 void simulation_client_free(SimulationClient *client)
 {
-    if (client->tdfs) {
-        tinydfs_free(client->tdfs);
-        client->tdfs = NULL;
-    }
+    tinydfs_free(client->tdfs);
 }
 
 #endif // BUILD_TEST

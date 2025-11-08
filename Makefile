@@ -1,5 +1,5 @@
 
-CFLAGS = -Wall -Wextra -ggdb
+CFLAGS = -Wall -Wextra -ggdb -fsanitize=address,undefined
 
 ifeq ($(OS),Windows_NT)
 	LFLAGS = -lws2_32

@@ -12,29 +12,26 @@
 
 #include "TinyDFS.h"
 
+#define MAX_PENDING_OPERATION 128
+
 typedef enum {
-    CLIENT_STATE_INIT,
-    CLIENT_STATE_RUNNING,
-    CLIENT_STATE_DONE,
-} ClientState;
+    PENDING_OPERATION_CREATE,
+    PENDING_OPERATION_DELETE,
+    PENDING_OPERATION_LIST,
+    PENDING_OPERATION_READ,
+    PENDING_OPERATION_WRITE,
+} PendingOperationType;
+
+typedef struct {
+    PendingOperationType type;
+    int opidx;
+    void *ptr;
+} PendingOperation;
 
 typedef struct {
     TinyDFS *tdfs;
-    ClientState state;
-
-    // Track operations
-    int create_dir_op;
-    int create_file_op;
-    int write_op;
-    int read_op;
-    int list_op;
-    int delete_op;
-
-    // Read buffer
-    char read_buffer[1024];
-
-    // Test step counter
-    int step;
+    int num_pending;
+    PendingOperation pending[MAX_PENDING_OPERATION];
 } SimulationClient;
 
 int  simulation_client_init(SimulationClient *client, int argc, char **argv,

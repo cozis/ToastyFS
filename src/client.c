@@ -429,18 +429,16 @@ int tinydfs_submit_delete(TinyDFS *tdfs, char *path, int path_len)
     int opidx = alloc_operation(tdfs, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
-    MessageWriter writer;
-    metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_DELETE);
-
     if (path_len > UINT16_MAX) {
         free_operation(tdfs, opidx);
         return -1;
     }
     uint16_t tmp = path_len;
+
+    MessageWriter writer;
+    metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_DELETE);
     message_write(&writer, &tmp, sizeof(tmp));
-
     message_write(&writer, path, path_len);
-
     if (metadata_server_request_end(tdfs, &writer, opidx, 0) < 0) {
         free_operation(tdfs, opidx);
         return -1;
@@ -457,16 +455,15 @@ int tinydfs_submit_list(TinyDFS *tdfs, char *path, int path_len)
     int opidx = alloc_operation(tdfs, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
-    MessageWriter writer;
-    metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_LIST);
-
     if (path_len > UINT16_MAX) {
         free_operation(tdfs, opidx);
         return -1;
     }
     uint16_t tmp = path_len;
-    message_write(&writer, &tmp, sizeof(tmp));
 
+    MessageWriter writer;
+    metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_LIST);
+    message_write(&writer, &tmp, sizeof(tmp));
     message_write(&writer, path, path_len);
 
     if (metadata_server_request_end(tdfs, &writer, opidx, 0) < 0) {
@@ -485,12 +482,10 @@ static int send_read_message(TinyDFS *tdfs, int opidx, int tag, string path, uin
 
     MessageWriter writer;
     metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_READ);
-
     message_write(&writer, &path_len, sizeof(path_len));
     message_write(&writer, path.ptr,  path.len);
     message_write(&writer, &offset,   sizeof(offset));
     message_write(&writer, &length,   sizeof(length));
-
     if (metadata_server_request_end(tdfs, &writer, opidx, tag) < 0)
         return -1;
     return 0;
