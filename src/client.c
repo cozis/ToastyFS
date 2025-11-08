@@ -27,7 +27,6 @@
 #define TAG_UPLOAD_CHUNK_MAX 2000
 
 #define PARALLEL_LIMIT 5
-#define REPLICATION_FACTOR 3
 
 typedef struct {
     SHA256   hash;
@@ -1535,22 +1534,22 @@ static void process_event_for_write(TinyDFS *tdfs,
         }
 
         SHA256 hash;
-        uint16_t expected_type;
-        if (tdfs->operations[opidx].uploads[found].chunk_index >= tdfs->operations[opidx].num_hashes)
-            expected_type = MESSAGE_TYPE_CREATE_CHUNK_SUCCESS;
-        else {
-            expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
-
-            if (!binary_read(&reader, &hash, sizeof(hash))) {
-                // TODO
-                return;
-            }
+        if (!binary_read(&reader, &hash, sizeof(hash))) {
+            // TODO
+            return;
         }
+
         // Check that there is nothing else to read
         if (binary_read(&reader, NULL, 1)) {
             // TODO
             return;
         }
+
+        uint16_t expected_type;
+        if (tdfs->operations[opidx].uploads[found].chunk_index >= tdfs->operations[opidx].num_hashes)
+            expected_type = MESSAGE_TYPE_CREATE_CHUNK_SUCCESS;
+        else
+            expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
 
         if (type != expected_type) {
             tdfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
@@ -1589,9 +1588,10 @@ static void process_event_for_write(TinyDFS *tdfs,
             // uploaded to at least N different servers
 
             typedef struct {
-                SHA256 old_hash;
-                SHA256 new_hash;
-                int replication;
+                SHA256  old_hash;
+                SHA256  new_hash;
+                int     num_locations;
+                Address locations[REPLICATION_FACTOR];
             } ChunkUploadResult;
 
             int num_upload_results = tdfs->operations[opidx].num_chunks;
@@ -1602,21 +1602,24 @@ static void process_event_for_write(TinyDFS *tdfs,
 
             for (int i = 0; i < num_upload_results; i++) {
                 upload_results[i].old_hash = tdfs->operations[opidx].hashes[i];
-                upload_results[i].replication = 0;
+                upload_results[i].num_locations = 0;
             }
 
-            for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++)
-                if (tdfs->operations[opidx].uploads[i].status == UPLOAD_COMPLETED) {
-                    upload_results[tdfs->operations[opidx].uploads[i].chunk_index].new_hash = tdfs->operations[opidx].uploads[i].final_hash;
-                    upload_results[tdfs->operations[opidx].uploads[i].chunk_index].replication++;
+            for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++) {
+                UploadSchedule *u = &tdfs->operations[opidx].uploads[i];
+                if (u->status == UPLOAD_COMPLETED) {
+                    int n = upload_results[u->chunk_index].num_locations++;
+                    upload_results[u->chunk_index].locations[n] = u->address;
+                    upload_results[u->chunk_index].new_hash = u->final_hash;
                 }
+            }
 
             // Now check that each chunk is replicated
             // at least N times
 
-            bool ok = false;
+            bool ok = true;
             for (int i = 0; i < num_upload_results; i++) {
-                if (upload_results[i].replication < REPLICATION_FACTOR) {
+                if (upload_results[i].num_locations < REPLICATION_FACTOR) {
                     ok = false;
                     break;
                 }
@@ -1649,9 +1652,24 @@ static void process_event_for_write(TinyDFS *tdfs,
             message_write(&writer, &num_chunks, sizeof(num_chunks));
 
             for (int i = 0; i < num_upload_results; i++) {
+
+                // TODO: newly create chunks don't have an old hash
                 message_write(&writer, &upload_results[i].old_hash, sizeof(upload_results[i].old_hash));
                 message_write(&writer, &upload_results[i].new_hash, sizeof(upload_results[i].new_hash));
-                // TODO
+
+                uint32_t tmp = upload_results[i].num_locations;
+                message_write(&writer, &tmp, sizeof(tmp));
+
+                for (int j = 0; j < upload_results[i].num_locations; j++) {
+
+                    Address addr = upload_results[i].locations[j];
+
+                    uint8_t is_ipv4 = addr.is_ipv4;
+                    message_write(&writer, &is_ipv4, sizeof(is_ipv4));
+                    if (addr.is_ipv4) message_write(&writer, &addr.ipv4, sizeof(addr.ipv4));
+                    else              message_write(&writer, &addr.ipv6, sizeof(addr.ipv6));
+                    message_write(&writer, &addr.port, sizeof(addr.port));
+                }
             }
 
             free(upload_results);

@@ -558,9 +558,14 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
     #define MAX_CHUNKS_PER_WRITE 32
 
-    Address addrs[MAX_CHUNKS_PER_WRITE];
-    SHA256 new_hashes[MAX_CHUNKS_PER_WRITE];
-    SHA256 old_hashes[MAX_CHUNKS_PER_WRITE];
+    typedef struct {
+        SHA256  old_hash;
+        SHA256  new_hash;
+        int     num_addrs;
+        Address addrs[REPLICATION_FACTOR];
+    } ChunkWriteResult;
+
+    ChunkWriteResult results[MAX_CHUNKS_PER_WRITE];
 
     for (uint32_t i = 0; i < num_chunks; i++) {
 
@@ -572,27 +577,36 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
         if (!binary_read(&reader, &new_hash, sizeof(new_hash)))
             return -1;
 
-        uint8_t is_ipv4;
-        if (!binary_read(&reader, &is_ipv4, sizeof(is_ipv4)))
+        results[i].old_hash = old_hash;
+        results[i].new_hash = new_hash;
+
+        uint32_t num_locations;
+        if (!binary_read(&reader, &num_locations, sizeof(num_locations)))
             return -1;
 
-        Address addr;
-        addr.is_ipv4 = is_ipv4;
+        for (uint32_t j = 0; j < num_locations; j++) {
 
-        if (is_ipv4) {
-            if (!binary_read(&reader, &addr.ipv4, sizeof(addr.ipv4)))
+            uint8_t is_ipv4;
+            if (!binary_read(&reader, &is_ipv4, sizeof(is_ipv4)))
                 return -1;
-        } else {
-            if (!binary_read(&reader, &addr.ipv6, sizeof(addr.ipv6)))
+
+            Address addr;
+            addr.is_ipv4 = is_ipv4;
+
+            if (is_ipv4) {
+                if (!binary_read(&reader, &addr.ipv4, sizeof(addr.ipv4)))
+                    return -1;
+            } else {
+                if (!binary_read(&reader, &addr.ipv6, sizeof(addr.ipv6)))
+                    return -1;
+            }
+
+            if (!binary_read(&reader, &addr.port, sizeof(addr.port)))
                 return -1;
+
+            if (results[i].num_addrs < REPLICATION_FACTOR)
+                results[i].addrs[results[i].num_addrs++] = addr;
         }
-
-        if (!binary_read(&reader, &addr.port, sizeof(addr.port)))
-            return -1;
-
-        addrs[i] = addr;
-        new_hashes[i] = new_hash;
-        old_hashes[i] = old_hash;
     }
 
     // Check that there are no more bytes to read
@@ -603,8 +617,15 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     SHA256 removed_hashes[MAX_CHUNKS_PER_WRITE];
     int num_removed = 0;
 
+    SHA256 old_hashes[MAX_CHUNKS_PER_WRITE];
+    SHA256 new_hashes[MAX_CHUNKS_PER_WRITE];
+    for (int i = 0; i < num_chunks; i++) {
+        old_hashes[i] = results[i].old_hash;
+        new_hashes[i] = results[i].new_hash;
+    }
+
     int ret = file_tree_write(&state->file_tree, path, offset, length,
-                              old_hashes, new_hashes, removed_hashes, &num_removed);
+        old_hashes, new_hashes, removed_hashes, &num_removed);
 
     if (ret < 0) {
 
@@ -626,12 +647,15 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
         // Add new chunks to add_list
         for (uint32_t i = 0; i < num_chunks; i++) {
-            int j = find_chunk_server_by_addr(state, addrs[i]);
-            if (j == -1)
-                return -1;
 
-            if (!hash_list_insert(&state->chunk_servers[j].add_list, new_hashes[i]))
-                return -1;
+            for (int j = 0; j < results[i].num_addrs; j++) {
+
+                int k = find_chunk_server_by_addr(state, results[i].addrs[j]);
+                if (k == -1) return -1;
+
+                if (hash_list_insert(&state->chunk_servers[k].add_list, new_hashes[i]) < 0)
+                    return -1;
+            }
         }
 
         // Mark removed chunks for deletion on all chunk servers that have them
