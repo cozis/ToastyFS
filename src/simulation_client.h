@@ -12,7 +12,7 @@
 
 #include "TinyDFS.h"
 
-#define MAX_PENDING_OPERATION 128
+#define MAX_PENDING_OPERATION 8
 
 typedef enum {
     PENDING_OPERATION_CREATE,
