@@ -342,17 +342,18 @@ int file_tree_write(FileTree *ft, string path,
     uint64_t  last_chunk_index = (off + len - 1) / f->chunk_size;
 
     if (last_chunk_index >= f->num_chunks) {
+        uint64_t old_num_chunks = f->num_chunks;
         SHA256 *new_chunks = sys_malloc((last_chunk_index+1) * sizeof(SHA256));
         if (new_chunks == NULL)
             return FILETREE_NOMEM;
         if (f->chunks) {
             if (f->num_chunks > 0)
-                memcpy(new_chunks, f->chunks, f->num_chunks);
+                memcpy(new_chunks, f->chunks, f->num_chunks * sizeof(SHA256));
             sys_free(f->chunks);
         }
         f->chunks = new_chunks;
         f->num_chunks = last_chunk_index+1;
-        for (uint64_t i = f->num_chunks; i < last_chunk_index+1; i++)
+        for (uint64_t i = old_num_chunks; i < last_chunk_index+1; i++)
             memset(&f->chunks[i], 0, sizeof(SHA256));
     }
 
