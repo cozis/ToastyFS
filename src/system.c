@@ -168,15 +168,6 @@ static Process *current_process = NULL;
 static uint64_t current_time = 1;
 static uint64_t seed;
 
-// TODO: use current_time instead of these fields
-#ifndef _WIN32
-// Simulated time for deterministic clock_gettime behavior
-static struct timespec simulated_time = {0, 0};
-#else
-// On Windows, simulated_time is used for QueryPerformanceCounter
-static struct timespec simulated_time = {0, 0};
-#endif
-
 // Helper to set socket errors correctly on Windows vs Linux
 #ifdef _WIN32
 #define SET_SOCKET_ERROR(err) WSASetLastError(err)
@@ -1462,12 +1453,12 @@ BOOL mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount)
         return FALSE;
     }
 
-    // Use simulated time to generate deterministic performance counter
+    // Use current_time (in nanoseconds) to generate deterministic performance counter
     // Frequency is 10 MHz (10,000,000 counts per second)
     const LONGLONG frequency = 10000000LL;
 
-    LONGLONG count = (LONGLONG)simulated_time.tv_sec * frequency;
-    count += ((LONGLONG)simulated_time.tv_nsec * frequency) / 1000000000LL;
+    // Convert nanoseconds to performance counter ticks
+    LONGLONG count = (LONGLONG)(current_time * frequency) / 1000000000LL;
 
     lpPerformanceCount->QuadPart = count;
     return TRUE;
@@ -1501,8 +1492,9 @@ int mock_clock_gettime(clockid_t clockid, struct timespec *tp)
         return -1;
     }
 
-    // Return simulated time for deterministic behavior
-    *tp = simulated_time;
+    // Convert current_time (nanoseconds) to timespec for deterministic behavior
+    tp->tv_sec = current_time / 1000000000ULL;
+    tp->tv_nsec = current_time % 1000000000ULL;
     return 0;
 }
 
