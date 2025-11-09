@@ -30,6 +30,21 @@ static SOCKET create_listen_socket(string addr, uint16_t port)
     if (fd == INVALID_SOCKET)
         return INVALID_SOCKET;
 
+    // Set socket as non-blocking
+#ifdef _WIN32
+    u_long mode = 1;
+    if (sys_ioctlsocket(fd, FIONBIO, &mode) != 0) {
+        CLOSE_SOCKET(fd);
+        return INVALID_SOCKET;
+    }
+#else
+    int flags = sys_fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || sys_fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        CLOSE_SOCKET(fd);
+        return INVALID_SOCKET;
+    }
+#endif
+
     char tmp[1<<10];
     if (addr.len >= (int) sizeof(tmp))
         return INVALID_SOCKET;
@@ -200,6 +215,20 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
 
             SOCKET new_fd = sys_accept(tcp->listen_fd, NULL, NULL);
             if (new_fd != INVALID_SOCKET) {
+                // Set accepted socket as non-blocking
+#ifdef _WIN32
+                u_long mode = 1;
+                if (sys_ioctlsocket(new_fd, FIONBIO, &mode) != 0) {
+                    CLOSE_SOCKET(new_fd);
+                    continue;
+                }
+#else
+                int flags = sys_fcntl(new_fd, F_GETFL, 0);
+                if (flags < 0 || sys_fcntl(new_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+                    CLOSE_SOCKET(new_fd);
+                    continue;
+                }
+#endif
                 events[num_events++] = (Event) { EVENT_CONNECT, tcp->num_conns };
                 conn_init(&tcp->conns[tcp->num_conns++], new_fd, false);
             }
@@ -303,6 +332,21 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
     SOCKET fd = sys_socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET)
         return -1;
+
+    // Set socket as non-blocking
+#ifdef _WIN32
+    u_long mode = 1;
+    if (sys_ioctlsocket(fd, FIONBIO, &mode) != 0) {
+        CLOSE_SOCKET(fd);
+        return -1;
+    }
+#else
+    int flags = sys_fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || sys_fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        CLOSE_SOCKET(fd);
+        return -1;
+    }
+#endif
 
     int ret;
     if (addr.is_ipv4) {
