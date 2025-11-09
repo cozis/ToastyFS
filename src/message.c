@@ -1,5 +1,10 @@
 #include <string.h>
+
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h> // inet_ntop
+#endif
 
 #include "message.h"
 

@@ -318,8 +318,9 @@ int file_tree_delete_entity(FileTree *ft, string path)
 }
 
 int file_tree_write(FileTree *ft, string path,
-    uint64_t off, uint64_t len, SHA256 *prev_hashes,
-    SHA256 *hashes, SHA256 *removed_hashes, int *num_removed)
+    uint64_t off, uint64_t len, uint32_t num_chunks,
+    SHA256 *prev_hashes, SHA256 *hashes,
+    SHA256 *removed_hashes, int *num_removed)
 {
     int num_comps;
     string comps[MAX_COMPS];
@@ -340,6 +341,8 @@ int file_tree_write(FileTree *ft, string path,
 
     uint64_t first_chunk_index = off / f->chunk_size;
     uint64_t  last_chunk_index = first_chunk_index + (len - 1) / f->chunk_size;
+
+    assert(last_chunk_index - first_chunk_index + 1 == num_chunks);
 
     if (last_chunk_index >= f->num_chunks) {
         uint64_t old_num_chunks = f->num_chunks;

@@ -628,7 +628,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     }
 
     int ret = file_tree_write(&state->file_tree, path, offset, length,
-        old_hashes, new_hashes, removed_hashes, &num_removed);
+        num_chunks, old_hashes, new_hashes, removed_hashes, &num_removed);
 
     if (ret < 0) {
 

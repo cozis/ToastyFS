@@ -55,7 +55,7 @@ bool   file_tree_uses_hash(FileTree *ft, SHA256 hash);
 int    file_tree_list(FileTree *ft, string path, ListItem *items, int max_items);
 int    file_tree_create_entity(FileTree *ft, string path, bool is_dir, uint64_t chunk_size);
 int    file_tree_delete_entity(FileTree *ft, string path);
-int    file_tree_write(FileTree *ft, string path, uint64_t off, uint64_t len, SHA256 *prev_hashes, SHA256 *hashes, SHA256 *removed_hashes, int *num_removed);
+int    file_tree_write(FileTree *ft, string path, uint64_t off, uint64_t len, uint32_t num_chunks, SHA256 *prev_hashes, SHA256 *hashes, SHA256 *removed_hashes, int *num_removed);
 int    file_tree_read(FileTree *ft, string path, uint64_t off, uint64_t len, uint64_t *chunk_size, SHA256 *hashes, int max_hashes);
 string file_tree_strerror(int code);
 
