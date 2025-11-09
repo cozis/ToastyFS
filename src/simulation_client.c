@@ -75,52 +75,52 @@ int simulation_client_step(SimulationClient *client, void **contexts,
 
             case TINYDFS_RESULT_CREATE_ERROR:
             assert(pending.type == PENDING_OPERATION_CREATE);
-            printf("[Client] create error\n");
+            //printf("[Client] create error\n");
             break;
 
             case TINYDFS_RESULT_CREATE_SUCCESS:
             assert(pending.type == PENDING_OPERATION_CREATE);
-            printf("[Client] create success\n");
+            //printf("[Client] create success\n");
             break;
 
             case TINYDFS_RESULT_DELETE_ERROR:
             assert(pending.type == PENDING_OPERATION_DELETE);
-            printf("[Client] delete error\n");
+            //printf("[Client] delete error\n");
             break;
 
             case TINYDFS_RESULT_DELETE_SUCCESS:
             assert(pending.type == PENDING_OPERATION_DELETE);
-            printf("[Client] delete success\n");
+            //printf("[Client] delete success\n");
             break;
 
             case TINYDFS_RESULT_LIST_ERROR:
             assert(pending.type == PENDING_OPERATION_LIST);
-            printf("[Client] list error\n");
+            //printf("[Client] list error\n");
             break;
 
             case TINYDFS_RESULT_LIST_SUCCESS:
             assert(pending.type == PENDING_OPERATION_LIST);
-            printf("[Client] list success\n");
+            //printf("[Client] list success\n");
             break;
 
             case TINYDFS_RESULT_READ_ERROR:
             assert(pending.type == PENDING_OPERATION_READ);
-            printf("[Client] read error\n");
+            //printf("[Client] read error\n");
             break;
 
             case TINYDFS_RESULT_READ_SUCCESS:
             assert(pending.type == PENDING_OPERATION_READ);
-            printf("[Client] read success\n");
+            //printf("[Client] read success\n");
             break;
 
             case TINYDFS_RESULT_WRITE_ERROR:
             assert(pending.type == PENDING_OPERATION_WRITE);
-            printf("[Client] write error\n");
+            //printf("[Client] write error\n");
             break;
 
             case TINYDFS_RESULT_WRITE_SUCCESS:
             assert(pending.type == PENDING_OPERATION_WRITE);
-            printf("[Client] write success\n");
+            //printf("[Client] write success\n");
             break;
         }
         free(pending.ptr);
@@ -181,7 +181,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 entry.is_dir,
                 chunk_size
             );
-            printf("[Client] submit create (path=%s, is_dir=%s, chunk_size=%d)\n", entry.path, entry.is_dir ? "true" : "false", chunk_size);
+            //printf("[Client] submit create (path=%s, is_dir=%s, chunk_size=%d)\n", entry.path, entry.is_dir ? "true" : "false", chunk_size);
             break;
 
             case PENDING_OPERATION_DELETE:
@@ -191,7 +191,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 entry.path,
                 -1
             );
-            printf("[Client] submit delete (path=%s)\n", entry.path);
+            //printf("[Client] submit delete (path=%s)\n", entry.path);
             break;
 
             case PENDING_OPERATION_LIST:
@@ -201,7 +201,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 entry.path,
                 -1
             );
-            printf("[Client] submit list   (path=%s)\n", entry.path);
+            //printf("[Client] submit list   (path=%s)\n", entry.path);
             break;
 
             case PENDING_OPERATION_READ:
@@ -217,7 +217,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 ptr,
                 len
             );
-            printf("[Client] submit read   (path=%s, off=%d, len=%d)\n", entry.path, off, len);
+            //printf("[Client] submit read   (path=%s, off=%d, len=%d)\n", entry.path, off, len);
             break;
 
             case PENDING_OPERATION_WRITE:
@@ -235,7 +235,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                 ptr,
                 len
             );
-            printf("[Client] submit write  (path=%s, off=%d, len=%d)\n", entry.path, off, len);
+            //printf("[Client] submit write  (path=%s, off=%d, len=%d)\n", entry.path, off, len);
             break;
         }
         if (ret < 0)

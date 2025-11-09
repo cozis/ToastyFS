@@ -219,10 +219,10 @@ alloc_operation(TinyDFS *tdfs, OperationType type, int off, void *ptr, int len)
     if (tdfs->num_operations == MAX_OPERATIONS)
         return -1;
     Operation *o = tdfs->operations;
-    while (o - tdfs->operations < MAX_OPERATIONS && o->type != OPERATION_TYPE_FREE)
+    while (o->type != OPERATION_TYPE_FREE) {
         o++;
-    if (o - tdfs->operations >= MAX_OPERATIONS)
-        return -1;
+        assert(o < tdfs->operations + MAX_OPERATIONS);
+    }
     o->type = type;
     o->ptr  = ptr;
     o->off  = off;
@@ -302,8 +302,10 @@ static int get_chunk_server(TinyDFS *tdfs, Address *addrs, int num_addrs, ByteQu
 
         // Find free slot
         found = 0;
-        while (tdfs->chunk_servers[found].used)
+        while (tdfs->chunk_servers[found].used) {
             found++;
+            assert(found < MAX_CHUNK_SERVERS);
+        }
 
         if (tcp_connect(&tdfs->tcp, addrs[0], found, output) < 0)
             return -1;
@@ -1826,8 +1828,10 @@ int tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled
                             tdfs->chunk_servers[tag].current_addr_idx++;
                         }
 
-                        if (started)
+                        if (!started) {
                             reqs = &tdfs->chunk_servers[tag].reqs;
+                            tdfs->chunk_servers[tag].used = false;
+                        }
                     }
                 }
 
