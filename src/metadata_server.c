@@ -826,7 +826,7 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
         return -1;
 
     state->trace = trace;
-    state->replication_factor = 3;
+    state->replication_factor = 3; // TODO: what about the REPLICATION_FACTOR macro?
     if (state->replication_factor > MAX_CHUNK_SERVERS)
         return -1;
 

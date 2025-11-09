@@ -394,8 +394,6 @@ int file_tree_write(FileTree *ft, string path,
     return 0;
 }
 
-#define ZERO_HASH ((SHA256) { .data={0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } })
-
 int file_tree_read(FileTree *ft, string path,
     uint64_t off, uint64_t len, uint64_t *chunk_size,
     SHA256 *hashes, int max_hashes)
@@ -423,7 +421,7 @@ int file_tree_read(FileTree *ft, string path,
     *chunk_size = f->chunk_size;
 
     uint64_t first_chunk_index = off / f->chunk_size;
-    uint64_t  last_chunk_index = (off + len - 1) / f->chunk_size;
+    uint64_t  last_chunk_index = first_chunk_index + (len - 1) / f->chunk_size;
 
     if (first_chunk_index >= f->num_chunks)
         return 0;
