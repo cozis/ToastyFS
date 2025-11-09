@@ -94,3 +94,12 @@ int getargi(int argc, char **argv, char *name, int fallback)
         }
     return fallback;
 }
+
+void append_hex_as_str(char *out, SHA256 hash)
+{
+    char table[] = "0123456789abcdef";
+    for (int i = 0; i < (int) sizeof(hash); i++) {
+        out[(i << 1) + 0] = table[(uint8_t) hash.data[i] >> 4];
+        out[(i << 1) + 1] = table[(uint8_t) hash.data[i] & 0xF];
+    }
+}

@@ -9,6 +9,14 @@ typedef struct {
 } SHA256;
 
 typedef struct {
+    uint32_t data;
+} IPv4;
+
+typedef struct {
+    uint16_t data[8];
+} IPv6;
+
+typedef struct {
     char *ptr;
     int   len;
 } string;
@@ -28,5 +36,7 @@ Time get_current_time(void);
 bool   getargb(int argc, char **argv, char *name);
 string getargs(int argc, char **argv, char *name, char *fallback);
 int    getargi(int argc, char **argv, char *name, int fallback);
+
+void append_hex_as_str(char *out, SHA256 hash);
 
 #endif // BASIC_INCLUDED

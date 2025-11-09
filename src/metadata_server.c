@@ -818,12 +818,14 @@ static bool is_chunk_server_message_type(uint16_t type)
 
 int metadata_server_init(MetadataServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
-    string addr = getargs(argc, argv, "--addr", "127.0.0.1");
-    int    port = getargi(argc, argv, "--port", 8080);
+    string addr  = getargs(argc, argv, "--addr", "127.0.0.1");
+    int    port  = getargi(argc, argv, "--port", 8080);
+    bool   trace = getargb(argc, argv, "--trace");
 
     if (port <= 0 || port >= 1<<16)
         return -1;
 
+    state->trace = trace;
     state->replication_factor = 3;
     if (state->replication_factor > MAX_CHUNK_SERVERS)
         return -1;
@@ -897,6 +899,9 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
                         tcp_close(&state->tcp, conn_idx);
                         break;
                     }
+
+                    if (state->trace)
+                        message_dump(stdout, msg);
 
                     if (tcp_get_tag(&state->tcp, conn_idx) == CONNECTION_TAG_UNKNOWN) {
                         if (is_chunk_server_message_type(msg_type)) {

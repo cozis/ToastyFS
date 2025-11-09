@@ -344,7 +344,7 @@ static int send_download_chunk(TinyDFS *tdfs, int chunk_server_idx,
     ByteQueue *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
     message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK);
 
-    message_write(&writer, &hash, sizeof(hash));
+    message_write(&writer, &hash,   sizeof(hash));
     message_write(&writer, &offset, sizeof(offset));
     message_write(&writer, &length, sizeof(length));
 
@@ -465,6 +465,7 @@ int tinydfs_submit_list(TinyDFS *tdfs, char *path, int path_len)
 
     MessageWriter writer;
     metadata_server_request_start(tdfs, &writer, MESSAGE_TYPE_LIST);
+
     message_write(&writer, &tmp, sizeof(tmp));
     message_write(&writer, path, path_len);
 

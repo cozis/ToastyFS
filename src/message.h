@@ -1,6 +1,7 @@
 #ifndef MESSAGE_INCLUDED
 #define MESSAGE_INCLUDED
 
+#include <stdio.h>
 #include <stdbool.h>
 
 #include "byte_queue.h"
@@ -76,5 +77,6 @@ bool message_writer_free(MessageWriter *writer);
 void message_write(MessageWriter *writer, void *mem, int len);
 
 int  message_peek(ByteView msg, uint16_t *type, uint32_t *len);
+void message_dump(FILE *stream, ByteView msg);
 
 #endif // MESSAGE_INCLUDED

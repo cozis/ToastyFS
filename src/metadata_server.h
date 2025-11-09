@@ -41,6 +41,7 @@ typedef struct {
 
     FileTree file_tree;
 
+    bool trace;
     int replication_factor;
 
     int num_chunk_servers;

@@ -72,15 +72,6 @@ static void chunk_store_free(ChunkStore *store)
     (void) store;
 }
 
-static void append_hex_as_str(char *out, SHA256 hash)
-{
-    char table[] = "0123456789abcdef";
-    for (int i = 0; i < (int) sizeof(hash); i++) {
-        out[(i << 1) + 0] = table[(uint8_t) hash.data[i] >> 4];
-        out[(i << 1) + 1] = table[(uint8_t) hash.data[i] & 0xF];
-    }
-}
-
 static string hash2path(ChunkStore *store, SHA256 hash, char *out)
 {
     strcpy(out, store->path);
@@ -815,10 +806,10 @@ start_connecting_to_metadata_server(ChunkServer *state)
 
 int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
-    string addr = getargs(argc, argv, "--addr", "127.0.0.1");
-    int    port = getargi(argc, argv, "--port", 8081);
-    string path = getargs(argc, argv, "--path", "chunk_server_data/");
-
+    string addr  = getargs(argc, argv, "--addr", "127.0.0.1");
+    int    port  = getargi(argc, argv, "--port", 8081);
+    string path  = getargs(argc, argv, "--path", "chunk_server_data/");
+    bool   trace = getargb(argc, argv, "--trace");
     string remote_addr = getargs(argc, argv, "--remote-addr", "127.0.0.1");
     int    remote_port = getargi(argc, argv, "--remote-port", 8080);
 
@@ -827,6 +818,8 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 
     if (remote_port <= 0 || remote_port >= 1<<16)
         return -1;
+
+    state->trace = trace;
 
     tcp_context_init(&state->tcp);
 
@@ -952,6 +945,9 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
                         tcp_close(&state->tcp, conn_idx);
                         break;
                     }
+
+                    if (state->trace)
+                        message_dump(stdout, msg);
 
                     switch (tcp_get_tag(&state->tcp, conn_idx)) {
                         case TAG_METADATA_SERVER:

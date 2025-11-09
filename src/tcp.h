@@ -26,14 +26,6 @@ typedef struct {
 } Event;
 
 typedef struct {
-    uint32_t data;
-} IPv4;
-
-typedef struct {
-    uint16_t data[8];
-} IPv6;
-
-typedef struct {
     union {
         IPv4 ipv4;
         IPv6 ipv6;

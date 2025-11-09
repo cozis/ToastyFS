@@ -26,6 +26,7 @@ typedef struct {
 } PendingDownloadList;
 
 typedef struct {
+    bool       trace;
     Address    local_addr;
     Address    remote_addr;
     Time       disconnect_time;
