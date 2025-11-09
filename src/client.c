@@ -1611,7 +1611,7 @@ static void process_event_for_write(TinyDFS *tdfs,
             int num_upload_results = tdfs->operations[opidx].num_chunks;
             ChunkUploadResult *upload_results = sys_malloc(num_upload_results * sizeof(ChunkUploadResult));
             if (upload_results == NULL) {
-                // TODO
+                assert(0); // TODO
             }
 
             for (int i = 0; i < num_upload_results; i++) {
