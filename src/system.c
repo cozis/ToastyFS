@@ -631,7 +631,7 @@ void update_simulation(void)
                     {
                         Descriptor *peer = handle_to_desc(desc->connection_peer);
                         if (peer == NULL) {
-                            // TODO
+                            assert(0); // TODO
                         }
 
                         if (!data_queue_full(&desc->output_data))
