@@ -330,6 +330,10 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
         connecting = true;
     }
 
+    // Check that this tag wasn't already used
+    for (int i = 0; i < tcp->num_conns; i++)
+        assert(tcp->conns[i].tag != tag);
+
     conn_init(&tcp->conns[conn_idx], fd, connecting);
     tcp->conns[conn_idx].tag = tag;
 

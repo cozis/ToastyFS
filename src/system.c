@@ -354,7 +354,7 @@ int spawn_simulated_process(char *args)
 
     current_process = NULL;
     if (num_polled < 0) {
-        // TODO
+        assert(0); // TODO
     }
 
     if (timeout < 0) {
@@ -453,7 +453,7 @@ static void accept_queue_init(AcceptQueue *accept_queue, int size)
     accept_queue->size = size;
     accept_queue->items = malloc(size * sizeof(DescriptorHandle));
     if (accept_queue->items == NULL) {
-        // TODO
+        assert(0); // TODO
     }
 }
 
@@ -512,7 +512,7 @@ static void data_queue_init(DataQueue *queue, int size)
     queue->size = size;
     queue->data = malloc(size * sizeof(char));
     if (queue->data == NULL) {
-        // TODO
+        assert(0); // TODO
     }
 }
 
@@ -597,7 +597,7 @@ void update_simulation(void)
             switch (desc->type) {
 
                 case DESC_FILE:
-                // TODO: error
+                assert(0); // TODO: error
                 break;
 
                 case DESC_SOCKET:
@@ -633,7 +633,7 @@ void update_simulation(void)
                     break;
 
                     case CONNECTION_FAILED:
-                    // TODO
+                    assert(0); // TODO
                     break;
                 }
                 break;
@@ -1024,35 +1024,6 @@ int mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *
     return -1;
 }
 
-int mock_setsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t optlen)
-{
-    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
-        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);  // Bad file descriptor
-        return -1;
-    }
-
-    int idx = (int) fd;
-    Descriptor *desc = &current_process->desc[idx];
-    if (desc->type == DESC_EMPTY) {
-        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);
-        return -1;
-    }
-
-    // Only support SOL_SOCKET level for now
-    if (level != SOL_SOCKET) {
-        SET_SOCKET_ERROR(SOCKET_ERROR_PROTOOPT);  // Protocol not available
-        return -1;
-    }
-
-    // Most socket options are ignored in simulation
-    // Just validate the call but don't actually apply settings
-    (void)optval;
-    (void)optlen;
-    (void)optname;
-
-    return 0;  // Success (no-op)
-}
-
 int mock_recv(SOCKET fd, void *dst, int len, int flags)
 {
     if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
@@ -1194,7 +1165,7 @@ static void close_desc(Descriptor *desc)
     switch (desc->type) {
 
         case DESC_EMPTY:
-        // TODO
+        assert(0); // TODO
         break;
 
         case DESC_FILE:
@@ -1214,7 +1185,6 @@ static void close_desc(Descriptor *desc)
         break;
 
         case DESC_CONNECTION_SOCKET:
-        data_queue_free(&desc->output_data);
         switch (desc->connection_state) {
 
             case CONNECTION_DELAYED:
@@ -1232,7 +1202,7 @@ static void close_desc(Descriptor *desc)
             break;
 
             case CONNECTION_ESTABLISHED:
-            // TODO
+            data_queue_free(&desc->output_data);
             break;
 
             case CONNECTION_FAILED:
@@ -1251,7 +1221,7 @@ static void close_desc(Descriptor *desc)
 int mock_closesocket(SOCKET fd)
 {
     if (fd == INVALID_SOCKET) {
-        // TODO
+        // TODO: set error
         return -1;
     }
     int idx = (int) fd;
@@ -1260,7 +1230,7 @@ int mock_closesocket(SOCKET fd)
     if (desc->type != DESC_SOCKET &&
         desc->type != DESC_LISTEN_SOCKET &&
         desc->type != DESC_CONNECTION_SOCKET) {
-        // TODO
+        // TODO: set error
         return -1;
     }
 

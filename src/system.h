@@ -50,7 +50,6 @@ int    mock_bind(SOCKET fd, void *addr, size_t addr_len);
 int    mock_listen(SOCKET fd, int backlog);
 SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len);
 int    mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *optlen);
-int    mock_setsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t optlen);
 int    mock_recv(SOCKET fd, void *dst, int len, int flags);
 int    mock_send(SOCKET fd, void *src, int len, int flags);
 int    mock_connect(SOCKET fd, void *addr, size_t addr_len);
@@ -94,7 +93,6 @@ int     mock_mkdir(char *path, mode_t mode);
 #define sys_listen           mock_listen
 #define sys_accept           mock_accept
 #define sys_getsockopt       mock_getsockopt
-#define sys_setsockopt       mock_setsockopt
 #define sys_recv             mock_recv
 #define sys_send             mock_send
 #define sys_connect          mock_connect
@@ -141,7 +139,6 @@ int     mock_mkdir(char *path, mode_t mode);
 #define sys_listen           listen
 #define sys_accept           accept
 #define sys_getsockopt       getsockopt
-#define sys_setsockopt       setsockopt
 #define sys_recv             recv
 #define sys_send             send
 #define sys_connect          connect

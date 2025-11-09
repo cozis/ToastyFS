@@ -1192,7 +1192,7 @@ static void process_event_for_write(TinyDFS *tdfs,
         tdfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
         tdfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
         if (tdfs->operations[opidx].hashes == NULL) {
-            // TODO
+            assert(0); // TODO
         }
 
         tdfs->operations[opidx].uploads = NULL;
@@ -1531,31 +1531,31 @@ static void process_event_for_write(TinyDFS *tdfs,
 
         // version
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            // TODO
+            assert(0); // TODO
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(uint16_t))) {
-            // TODO
+            assert(0); // TODO
             return;
         }
 
         // length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            // TODO
+            assert(0); // TODO
             return;
         }
 
         SHA256 hash;
         if (!binary_read(&reader, &hash, sizeof(hash))) {
-            // TODO
+            assert(0); // TODO
             return;
         }
 
         // Check that there is nothing else to read
         if (binary_read(&reader, NULL, 1)) {
-            // TODO
+            assert(0); // TODO
             return;
         }
 
