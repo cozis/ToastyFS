@@ -1547,27 +1547,29 @@ static void process_event_for_write(TinyDFS *tdfs,
             return;
         }
 
-        SHA256 hash;
-        if (!binary_read(&reader, &hash, sizeof(hash))) {
-            assert(0); // TODO
-            return;
-        }
-
-        // Check that there is nothing else to read
-        if (binary_read(&reader, NULL, 1)) {
-            assert(0); // TODO
-            return;
-        }
-
         uint16_t expected_type;
-        if (tdfs->operations[opidx].uploads[found].chunk_index >= tdfs->operations[opidx].num_hashes)
+        if (tdfs->operations[opidx].uploads[found].chunk_index >= tdfs->operations[opidx].num_hashes) {
             expected_type = MESSAGE_TYPE_CREATE_CHUNK_SUCCESS;
-        else
-            expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
-
-        if (type != expected_type) {
-            tdfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
         } else {
+            expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
+        }
+
+        if (type != expected_type)
+            tdfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
+        else {
+
+            SHA256 hash;
+            if (!binary_read(&reader, &hash, sizeof(hash))) {
+                assert(0); // TODO
+                return;
+            }
+
+            // Check that there is nothing else to read
+            if (binary_read(&reader, NULL, 1)) {
+                assert(0); // TODO
+                return;
+            }
+
             tdfs->operations[opidx].uploads[found].status = UPLOAD_COMPLETED;
             tdfs->operations[opidx].uploads[found].final_hash = hash;
             for (int i = 0; i < tdfs->operations[opidx].num_uploads; i++) {
@@ -1694,13 +1696,44 @@ static void process_event_for_write(TinyDFS *tdfs,
             free(upload_results);
 
             if (metadata_server_request_end(tdfs, &writer, opidx, TAG_COMMIT_WRITE) < 0) {
-                // TODO
+                assert(0); // TODO
             }
         }
 
     } else {
 
         assert(request_tag == TAG_COMMIT_WRITE);
+
+        BinaryReader reader = { msg.ptr, msg.len, 0 };
+
+        // version
+        if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+            return;
+        }
+
+        uint16_t type;
+        if (!binary_read(&reader, &type, sizeof(uint16_t))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+            return;
+        }
+
+        // length
+        if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+            return;
+        }
+
+        if (binary_read(&reader, NULL, 1)) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+            return;
+        }
+
+        if (type != MESSAGE_TYPE_WRITE_SUCCESS) {
+            tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_ERROR };
+            return;
+        }
+
         tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_WRITE_SUCCESS };
     }
 }
@@ -1866,7 +1899,9 @@ int tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled
 
                     Request req;
                     if (request_queue_pop(reqs, &req) < 0) {
-                        UNREACHABLE;
+                        // Unexpected message
+                        tcp_consume_message(&tdfs->tcp, conn_idx);
+                        continue;
                     }
                     process_event(tdfs, req.opidx, req.tag, msg);
 
