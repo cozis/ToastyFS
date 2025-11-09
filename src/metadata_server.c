@@ -558,6 +558,10 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, &num_chunks, sizeof(num_chunks)))
         return -1;
 
+    uint32_t chunk_size;
+    if (!binary_read(&reader, &chunk_size, sizeof(chunk_size)))
+        return -1;
+
     #define MAX_CHUNKS_PER_WRITE 32
 
     typedef struct {
@@ -628,7 +632,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     }
 
     int ret = file_tree_write(&state->file_tree, path, offset, length,
-        num_chunks, old_hashes, new_hashes, removed_hashes, &num_removed);
+        num_chunks, chunk_size, old_hashes, new_hashes, removed_hashes, &num_removed);
 
     if (ret < 0) {
 

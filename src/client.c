@@ -1659,12 +1659,14 @@ static void process_event_for_write(TinyDFS *tdfs,
             uint16_t path_len = path.len;
 
             uint32_t num_chunks = num_upload_results;
+            uint32_t chunk_size = tdfs->operations[opidx].chunk_size;
 
-            message_write(&writer, &path_len, sizeof(path_len));
-            message_write(&writer, path.ptr, path.len);
-            message_write(&writer, &offset, sizeof(offset));
-            message_write(&writer, &length, sizeof(length));
+            message_write(&writer, &path_len,   sizeof(path_len));
+            message_write(&writer, path.ptr,    path.len);
+            message_write(&writer, &offset,     sizeof(offset));
+            message_write(&writer, &length,     sizeof(length));
             message_write(&writer, &num_chunks, sizeof(num_chunks));
+            message_write(&writer, &chunk_size, sizeof(chunk_size));
 
             for (int i = 0; i < num_upload_results; i++) {
 
