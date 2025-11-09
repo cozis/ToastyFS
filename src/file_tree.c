@@ -339,7 +339,7 @@ int file_tree_write(FileTree *ft, string path,
     File *f = &e->f;
 
     uint64_t first_chunk_index = off / f->chunk_size;
-    uint64_t  last_chunk_index = (off + len - 1) / f->chunk_size;
+    uint64_t  last_chunk_index = first_chunk_index + (len - 1) / f->chunk_size;
 
     if (last_chunk_index >= f->num_chunks) {
         uint64_t old_num_chunks = f->num_chunks;
