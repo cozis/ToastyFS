@@ -24,45 +24,62 @@ bool addr_eql(Address a, Address b)
     return true;
 }
 
+static int set_socket_blocking(SOCKET sock, bool value)
+{
+#ifdef _WIN32
+    u_long mode = !value;
+    if (sys_ioctlsocket(sock, FIONBIO, &mode) == SOCKET_ERROR)
+        return -1;
+#else
+    int flags = sys_fcntl(sock, F_GETFL, 0);
+    if (flags < 0)
+        return -1;
+    if (value) flags &= ~O_NONBLOCK;
+    else       flags |= O_NONBLOCK;
+    if (sys_fcntl(sock, F_SETFL, flags) < 0)
+        return -1;
+#endif
+
+    return 0;
+}
+
 static SOCKET create_listen_socket(string addr, uint16_t port)
 {
     SOCKET fd = sys_socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET)
         return INVALID_SOCKET;
 
-    // Set socket as non-blocking
-#ifdef _WIN32
-    u_long mode = 1;
-    if (sys_ioctlsocket(fd, FIONBIO, &mode) != 0) {
+    if (set_socket_blocking(fd, false) < 0) {
         CLOSE_SOCKET(fd);
         return INVALID_SOCKET;
     }
-#else
-    int flags = sys_fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || sys_fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        CLOSE_SOCKET(fd);
-        return INVALID_SOCKET;
-    }
-#endif
 
     char tmp[1<<10];
-    if (addr.len >= (int) sizeof(tmp))
+    if (addr.len >= (int) sizeof(tmp)) {
+        CLOSE_SOCKET(fd);
         return INVALID_SOCKET;
+    }
     memcpy(tmp, addr.ptr, addr.len);
     tmp[addr.len] = '\0';
 
     struct sockaddr_in bind_buf;
     bind_buf.sin_family = AF_INET;
     bind_buf.sin_port   = htons(port);
-    if (inet_pton(AF_INET, tmp, &bind_buf.sin_addr) != 1)
+    if (inet_pton(AF_INET, tmp, &bind_buf.sin_addr) != 1) {
+        CLOSE_SOCKET(fd);
         return INVALID_SOCKET;
+    }
 
-    if (sys_bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf)))
+    if (sys_bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf))) {
+        CLOSE_SOCKET(fd);
         return INVALID_SOCKET;
+    }
 
     int backlog = 32;
-    if (sys_listen(fd, backlog) < 0)
+    if (sys_listen(fd, backlog) < 0) {
+        CLOSE_SOCKET(fd);
         return INVALID_SOCKET;
+    }
 
     return fd;
 }
@@ -213,24 +230,19 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
 
         if (polled[i].fd == tcp->listen_fd) {
 
-            SOCKET new_fd = sys_accept(tcp->listen_fd, NULL, NULL);
-            if (new_fd != INVALID_SOCKET) {
-                // Set accepted socket as non-blocking
-#ifdef _WIN32
-                u_long mode = 1;
-                if (sys_ioctlsocket(new_fd, FIONBIO, &mode) != 0) {
-                    CLOSE_SOCKET(new_fd);
-                    continue;
+            assert(contexts[i] == NULL);
+
+            if (polled[i].revents & POLLIN) {
+                SOCKET new_fd = sys_accept(tcp->listen_fd, NULL, NULL);
+                if (new_fd != INVALID_SOCKET) {
+
+                    if (set_socket_blocking(new_fd, false) < 0)
+                        CLOSE_SOCKET(new_fd);
+                    else {
+                        events[num_events++] = (Event) { EVENT_CONNECT, tcp->num_conns };
+                        conn_init(&tcp->conns[tcp->num_conns++], new_fd, false);
+                    }
                 }
-#else
-                int flags = sys_fcntl(new_fd, F_GETFL, 0);
-                if (flags < 0 || sys_fcntl(new_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-                    CLOSE_SOCKET(new_fd);
-                    continue;
-                }
-#endif
-                events[num_events++] = (Event) { EVENT_CONNECT, tcp->num_conns };
-                conn_init(&tcp->conns[tcp->num_conns++], new_fd, false);
             }
 
         } else {
@@ -310,10 +322,12 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
         }
     }
 
-    for (int i = 0; i < tcp->num_conns; i++)
+    for (int i = 0; i < num_polled; i++)
         if (removed[i]) {
-            conn_free(&tcp->conns[i]);
-            tcp->conns[i] = tcp->conns[--tcp->num_conns];
+            Connection *conn = &tcp->conns[i];
+            assert(conn);
+            conn_free(conn);
+            *conn = tcp->conns[--tcp->num_conns];
         }
     return num_events;
 }
@@ -333,20 +347,10 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
     if (fd == INVALID_SOCKET)
         return -1;
 
-    // Set socket as non-blocking
-#ifdef _WIN32
-    u_long mode = 1;
-    if (sys_ioctlsocket(fd, FIONBIO, &mode) != 0) {
+    if (set_socket_blocking(fd, false) < 0) {
         CLOSE_SOCKET(fd);
         return -1;
     }
-#else
-    int flags = sys_fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || sys_fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        CLOSE_SOCKET(fd);
-        return -1;
-    }
-#endif
 
     int ret;
     if (addr.is_ipv4) {

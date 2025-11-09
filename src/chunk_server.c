@@ -1008,10 +1008,11 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         *timeout = -1;
     else {
         int elapsed = current_time - state->disconnect_time;
-        if (elapsed > 100)
+        int delta_sec = 1;
+        if (elapsed > delta_sec * 1000000000)
             *timeout = 0;
         else
-            *timeout = 100 - elapsed / 1000000;
+            *timeout = delta_sec * 1000 - elapsed / 1000000;
     }
     return tcp_register_events(&state->tcp, contexts, polled);
 }
