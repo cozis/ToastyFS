@@ -982,6 +982,10 @@ int mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *
         int val;
         switch (desc->type) {
 
+            case DESC_EMPTY:
+            assert(0);
+            break;
+
             case DESC_FILE:
             SET_SOCKET_ERROR(SOCKET_ERROR_NOTSOCK);
             return -1;

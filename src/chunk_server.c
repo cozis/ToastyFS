@@ -644,7 +644,7 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     if (mem == NULL)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("Out of memory"));
 
-    assert(data.len <= chunk_size);
+    assert((uint32_t) data.len <= chunk_size);
     assert(target_off + data.len <= chunk_size);
 
     memset(mem, 0, chunk_size);

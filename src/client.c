@@ -1211,11 +1211,11 @@ static void process_event_for_write(TinyDFS *tdfs,
 
             char *src = full_ptr + relative_off;
 
-            int off = 0;
+            uint32_t off = 0;
             if (i == 0)
                off = full_off % chunk_size;
 
-            int len = full_len - relative_off;
+            uint32_t len = full_len - relative_off;
             if (len > chunk_size - off)
                 len = chunk_size - off;
 
@@ -1355,15 +1355,15 @@ static void process_event_for_write(TinyDFS *tdfs,
 #endif
                 int old_relative_off = relative_off;
 
-                for (int w = 0; w < num_new_hashes; w++) {
+                for (uint32_t w = 0; w < num_new_hashes; w++) {
 
                     char *src = full_ptr + relative_off;
 
-                    int off = 0;
+                    uint32_t off = 0;
                     if (num_hashes == 0 && w == 0)
                        off = full_off % chunk_size;
 
-                    int len = full_len - relative_off;
+                    uint32_t len = full_len - relative_off;
                     if (len > chunk_size - off)
                         len = chunk_size - off;
 
@@ -1422,13 +1422,13 @@ static void process_event_for_write(TinyDFS *tdfs,
 #endif
                 int old_relative_off = relative_off;
 
-                for (int w = 0; w < num_new_hashes; w++) {
+                for (uint32_t w = 0; w < num_new_hashes; w++) {
 
-                    int off = 0;
+                    uint32_t off = 0;
                     if (num_hashes == 0 && w == 0)
                        off = full_off % chunk_size;
 
-                    int len = full_len - relative_off;
+                    uint32_t len = full_len - relative_off;
                     if (len > chunk_size - off)
                         len = chunk_size - off;
 
@@ -1917,6 +1917,8 @@ int tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled
 
 void tinydfs_wait(TinyDFS *tdfs, int opidx, TinyDFS_Result *result, int timeout)
 {
+    // TODO: use the timeout parameter
+
     void *contexts[MAX_CONNS+1];
     struct pollfd polled[MAX_CONNS+1];
     int num_polled;

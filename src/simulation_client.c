@@ -55,8 +55,6 @@ static int random_in_range(int min, int max)
 int simulation_client_step(SimulationClient *client, void **contexts,
                           struct pollfd *polled, int num_polled, int *timeout)
 {
-    TinyDFS_Result result;
-
     // Process any pending events from the network and get new poll descriptors
     num_polled = tinydfs_process_events(client->tdfs, contexts, polled, num_polled);
 

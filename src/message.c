@@ -155,7 +155,7 @@ void message_dump(FILE *stream, ByteView msg)
             }
             fprintf(stream, "    path_len: %d\n", path_len);
 
-            char *path = reader.src + reader.cur;
+            char *path = (char*) reader.src + reader.cur;
             if (!binary_read(&reader, NULL, path_len)) {
                 fprintf(stream, "    (incomplete)\n");
                 return;
@@ -189,7 +189,7 @@ void message_dump(FILE *stream, ByteView msg)
             }
             fprintf(stream, "    path_len: %d\n", path_len);
 
-            char *path = reader.src + reader.cur;
+            char *path = (char*) reader.src + reader.cur;
             if (!binary_read(&reader, NULL, path_len)) {
                 fprintf(stream, "    (incomplete)\n");
                 return;
@@ -207,7 +207,7 @@ void message_dump(FILE *stream, ByteView msg)
             }
             fprintf(stream, "    path_len: %d\n", path_len);
 
-            char *path = reader.src + reader.cur;
+            char *path = (char*) reader.src + reader.cur;
             if (!binary_read(&reader, NULL, path_len)) {
                 fprintf(stream, "    (incomplete)\n");
                 return;
@@ -225,7 +225,7 @@ void message_dump(FILE *stream, ByteView msg)
             }
             fprintf(stream, "    path_len: %d\n", path_len);
 
-            char *path = reader.src + reader.cur;
+            char *path = (char*) reader.src + reader.cur;
             if (!binary_read(&reader, NULL, path_len)) {
                 fprintf(stream, "    (incomplete)\n");
                 return;
@@ -257,7 +257,7 @@ void message_dump(FILE *stream, ByteView msg)
             }
             fprintf(stream, "    path_len: %d\n", path_len);
 
-            char *path = reader.src + reader.cur;
+            char *path = (char*) reader.src + reader.cur;
             if (!binary_read(&reader, NULL, path_len)) {
                 fprintf(stream, "    (incomplete)\n");
                 return;

@@ -573,6 +573,9 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
     ChunkWriteResult results[MAX_CHUNKS_PER_WRITE];
 
+    if (num_chunks > MAX_CHUNKS_PER_WRITE)
+        return -1; // TODO
+
     for (uint32_t i = 0; i < num_chunks; i++) {
 
         SHA256 old_hash;
@@ -626,7 +629,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
     SHA256 old_hashes[MAX_CHUNKS_PER_WRITE];
     SHA256 new_hashes[MAX_CHUNKS_PER_WRITE];
-    for (int i = 0; i < num_chunks; i++) {
+    for (uint32_t i = 0; i < num_chunks; i++) {
         old_hashes[i] = results[i].old_hash;
         new_hashes[i] = results[i].new_hash;
     }
