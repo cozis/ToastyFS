@@ -15,7 +15,7 @@ int main(int argc, char **argv)
 
     // TODO: set simulation_should_stop=true on ctrl+C
 
-    startup_simulation(1);
+    startup_simulation(2);
 
     // Spawn metadata server (leader)
     spawn_simulated_process("--addr 127.0.0.1 --port 8080 --leader");

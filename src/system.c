@@ -631,14 +631,13 @@ void update_simulation(void)
                     {
                         Descriptor *peer = handle_to_desc(desc->connection_peer);
                         if (peer == NULL) {
-                            assert(0); // TODO
-                        }
-
-                        if (!data_queue_full(&desc->output_data))
-                            revents |= POLLOUT;
-
-                        if (!data_queue_empty(&peer->output_data))
                             revents |= POLLIN;
+                        } else {
+                            if (!data_queue_full(&desc->output_data))
+                                revents |= POLLOUT;
+                            if (!data_queue_empty(&peer->output_data))
+                                revents |= POLLIN;
+                        }
                     }
                     break;
 
