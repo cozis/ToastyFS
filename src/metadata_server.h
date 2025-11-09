@@ -5,8 +5,8 @@
 #include "file_tree.h"
 #include "config.h"
 
-#define CONNECTION_TAG_CLIENT  -1
-#define CONNECTION_TAG_UNKNOWN -2
+#define CONNECTION_TAG_CLIENT  -2
+#define CONNECTION_TAG_UNKNOWN -3
 
 typedef struct {
     int count;

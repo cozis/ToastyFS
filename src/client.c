@@ -17,7 +17,7 @@
 #include "message.h"
 #include <TinyDFS.h>
 
-#define TAG_METADATA_SERVER -1
+#define TAG_METADATA_SERVER -2
 
 #define TAG_RETRIEVE_METADATA_FOR_READ  1
 #define TAG_RETRIEVE_METADATA_FOR_WRITE 2
