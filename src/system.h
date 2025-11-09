@@ -56,6 +56,7 @@ int    mock_connect(SOCKET fd, void *addr, size_t addr_len);
 
 #ifdef _WIN32
 int      mock_closesocket(SOCKET fd);
+int      mock_ioctlsocket(SOCKET fd, long cmd, u_long *argp);
 HANDLE   mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
 BOOL     mock_CloseHandle(HANDLE handle);
 BOOL     mock_LockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToLockLow, DWORD nNumberOfBytesToLockHigh);
@@ -80,6 +81,7 @@ int     mock_fstat(int fd, struct stat *buf);
 int     mock_mkstemp(char *path);
 char*   mock_realpath(char *path, char *dst);
 int     mock_mkdir(char *path, mode_t mode);
+int     mock_fcntl(int fd, int cmd, ...);
 #endif
 
 // Common
@@ -100,6 +102,7 @@ int     mock_mkdir(char *path, mode_t mode);
 // Windows
 #define sys__mkdir           mock__mkdir
 #define sys_closesocket      mock_closesocket
+#define sys_ioctlsocket      mock_ioctlsocket
 #define sys_CreateFileW      mock_CreateFileW
 #define sys_CloseHandle      mock_CloseHandle
 #define sys_LockFile         mock_LockFile
@@ -124,6 +127,7 @@ int     mock_mkdir(char *path, mode_t mode);
 #define sys_mkstemp          mock_mkstemp
 #define sys_realpath         mock_realpath
 #define sys_clock_gettime    mock_clock_gettime
+#define sys_fcntl            mock_fcntl
 #define sys_getrandom        mock_getrandom
 
 #else
@@ -146,6 +150,7 @@ int     mock_mkdir(char *path, mode_t mode);
 // Windows
 #define sys__mkdir           _mkdir
 #define sys_closesocket      closesocket
+#define sys_ioctlsocket      ioctlsocket
 #define sys_CreateFileW      CreateFileW
 #define sys_CloseHandle      CloseHandle
 #define sys_LockFile         LockFile
@@ -170,6 +175,7 @@ int     mock_mkdir(char *path, mode_t mode);
 #define sys_mkstemp          mkstemp
 #define sys_realpath         realpath
 #define sys_clock_gettime    clock_gettime
+#define sys_fcntl            fcntl
 
 #endif
 #endif // SYSTEM_INCLUDED

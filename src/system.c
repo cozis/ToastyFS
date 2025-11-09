@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "system.h"
 #include "chunk_server.h"
@@ -97,6 +98,9 @@ typedef struct {
     // Context for this descriptor, set by the
     // last "poll" call.
     void *context;
+
+    // Whether this socket is configured as non-blocking
+    bool is_nonblocking;
 
     // Address bound to this descriptor by the
     // "bind" call.
@@ -811,6 +815,7 @@ SOCKET mock_socket(int domain, int type, int protocol)
     desc->events = 0;
     desc->revents = 0;
     desc->context = NULL;
+    desc->is_nonblocking = false;
     desc->address = (DescriptorAddress) { .type=DESC_ADDR_VOID };
 
     current_process->num_desc++;
@@ -912,6 +917,11 @@ SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
 
     DescriptorHandle peer_handle;
     if (!accept_queue_pop(&desc->accept_queue, &peer_handle)) {
+        // Socket would block - abort if not configured as non-blocking
+        if (!desc->is_nonblocking) {
+            fprintf(stderr, "SIMULATION ERROR: accept() would block on socket %d but socket is not configured as non-blocking\n", (int)fd);
+            abort();
+        }
         SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);  // Would block (no pending connections)
         return INVALID_SOCKET;
     }
@@ -937,6 +947,7 @@ SOCKET mock_accept(SOCKET fd, void *addr, socklen_t *addr_len)
     new_desc->events = 0;
     new_desc->revents = 0;
     new_desc->context = NULL;
+    new_desc->is_nonblocking = false;
     new_desc->address = (DescriptorAddress) { .type=DESC_ADDR_VOID };
     new_desc->connection_state = CONNECTION_ESTABLISHED;
     new_desc->connection_peer = peer_handle;
@@ -1063,6 +1074,11 @@ int mock_recv(SOCKET fd, void *dst, int len, int flags)
 
     // If no data available, would block
     if (bytes_read == 0) {
+        // Socket would block - abort if not configured as non-blocking
+        if (!desc->is_nonblocking) {
+            fprintf(stderr, "SIMULATION ERROR: recv() would block on socket %d but socket is not configured as non-blocking\n", (int)fd);
+            abort();
+        }
         SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);
         return -1;
     }
@@ -1106,6 +1122,11 @@ int mock_send(SOCKET fd, void *src, int len, int flags)
 
     // If queue is full, we would block
     if (bytes_written < len) {
+        // Socket would block - abort if not configured as non-blocking
+        if (!desc->is_nonblocking && bytes_written == 0) {
+            fprintf(stderr, "SIMULATION ERROR: send() would block on socket %d but socket is not configured as non-blocking\n", (int)fd);
+            abort();
+        }
         SET_SOCKET_ERROR(SOCKET_ERROR_WOULDBLOCK);
         return bytes_written > 0 ? bytes_written : -1;
     }
@@ -1451,6 +1472,37 @@ BOOL mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency)
     return TRUE;
 }
 
+int mock_ioctlsocket(SOCKET fd, long cmd, u_long *argp)
+{
+    if (fd == INVALID_SOCKET || (int)fd < 0 || (int)fd >= MAX_DESCRIPTORS) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);
+        return -1;
+    }
+
+    int idx = (int) fd;
+    Descriptor *desc = &current_process->desc[idx];
+
+    if (desc->type == DESC_EMPTY) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_BADF);
+        return -1;
+    }
+
+    if (desc->type != DESC_SOCKET &&
+        desc->type != DESC_LISTEN_SOCKET &&
+        desc->type != DESC_CONNECTION_SOCKET) {
+        SET_SOCKET_ERROR(SOCKET_ERROR_NOTSOCK);
+        return -1;
+    }
+
+    if (cmd == FIONBIO) {
+        desc->is_nonblocking = (*argp != 0);
+        return 0;
+    }
+
+    SET_SOCKET_ERROR(SOCKET_ERROR_INVAL);
+    return -1;
+}
+
 #else
 
 int mock_clock_gettime(clockid_t clockid, struct timespec *tp)
@@ -1628,6 +1680,60 @@ char* mock_realpath(char *path, char *dst)
 int mock_mkdir(char *path, mode_t mode)
 {
     return mkdir(path, mode);
+}
+
+int mock_fcntl(int fd, int cmd, ...)
+{
+    if (fd < 0 || fd >= MAX_DESCRIPTORS) {
+        errno = EBADF;
+        return -1;
+    }
+
+    int idx = fd;
+    Descriptor *desc = &current_process->desc[idx];
+
+    if (desc->type == DESC_EMPTY) {
+        errno = EBADF;
+        return -1;
+    }
+
+    if (cmd == F_GETFL) {
+        // Return flags - only O_NONBLOCK is tracked
+        if (desc->type == DESC_FILE) {
+            // For files, forward to real fcntl
+            return fcntl(desc->real_fd, cmd);
+        }
+        return desc->is_nonblocking ? O_NONBLOCK : 0;
+    }
+
+    if (cmd == F_SETFL) {
+        if (desc->type == DESC_FILE) {
+            // For files, forward to real fcntl
+            va_list args;
+            va_start(args, cmd);
+            int flags = va_arg(args, int);
+            va_end(args);
+            return fcntl(desc->real_fd, cmd, flags);
+        }
+
+        if (desc->type != DESC_SOCKET &&
+            desc->type != DESC_LISTEN_SOCKET &&
+            desc->type != DESC_CONNECTION_SOCKET) {
+            errno = EBADF;
+            return -1;
+        }
+
+        va_list args;
+        va_start(args, cmd);
+        int flags = va_arg(args, int);
+        va_end(args);
+
+        desc->is_nonblocking = (flags & O_NONBLOCK) != 0;
+        return 0;
+    }
+
+    errno = EINVAL;
+    return -1;
 }
 
 #endif // !_WIN32
