@@ -90,6 +90,7 @@ static int load_chunk(ChunkStore *store, SHA256 hash, string *data)
 {
     char buf[PATH_MAX];
     string path = hash2path(store, hash, buf);
+    // TODO: check that the hash matches
     return file_read_all(path, data);
 }
 
@@ -98,7 +99,27 @@ static int store_chunk(ChunkStore *store, string data, SHA256 *hash)
     sha256(data.ptr, data.len, (uint8_t*) hash->data);
     char buf[PATH_MAX];
     string path = hash2path(store, *hash, buf);
-    return file_write_atomic(path, data);
+
+    // Note that this write is not atomic. If we crash
+    // while writing, we'll get an inconsistent file.
+    // This is okay as long as we check that the hash
+    // is correct while reading back the data.
+    Handle fd;
+    if (file_open(path, &fd) < 0)
+        return -1;
+    int copied = 0;
+    while (copied < data.len) {
+        int ret = file_write(fd,
+            data.ptr + copied,
+            data.len - copied);
+        if (ret < 0) {
+            file_close(fd);
+            return -1;
+        }
+        copied += ret;
+    }
+    file_close(fd);
+    return 0;
 }
 
 static int chunk_store_get(ChunkStore *store, SHA256 hash, string *data)

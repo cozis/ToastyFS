@@ -1174,7 +1174,7 @@ int mock_connect(SOCKET fd, void *addr, size_t addr_len)
     return -1;
 }
 
-static NATIVE_HANDLE
+static int
 wrap_native_file_into_desc(NATIVE_HANDLE handle)
 {
     if (current_process->num_desc == MAX_DESCRIPTORS) {
@@ -1290,7 +1290,12 @@ HANDLE mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess,
         dwFlagsAndAttributes, hTemplateFile);
     if (handle == INVALID_HANDLE_VALUE)
         return INVALID_HANDLE_VALUE;
-    return wrap_native_file_into_desc(handle);
+    int fd = wrap_native_file_into_desc(handle);
+    if (fd < 0) {
+        CloseHandle(handle);
+        return INVALID_HANDLE_VALUE;
+    }
+    return (HANDLE) fd;
 }
 
 BOOL mock_CloseHandle(HANDLE handle)
@@ -1506,7 +1511,13 @@ int mock_open(char *path, int flags, int mode)
     int fd = open(path, flags, mode);
     if (fd < 0) return -1;
 
-    return wrap_native_file_into_desc(fd);
+    int wrapped_fd = wrap_native_file_into_desc(fd);
+    if (wrapped_fd < 0) {
+        close(fd);
+        return -1;
+    }
+
+    return wrapped_fd;
 }
 
 int mock_close(int fd)
@@ -1634,7 +1645,13 @@ int mock_mkstemp(char *path)
     int fd = mkstemp(path);
     if (fd < 0) return fd;
 
-    return wrap_native_file_into_desc(fd);
+    int wrapped_fd = wrap_native_file_into_desc(fd);
+    if (wrapped_fd < 0) {
+        close(fd);
+        return -1;
+    }
+
+    return wrapped_fd;
 }
 
 char* mock_realpath(char *path, char *dst)

@@ -2,6 +2,7 @@
 #define SYSTEM_INCLUDED
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #ifdef _WIN32
