@@ -1,11 +1,10 @@
-- Chunks should not be separated between the main and orphaned folders. The concept of "orphans" or "to be removed" should only be held in-memory. If a chunk server crashes, upon restarting and reconnecting to the master any chunk will be re-marked for removal when speaking to the master.
 - Implement proper operation handles that allow users to wait for specific events
 - Clean up the read operation for clients
 - Check that the corner case where read and writes go over the length of the file work correctly
-- When a client received metadata and starts reading or writing to a chunk server, it should try connecting to all addresses of a chunk servers, not just the first one.
 - Return the number of bytes read or written in the MouseFS_Result struct
 - Make parallel uploads/downloads configurable
 - Recalculate next write locations whenever a write occurs, not at each read
 - avoid replay attacks
-- find a way to remove over-replicated chunks
-- formalize the chunk management policy
+- find a way to remove over-replicated chunks and formalize the chunk management policy
+- add logging of:
+    - when chunk servers connect and disconnect to the metadata server
