@@ -251,10 +251,12 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
 
     SHA256 *add_list = sys_malloc(add_count * sizeof(SHA256));
+    if (add_list == NULL)
+        return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Out of memory"));
+
     SHA256 *rem_list = sys_malloc(rem_count * sizeof(SHA256));
-    if (add_list == NULL || rem_list == NULL) {
+    if (rem_list == NULL) {
         sys_free(add_list);
-        sys_free(rem_list);
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Out of memory"));
     }
 

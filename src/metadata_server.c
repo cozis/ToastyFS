@@ -291,6 +291,7 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
         string desc = file_tree_strerror(ret);
 
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+        assert(output);
 
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_DELETE_ERROR);
@@ -305,6 +306,7 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
     } else {
 
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+        assert(output);
 
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_DELETE_SUCCESS);
@@ -351,9 +353,10 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
 
         string desc = file_tree_strerror(ret);
 
-        MessageWriter writer;
-
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+        assert(output);
+
+        MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_LIST_ERROR);
 
         uint16_t len = desc.len;
@@ -365,9 +368,10 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
 
     } else {
 
-        MessageWriter writer;
-
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+        assert(output);
+
+        MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_LIST_SUCCESS);
 
         uint32_t item_count = ret;
@@ -725,25 +729,24 @@ chunk_server_from_conn(MetadataServer *state, int conn_idx)
 static int send_state_update(MetadataServer *state, int chunk_server_idx)
 {
     ChunkServerPeer *chunk_server = &state->chunk_servers[chunk_server_idx];
-    int conn_idx = tcp_index_from_tag(&state->tcp, chunk_server_idx);
 
-    // Create STATE_UPDATE message
+    int conn_idx = tcp_index_from_tag(&state->tcp, chunk_server_idx);
+    assert(conn_idx > -1);
+
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
 
     MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE);
 
-    // Write counts
     uint32_t add_count = chunk_server->add_list.count;
     uint32_t rem_count = chunk_server->rem_list.count;
     message_write(&writer, &add_count, sizeof(add_count));
     message_write(&writer, &rem_count, sizeof(rem_count));
 
-    // Write add_list
     for (int i = 0; i < add_count; i++)
         message_write(&writer, &chunk_server->add_list.items[i], sizeof(SHA256));
 
-    // Write rem_list
     for (int i = 0; i < rem_count; i++)
         message_write(&writer, &chunk_server->rem_list.items[i], sizeof(SHA256));
 
@@ -829,9 +832,6 @@ static int process_chunk_server_auth(MetadataServer *state,
     // using the shared secret key mentioned in the architecture. For now,
     // we accept all connections that provide valid address information.
     chunk_server->auth = true;
-
-    // Initialize response time to current time when authenticated
-    chunk_server->last_response_time = get_current_time();
 
     return 0;
 }
