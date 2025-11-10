@@ -8,3 +8,4 @@
 - Recalculate next write locations whenever a write occurs, not at each read
 - avoid replay attacks
 - find a way to remove over-replicated chunks
+- formalize the chunk management policy
