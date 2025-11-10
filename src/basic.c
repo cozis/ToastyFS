@@ -57,6 +57,19 @@ Time get_current_time(void)
 #endif
 }
 
+void nearest_deadline(Time *a, Time b)
+{
+    if (*a == INVALID_TIME || *a > b)
+        *a = b;
+}
+
+int deadline_to_timeout(Time deadline, Time current_time)
+{
+    if (deadline == INVALID_TIME)
+        return -1;
+    return (deadline - current_time) / 1000000;
+}
+
 bool getargb(int argc, char **argv, char *name)
 {
     for (int i = 0; i < argc; i++)

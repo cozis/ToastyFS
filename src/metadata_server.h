@@ -17,6 +17,7 @@ typedef struct {
 
 typedef struct {
 
+    bool used;
     bool auth;
 
     int num_addrs;
@@ -36,9 +37,10 @@ typedef struct {
 
     // Time when last STATE_UPDATE was sent
     Time last_sync_time;
+    bool last_sync_done;
 
     // Time when last response was received
-    Time last_response_time;
+    Time last_response_time; // TODO: don't init to INVALID_TIME but current_time
 
 } ChunkServerPeer;
 

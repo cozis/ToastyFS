@@ -31,7 +31,10 @@ typedef uint64_t Time;
 #define UNREACHABLE __builtin_trap();
 
 bool streq(string s1, string s2);
+
 Time get_current_time(void);
+void nearest_deadline(Time *a, Time b);
+int  deadline_to_timeout(Time deadline, Time current_time);
 
 bool   getargb(int argc, char **argv, char *name);
 string getargs(int argc, char **argv, char *name, char *fallback);

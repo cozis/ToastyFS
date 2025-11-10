@@ -54,15 +54,16 @@ static bool hash_list_contains(HashList *hash_list, SHA256 hash)
     return false;
 }
 
-static void chunk_server_peer_init(ChunkServerPeer *chunk_server)
+static void chunk_server_peer_init(ChunkServerPeer *chunk_server, Time current_time)
 {
+    chunk_server->used = true;
     chunk_server->auth = false;
     chunk_server->num_addrs = 0;
     hash_list_init(&chunk_server->old_list);
     hash_list_init(&chunk_server->add_list);
     hash_list_init(&chunk_server->rem_list);
-    chunk_server->last_sync_time = INVALID_TIME;
-    chunk_server->last_response_time = INVALID_TIME;
+    chunk_server->last_sync_time = current_time;
+    chunk_server->last_response_time = current_time;
 }
 
 static void chunk_server_peer_free(ChunkServerPeer *chunk_server)
@@ -70,6 +71,7 @@ static void chunk_server_peer_free(ChunkServerPeer *chunk_server)
     hash_list_free(&chunk_server->rem_list);
     hash_list_free(&chunk_server->add_list);
     hash_list_free(&chunk_server->old_list);
+    chunk_server->used = false;
 }
 
 static bool chunk_server_peer_contains(ChunkServerPeer *chunk_server, SHA256 hash)
@@ -720,15 +722,14 @@ chunk_server_from_conn(MetadataServer *state, int conn_idx)
     return &state->chunk_servers[tag];
 }
 
-static int send_state_update(MetadataServer *state, int conn_idx, int chunk_server_idx)
+static int send_state_update(MetadataServer *state, int chunk_server_idx)
 {
     ChunkServerPeer *chunk_server = &state->chunk_servers[chunk_server_idx];
-
-    if (!chunk_server->auth)
-        return -1;
+    int conn_idx = tcp_index_from_tag(&state->tcp, chunk_server_idx);
 
     // Create STATE_UPDATE message
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+
     MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE);
 
@@ -748,14 +749,6 @@ static int send_state_update(MetadataServer *state, int conn_idx, int chunk_serv
 
     if (!message_writer_free(&writer))
         return -1;
-
-    // Update last sync time
-    chunk_server->last_sync_time = get_current_time();
-
-    if (state->trace) {
-        printf("Sent STATE_UPDATE to chunk server %d (add=%u, rem=%u)\n",
-               chunk_server_idx, add_count, rem_count);
-    }
 
     return 0;
 }
@@ -974,6 +967,8 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
         return -1;
 
     state->num_chunk_servers = 0;
+    for (int i = 0; i < MAX_CHUNK_SERVERS; i++)
+        state->chunk_servers[i].used = false;
 
     tcp_context_init(&state->tcp);
 
@@ -1010,6 +1005,12 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
 {
     Event events[MAX_CONNS+1];
     int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
+
+    // Implement periodic health checks: send STATE_UPDATE to chunk servers
+    Time current_time = get_current_time();
+    if (current_time == INVALID_TIME) {
+        assert(0); // TODO
+    }
 
     for (int i = 0; i < num_events; i++) {
         int conn_idx = events[i].conn_idx;
@@ -1048,19 +1049,33 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
 
                     if (tcp_get_tag(&state->tcp, conn_idx) == CONNECTION_TAG_UNKNOWN) {
                         if (is_chunk_server_message_type(msg_type)) {
-                            int chunk_server_idx = state->num_chunk_servers++;
-                            chunk_server_peer_init(&state->chunk_servers[chunk_server_idx]);
-                            tcp_set_tag(&state->tcp, conn_idx, chunk_server_idx, true);
+
+                            if (state->num_chunk_servers == MAX_CHUNK_SERVERS) {
+                                assert(0); // TODO
+                            }
+                            int j = 0;
+                            while (state->chunk_servers[j].used) {
+                                j++;
+                                assert(j < MAX_CHUNK_SERVERS);
+                            }
+
+                            chunk_server_peer_init(&state->chunk_servers[j], current_time);
+
+                            tcp_set_tag(&state->tcp, conn_idx, j, true);
+
                         } else {
+
                             tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_CLIENT, false);
                         }
                     }
 
-                    if (tcp_get_tag(&state->tcp, conn_idx) == CONNECTION_TAG_CLIENT)
+                    int tag = tcp_get_tag(&state->tcp, conn_idx);
+                    if (tag == CONNECTION_TAG_CLIENT) {
                         ret = process_client_message(state, conn_idx, msg_type, msg);
-                    else
+                    } else {
+                        state->chunk_servers[tag].last_response_time = current_time;
                         ret = process_chunk_server_message(state, conn_idx, msg_type, msg);
-
+                    }
                     if (ret < 0) {
                         tcp_close(&state->tcp, conn_idx);
                         break;
@@ -1073,74 +1088,37 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
         }
     }
 
-    // Implement periodic health checks: send STATE_UPDATE to chunk servers
-    Time current_time = get_current_time();
-    if (current_time == INVALID_TIME) {
-        *timeout = -1;
-        return tcp_register_events(&state->tcp, contexts, polled);
-    }
+    Time next_wakeup = INVALID_TIME;
 
-    Time next_sync_time = INVALID_TIME;
-    bool has_authenticated_servers = false;
+    // Trigger chunk server timing events
+    for (int i = 0, j = 0; j < state->num_chunk_servers; i++) {
 
-    // Iterate through all connections to find chunk servers
-    for (int conn_idx = 0; conn_idx < MAX_CONNS; conn_idx++) {
-        int tag = tcp_get_tag(&state->tcp, conn_idx);
-        if (tag < 0 || tag >= state->num_chunk_servers)
+        ChunkServerPeer *chunk_server = &state->chunk_servers[i];
+        if (!chunk_server->used)
             continue;
+        j++;
 
-        ChunkServerPeer *chunk_server = &state->chunk_servers[tag];
-        if (!chunk_server->auth)
+        Time response_timeout = chunk_server->last_response_time + (Time) RESPONSE_TIME_LIMIT * 1000000000;
+        if (current_time > response_timeout) {
+            // TODO: drop the chunk server
             continue;
-
-        has_authenticated_servers = true;
-
-        // Check if we should send STATE_UPDATE
-        bool should_send = false;
-
-        if (chunk_server->last_sync_time == INVALID_TIME) {
-            // Never sent STATE_UPDATE, send immediately
-            should_send = true;
-        } else {
-            Time time_since_sync = current_time - chunk_server->last_sync_time;
-            if (time_since_sync >= HEALTH_CHECK_INTERVAL) {
-                should_send = true;
-            } else {
-                // Calculate when next sync should happen
-                Time this_next_sync = chunk_server->last_sync_time + HEALTH_CHECK_INTERVAL;
-                if (next_sync_time == INVALID_TIME || this_next_sync < next_sync_time)
-                    next_sync_time = this_next_sync;
-            }
         }
+        nearest_deadline(&next_wakeup, response_timeout);
 
-        // Send STATE_UPDATE if needed
-        if (should_send) {
-            send_state_update(state, conn_idx, tag);
-
-            // Update next_sync_time
-            Time this_next_sync = chunk_server->last_sync_time + HEALTH_CHECK_INTERVAL;
-            if (next_sync_time == INVALID_TIME || this_next_sync < next_sync_time)
-                next_sync_time = this_next_sync;
-        }
-
-        // Check if chunk server is unhealthy (no response for too long)
-        if (chunk_server->last_response_time != INVALID_TIME) {
-            Time time_since_response = current_time - chunk_server->last_response_time;
-            if (time_since_response >= HEALTH_CHECK_TIMEOUT && state->trace) {
-                printf("WARNING: Chunk server %d has not responded for %llu ms\n",
-                       tag, (unsigned long long)time_since_response);
+        if (chunk_server->auth && chunk_server->last_sync_done) {
+            Time sync_timeout = chunk_server->last_sync_time + (Time) SYNC_INTERVAL * 1000000000;
+            if (current_time > sync_timeout) {
+                if (send_state_update(state, i) < 0) {
+                    assert(0); // TODO
+                }
+                chunk_server->last_sync_time = current_time;
+                chunk_server->last_sync_done = false;
+                continue;
             }
+            nearest_deadline(&next_wakeup, sync_timeout);
         }
     }
 
-    // Calculate timeout for next poll
-    if (!has_authenticated_servers) {
-        *timeout = -1;  // No authenticated chunk servers, no timeout needed
-    } else {
-        // Set a fixed periodic timeout for health checks
-        // We'll check and send STATE_UPDATE as needed on each iteration
-        *timeout = 10000;  // Wake up every 10 seconds to check
-    }
-
+    *timeout = deadline_to_timeout(next_wakeup, current_time);
     return tcp_register_events(&state->tcp, contexts, polled);
 }

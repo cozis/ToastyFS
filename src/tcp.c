@@ -54,6 +54,8 @@ static SOCKET create_listen_socket(string addr, uint16_t port)
         return INVALID_SOCKET;
     }
 
+    // TODO: mark address as reusable in debug builds
+
     char tmp[1<<10];
     if (addr.len >= (int) sizeof(tmp)) {
         CLOSE_SOCKET(fd);

@@ -8,8 +8,8 @@
 
 #define REPLICATION_FACTOR 3
 
-// Health check configuration (in milliseconds)
-#define HEALTH_CHECK_INTERVAL 30000   // Send STATE_UPDATE every 30 seconds
-#define HEALTH_CHECK_TIMEOUT  90000   // Mark as unhealthy after 90 seconds without response
+
+#define SYNC_INTERVAL 10
+#define RESPONSE_TIME_LIMIT 90
 
 #endif // CONFIG_INCLUDED
