@@ -464,91 +464,93 @@ process_metadata_server_download_locations(ChunkServer *state, int conn_idx, Byt
 
     // The message layout is this:
     //
-    //   struct IPv4Pair {
-    //     IPv4     addr;
-    //     uint16_t port;
-    //   }
-    //
-    //   struct IPv6Pair {
-    //     IPv6     addr;
-    //     uint16_t port;
-    //   }
-    //
-    //   struct AddressList {
-    //     uint8_t  num_ipv4;
-    //     uint8_t  num_ipv6;
+    //   struct ServerAddresses {
+    //     uint32_t num_ipv4;
+    //     uint32_t num_ipv6;
     //     IPv4Pair ipv4[num_ipv4];
     //     IPv6Pair ipv6[num_ipv6];
     //   }
     //
-    //   struct Group {
-    //     AddressList address_list;
-    //     uint32_t num_hashes;
-    //     SHA256 hashes[num_hashes];
-    //   }
-    //
     //   struct Message {
-    //     uint16_t num_groups;
-    //     Group    groups[num_groups]
+    //     uint32_t num_missing;
+    //     struct {
+    //       uint32_t num_holders;
+    //       ServerAddresses holders[num_holders];
+    //       SHA256 hash;
+    //     } entries[num_missing];
     //   }
 
-    uint16_t num_groups;
-    if (!binary_read(&reader, &num_groups, sizeof(num_groups)))
+    uint32_t num_missing;
+    if (!binary_read(&reader, &num_missing, sizeof(num_missing)))
         return -1;
 
-    for (uint16_t i = 0; i < num_groups; i++) {
+    for (uint32_t i = 0; i < num_missing; i++) {
 
-        uint8_t num_ipv4;
-        if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4)))
+        uint32_t num_holders;
+        if (!binary_read(&reader, &num_holders, sizeof(num_holders)))
             return -1;
 
-        uint8_t num_ipv6;
-        if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6)))
+        // Temporary storage for all addresses from all holders
+        IPv4     ipv4[256];
+        IPv6     ipv6[256];
+        uint16_t ipv4_port[256];
+        uint16_t ipv6_port[256];
+        uint32_t total_ipv4 = 0;
+        uint32_t total_ipv6 = 0;
+
+        // Read addresses from each holder
+        for (uint32_t j = 0; j < num_holders; j++) {
+
+            uint32_t num_ipv4;
+            if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4)))
+                return -1;
+
+            uint32_t num_ipv6;
+            if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6)))
+                return -1;
+
+            // Read IPv4 addresses
+            for (uint32_t k = 0; k < num_ipv4; k++) {
+                if (total_ipv4 >= 256)
+                    return -1;
+                if (!binary_read(&reader, &ipv4[total_ipv4], sizeof(ipv4[0])))
+                    return -1;
+                if (!binary_read(&reader, &ipv4_port[total_ipv4], sizeof(ipv4_port[0])))
+                    return -1;
+                total_ipv4++;
+            }
+
+            // Read IPv6 addresses
+            for (uint32_t k = 0; k < num_ipv6; k++) {
+                if (total_ipv6 >= 256)
+                    return -1;
+                if (!binary_read(&reader, &ipv6[total_ipv6], sizeof(ipv6[0])))
+                    return -1;
+                if (!binary_read(&reader, &ipv6_port[total_ipv6], sizeof(ipv6_port[0])))
+                    return -1;
+                total_ipv6++;
+            }
+        }
+
+        // Read the hash
+        SHA256 hash;
+        if (!binary_read(&reader, &hash, sizeof(hash)))
             return -1;
 
-        IPv4     ipv4[UINT8_MAX];
-        IPv6     ipv6[UINT8_MAX];
-        uint16_t ipv4_port[UINT8_MAX];
-        uint16_t ipv6_port[UINT8_MAX];
+        // Add to pending download list
+        for (uint32_t k = 0; k < total_ipv4; k++)
+            pending_download_list_add(
+                &state->pending_download_list,
+                (Address) { .is_ipv4=true, .ipv4=ipv4[k], .port=ipv4_port[k] },
+                hash
+            );
 
-        for (uint8_t j = 0; j < num_ipv4; j++) {
-            if (!binary_read(&reader, &ipv4[j], sizeof(ipv4[j])))
-                return -1;
-            if (!binary_read(&reader, &ipv4_port[j], sizeof(ipv4_port[j])))
-                return -1;
-        }
-
-        for (uint8_t j = 0; j < num_ipv6; j++) {
-            if (!binary_read(&reader, &ipv6[j], sizeof(ipv6[j])))
-                return -1;
-            if (!binary_read(&reader, &ipv6_port[j], sizeof(ipv6_port[j])))
-                return -1;
-        }
-
-        uint32_t num_hashes;
-        if (!binary_read(&reader, &num_hashes, sizeof(num_hashes)))
-            return -1;
-
-        for (uint32_t j = 0; j < num_hashes; j++) {
-
-            SHA256 hash;
-            if (!binary_read(&reader, &hash, sizeof(hash)))
-                return -1;
-
-            for (uint8_t k = 0; k < num_ipv4; k++)
-                pending_download_list_add(
-                    &state->pending_download_list,
-                    (Address) { .is_ipv4=true, .ipv4=ipv4[k], .port=ipv4_port[k] },
-                    hash
-                );
-
-            for (uint8_t k = 0; k < num_ipv6; k++)
-                pending_download_list_add(
-                    &state->pending_download_list,
-                    (Address) { .is_ipv4=false, .ipv6=ipv6[k], .port=ipv6_port[k] },
-                    hash
-                );
-        }
+        for (uint32_t k = 0; k < total_ipv6; k++)
+            pending_download_list_add(
+                &state->pending_download_list,
+                (Address) { .is_ipv4=false, .ipv6=ipv6[k], .port=ipv6_port[k] },
+                hash
+            );
     }
 
     if (binary_read(&reader, NULL, 1))

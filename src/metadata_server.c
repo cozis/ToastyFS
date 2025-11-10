@@ -889,6 +889,23 @@ static int process_chunk_server_state_update_error(MetadataServer *state,
     if (!binary_read(&reader, &num_missing, sizeof(num_missing)))
         return -1;
 
+    SHA256 *missing_chunks = sys_malloc(num_missing * sizeof(SHA256));
+    if (missing_chunks == NULL)
+        return -1;
+
+    for (uint32_t i = 0; i < num_missing; i++) {
+        if (!binary_read(&reader, &missing_chunks[i], sizeof(SHA256))) {
+            sys_free(missing_chunks);
+            return -1;
+        }
+    }
+
+    if (state->trace) {
+        int tag = tcp_get_tag(&state->tcp, conn_idx);
+        printf("Received STATE_UPDATE_ERROR from chunk server %d: %s (missing %u chunks)\n",
+               tag, error_msg, num_missing);
+    }
+
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
     assert(output);
 
@@ -899,9 +916,7 @@ static int process_chunk_server_state_update_error(MetadataServer *state,
 
     for (uint32_t i = 0; i < num_missing; i++) {
 
-        SHA256 hash;
-        if (!binary_read(&reader, &hash, sizeof(SHA256)))
-            return -1;
+        SHA256 hash = missing_chunks[i];
 
         int holders[MAX_CHUNK_SERVERS];
         int num_holders = all_chunk_servers_holding_chunk(state, hash, holders, MAX_CHUNK_SERVERS);
@@ -912,8 +927,12 @@ static int process_chunk_server_state_update_error(MetadataServer *state,
         message_write(&writer, &tmp, sizeof(tmp));
 
         for (int j = 0; j < num_holders; j++)
-            message_write_server_addr(&writer, &state->chunk_servers[j]);
+            message_write_server_addr(&writer, &state->chunk_servers[holders[j]]);
+
+        message_write(&writer, &hash, sizeof(hash));
     }
+
+    sys_free(missing_chunks);
 
     if (!message_writer_free(&writer))
         return -1;
