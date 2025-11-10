@@ -11,38 +11,33 @@ endif
 
 CFILES = $(shell find src -name '*.c')
 HFILES = $(shell find src -name '*.h')
-
-# Client library source files
-CLIENT_CFILES = src/client.c src/basic.c src/tcp.c src/message.c
-CLIENT_OFILES = $(CLIENT_CFILES:.c=.o)
+OFILES = $(CFILES:.c=.o)
 
 .PHONY: all clean
 
-all: mousefs_server$(EXT) mousefs_test$(EXT) example_client$(EXT) libmousefs_client.a
+all: mousefs$(EXT) mousefs_random_test$(EXT) example_client$(EXT) libmousefs.a
 
-mousefs_server$(EXT): $(CFILES) $(HFILES)
+mousefs$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_SERVER
 
-mousefs_test$(EXT): $(CFILES) $(HFILES)
+mousefs_random_test$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_TEST
 
-example_client$(EXT): examples/main.c $(CFILES) $(HFILES)
-	gcc -o $@ examples/main.c $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc
+example_client$(EXT): libmousefs.a
+	gcc -o $@ examples/main.c $(CFLAGS) -lmousefs $(LFLAGS) -Iinc -L.
 
-# Client library build rules
 %.o: %.c $(HFILES)
 	gcc -c -o $@ $< $(CFLAGS) -Iinc
 
-libmousefs_client.a: $(CLIENT_OFILES)
+libmousefs.a: $(OFILES)
 	ar rcs $@ $^
 
 clean:
-	rm -f                  \
-		mousefs_server.exe \
-		mousefs_server.out \
-		mousefs_test.exe   \
-		mousefs_test.out   \
-		example_client.exe \
-		example_client.out \
-		libmousefs_client.a \
-		$(CLIENT_OFILES)
+	rm -f                       \
+		mousefs.exe             \
+		mousefs.out             \
+		mousefs_random_test.exe \
+		mousefs_random_test.out \
+		example_client.exe      \
+		example_client.out      \
+		libmousefs.a
