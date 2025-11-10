@@ -1,5 +1,4 @@
 - Chunks should not be separated between the main and orphaned folders. The concept of "orphans" or "to be removed" should only be held in-memory. If a chunk server crashes, upon restarting and reconnecting to the master any chunk will be re-marked for removal when speaking to the master.
-- Implement write on the client
 - Implement proper operation handles that allow users to wait for specific events
 - Clean up the read operation for clients
 - Check that the corner case where read and writes go over the length of the file work correctly
@@ -7,5 +6,5 @@
 - Return the number of bytes read or written in the TinyDFS_Result struct
 - Make parallel uploads/downloads configurable
 - Recalculate next write locations whenever a write occurs, not at each read
-- Make sure there are no mixups with the default tag value for connections, which I think is -1?
 - avoid replay attacks
+- find a way to remove over-replicated chunks

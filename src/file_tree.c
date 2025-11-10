@@ -422,10 +422,10 @@ int file_tree_read(FileTree *ft, string path,
 
     File *f = &e->f;
 
+    *chunk_size = f->chunk_size;
+
     if (len == 0)
         return 0;
-
-    *chunk_size = f->chunk_size;
 
     uint64_t first_chunk_index = off / f->chunk_size;
     uint64_t  last_chunk_index = first_chunk_index + (len - 1) / f->chunk_size;
