@@ -34,8 +34,8 @@ int simulation_client_init(SimulationClient *client, int argc, char **argv,
     uint16_t port;
     parse_server_addr(argc, argv, &addr, &port);
 
-    client->tdfs = tinydfs_init(addr, port);
-    if (client->tdfs == NULL)
+    client->mfs = mousefs_init(addr, port);
+    if (client->mfs == NULL)
         return -1;
 
     client->num_pending = 0;
@@ -43,7 +43,7 @@ int simulation_client_init(SimulationClient *client, int argc, char **argv,
     printf("Client set up (remote=%s:%d)\n", addr, port);
 
     *timeout = 0;
-    return tinydfs_process_events(client->tdfs, contexts, polled, 0);
+    return mousefs_process_events(client->mfs, contexts, polled, 0);
 }
 
 static int random_in_range(int min, int max)
@@ -56,73 +56,73 @@ int simulation_client_step(SimulationClient *client, void **contexts,
                           struct pollfd *polled, int num_polled, int *timeout)
 {
     // Process any pending events from the network and get new poll descriptors
-    num_polled = tinydfs_process_events(client->tdfs, contexts, polled, num_polled);
+    num_polled = mousefs_process_events(client->mfs, contexts, polled, num_polled);
 
     for (int i = 0; i < client->num_pending; i++) {
 
-        TinyDFS_Result result;
-        if (!tinydfs_isdone(client->tdfs, client->pending[i].opidx, &result))
+        MouseFS_Result result;
+        if (!mousefs_isdone(client->mfs, client->pending[i].opidx, &result))
             continue;
 
         PendingOperation pending = client->pending[i];
         switch (result.type) {
 
-            case TINYDFS_RESULT_EMPTY:
+            case MOUSEFS_RESULT_EMPTY:
             assert(0);
             break;
 
-            case TINYDFS_RESULT_CREATE_ERROR:
+            case MOUSEFS_RESULT_CREATE_ERROR:
             assert(pending.type == PENDING_OPERATION_CREATE);
             //printf("[Client] create error\n");
             break;
 
-            case TINYDFS_RESULT_CREATE_SUCCESS:
+            case MOUSEFS_RESULT_CREATE_SUCCESS:
             assert(pending.type == PENDING_OPERATION_CREATE);
             //printf("[Client] create success\n");
             break;
 
-            case TINYDFS_RESULT_DELETE_ERROR:
+            case MOUSEFS_RESULT_DELETE_ERROR:
             assert(pending.type == PENDING_OPERATION_DELETE);
             //printf("[Client] delete error\n");
             break;
 
-            case TINYDFS_RESULT_DELETE_SUCCESS:
+            case MOUSEFS_RESULT_DELETE_SUCCESS:
             assert(pending.type == PENDING_OPERATION_DELETE);
             //printf("[Client] delete success\n");
             break;
 
-            case TINYDFS_RESULT_LIST_ERROR:
+            case MOUSEFS_RESULT_LIST_ERROR:
             assert(pending.type == PENDING_OPERATION_LIST);
             //printf("[Client] list error\n");
             break;
 
-            case TINYDFS_RESULT_LIST_SUCCESS:
+            case MOUSEFS_RESULT_LIST_SUCCESS:
             assert(pending.type == PENDING_OPERATION_LIST);
             //printf("[Client] list success\n");
             break;
 
-            case TINYDFS_RESULT_READ_ERROR:
+            case MOUSEFS_RESULT_READ_ERROR:
             assert(pending.type == PENDING_OPERATION_READ);
             //printf("[Client] read error\n");
             break;
 
-            case TINYDFS_RESULT_READ_SUCCESS:
+            case MOUSEFS_RESULT_READ_SUCCESS:
             assert(pending.type == PENDING_OPERATION_READ);
             //printf("[Client] read success\n");
             break;
 
-            case TINYDFS_RESULT_WRITE_ERROR:
+            case MOUSEFS_RESULT_WRITE_ERROR:
             assert(pending.type == PENDING_OPERATION_WRITE);
             //printf("[Client] write error\n");
             break;
 
-            case TINYDFS_RESULT_WRITE_SUCCESS:
+            case MOUSEFS_RESULT_WRITE_SUCCESS:
             assert(pending.type == PENDING_OPERATION_WRITE);
             //printf("[Client] write success\n");
             break;
         }
         free(pending.ptr);
-        tinydfs_result_free(&result);
+        mousefs_result_free(&result);
         client->pending[i--] = client->pending[--client->num_pending];
     }
 
@@ -172,8 +172,8 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             case PENDING_OPERATION_CREATE:
             entry = table[random_in_range(0, table_len-1)];
             chunk_size = entry.is_dir ? 0 : random_in_range(0, 5000);
-            ret = tinydfs_submit_create(
-                client->tdfs,
+            ret = mousefs_submit_create(
+                client->mfs,
                 entry.path,
                 -1,
                 entry.is_dir,
@@ -184,8 +184,8 @@ int simulation_client_step(SimulationClient *client, void **contexts,
 
             case PENDING_OPERATION_DELETE:
             entry = table[random_in_range(0, table_len-1)];
-            ret = tinydfs_submit_delete(
-                client->tdfs,
+            ret = mousefs_submit_delete(
+                client->mfs,
                 entry.path,
                 -1
             );
@@ -194,8 +194,8 @@ int simulation_client_step(SimulationClient *client, void **contexts,
 
             case PENDING_OPERATION_LIST:
             entry = table[random_in_range(0, table_len-1)];
-            ret = tinydfs_submit_list(
-                client->tdfs,
+            ret = mousefs_submit_list(
+                client->mfs,
                 entry.path,
                 -1
             );
@@ -208,7 +208,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             len = random_in_range(0, 5000);
             ptr = malloc(len);
             if (ptr == NULL) assert(0);
-            ret = tinydfs_submit_read(client->tdfs,
+            ret = mousefs_submit_read(client->mfs,
                 entry.path,
                 -1,
                 off,
@@ -225,8 +225,8 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             ptr = malloc(len);
             if (ptr == NULL) assert(0);
             memset(ptr, 'a', len);
-            ret = tinydfs_submit_write(
-                client->tdfs,
+            ret = mousefs_submit_write(
+                client->mfs,
                 entry.path,
                 -1,
                 off,
@@ -250,12 +250,12 @@ int simulation_client_step(SimulationClient *client, void **contexts,
         *timeout = 10;
     else
         *timeout = -1;
-    return tinydfs_process_events(client->tdfs, contexts, polled, 0);
+    return mousefs_process_events(client->mfs, contexts, polled, 0);
 }
 
 void simulation_client_free(SimulationClient *client)
 {
-    tinydfs_free(client->tdfs);
+    mousefs_free(client->mfs);
 }
 
 #endif // BUILD_TEST

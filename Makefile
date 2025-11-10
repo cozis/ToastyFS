@@ -14,12 +14,12 @@ HFILES = $(shell find src -name '*.h')
 
 .PHONY: all clean
 
-all: tinydfs_server$(EXT) tinydfs_test$(EXT) example_client$(EXT)
+all: mousefs_server$(EXT) mousefs_test$(EXT) example_client$(EXT)
 
-tinydfs_server$(EXT): $(CFILES) $(HFILES)
+mousefs_server$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_SERVER
 
-tinydfs_test$(EXT): $(CFILES) $(HFILES)
+mousefs_test$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_TEST
 
 example_client$(EXT): examples/main.c $(CFILES) $(HFILES)
@@ -27,9 +27,9 @@ example_client$(EXT): examples/main.c $(CFILES) $(HFILES)
 
 clean:
 	rm                     \
-		tinydfs_server.exe \
-		tinydfs_server.out \
-		tinydfs_test.exe   \
-		tinydfs_test.out   \
+		mousefs_server.exe \
+		mousefs_server.out \
+		mousefs_test.exe   \
+		mousefs_test.out   \
 		example_client.exe \
 		example_client.out

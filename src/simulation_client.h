@@ -10,7 +10,7 @@
 #include <poll.h>
 #endif
 
-#include "TinyDFS.h"
+#include "MouseFS.h"
 
 #define MAX_PENDING_OPERATION 8
 
@@ -29,7 +29,7 @@ typedef struct {
 } PendingOperation;
 
 typedef struct {
-    TinyDFS *tdfs;
+    MouseFS *mfs;
     int num_pending;
     PendingOperation pending[MAX_PENDING_OPERATION];
 } SimulationClient;

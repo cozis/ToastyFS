@@ -3,7 +3,7 @@
 - Clean up the read operation for clients
 - Check that the corner case where read and writes go over the length of the file work correctly
 - When a client received metadata and starts reading or writing to a chunk server, it should try connecting to all addresses of a chunk servers, not just the first one.
-- Return the number of bytes read or written in the TinyDFS_Result struct
+- Return the number of bytes read or written in the MouseFS_Result struct
 - Make parallel uploads/downloads configurable
 - Recalculate next write locations whenever a write occurs, not at each read
 - avoid replay attacks
