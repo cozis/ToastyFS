@@ -235,18 +235,17 @@ static void start_download_if_necessary(ChunkServer *state)
 static int
 process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView msg)
 {
-    uint32_t add_count;
-    uint32_t rem_count;
-
     BinaryReader reader = { msg.ptr, msg.len, 0 };
 
     // Read header
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
 
+    uint32_t add_count;
     if (!binary_read(&reader, &add_count, sizeof(add_count)))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
 
+    uint32_t rem_count;
     if (!binary_read(&reader, &rem_count, sizeof(rem_count)))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
 
@@ -282,112 +281,14 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
     }
 
-    // Process the state update:
-    // 1. Move chunks in rem_list from main to orphaned directory (mark for deletion)
-    // 2. Move chunks in add_list from orphaned to main directory (unmark for deletion)
-    // 3. Check that all chunks in add_list exist
-
-    SHA256 *missing_chunks = NULL;
-    uint32_t missing_count = 0;
-
-    // Process add_list: ensure chunks exist and move from orphaned if needed
-    for (uint32_t i = 0; i < add_count; i++) {
-
-        char main_path[PATH_MAX];
-        char orphaned_path[PATH_MAX];
-
-        // Get paths for main and orphaned locations
-        hash2path(&state->store, add_list[i], main_path);
-        snprintf(orphaned_path, sizeof(orphaned_path), "%s/orphaned/", state->store.path);
-
-        // Build orphaned path properly
-        strcpy(orphaned_path, state->store.path);
-        strcat(orphaned_path, "/orphaned/");
-        size_t tmp = strlen(orphaned_path);
-        append_hex_as_str(orphaned_path + tmp, add_list[i]);
-        orphaned_path[tmp + 64] = '\0';
-
-        // Check if chunk exists in main directory
-        Handle fd;
-        if (file_open((string) { main_path, strlen(main_path) }, &fd) == 0) {
-            file_close(fd);
-            // Chunk is in main directory, nothing to do
-        } else if (file_open((string) { orphaned_path, strlen(orphaned_path) }, &fd) == 0) {
-            file_close(fd);
-            // Chunk is in orphaned directory, move it back to main
-            if (rename_file_or_dir((string) { orphaned_path, strlen(orphaned_path) },
-                                   (string) { main_path, strlen(main_path) }) < 0) {
-                // Failed to move, treat as missing
-                if (missing_chunks == NULL)
-                    missing_chunks = sys_malloc(add_count * sizeof(SHA256));
-                if (missing_chunks)
-                    missing_chunks[missing_count++] = add_list[i];
-            }
-        } else {
-            // Chunk is missing in both locations
-            if (missing_chunks == NULL)
-                missing_chunks = sys_malloc(add_count * sizeof(SHA256));
-            if (missing_chunks)
-                missing_chunks[missing_count++] = add_list[i];
-        }
-    }
-
-    // Process rem_list: move chunks from main to orphaned directory
-    // First ensure orphaned directory exists
-    char orphaned_dir_path[PATH_MAX];
-    snprintf(orphaned_dir_path, sizeof(orphaned_dir_path), "%s/orphaned", state->store.path);
-    create_dir((string) { orphaned_dir_path, strlen(orphaned_dir_path) });
-
-    for (uint32_t i = 0; i < rem_count; i++) {
-        char main_path[PATH_MAX];
-        char orphaned_path[PATH_MAX];
-
-        hash2path(&state->store, rem_list[i], main_path);
-
-        strcpy(orphaned_path, state->store.path);
-        strcat(orphaned_path, "/orphaned/");
-        size_t tmp = strlen(orphaned_path);
-        append_hex_as_str(orphaned_path + tmp, rem_list[i]);
-        orphaned_path[tmp + 64] = '\0';
-
-        // Move from main to orphaned (ignore errors, chunk might not exist)
-        rename_file_or_dir((string) { main_path, strlen(main_path) },
-                          (string) { orphaned_path, strlen(orphaned_path) });
-    }
-
-    sys_free(add_list);
-    sys_free(rem_list);
-
-    // Send response
-    if (missing_count > 0) {
-        // Send error with list of missing chunks
-        ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
-        MessageWriter writer;
-        message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE_ERROR);
-
-        uint16_t error_len = 15; // "Missing chunks"
-        message_write(&writer, &error_len, sizeof(error_len));
-        message_write(&writer, "Missing chunks", error_len);
-
-        message_write(&writer, &missing_count, sizeof(missing_count));
-        for (uint32_t i = 0; i < missing_count; i++)
-            message_write(&writer, &missing_chunks[i], sizeof(SHA256));
-
-        sys_free(missing_chunks);
-
-        if (!message_writer_free(&writer))
-            return -1;
-    } else {
-        // Send success
-        ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
-        MessageWriter writer;
-        message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE_SUCCESS);
-
-        if (!message_writer_free(&writer))
-            return -1;
-    }
-
-    return 0;
+    // TODO: The add_list and rem_list were received by the metadata server.
+    //       Things to be done:
+    //         - Check that all items in the add_list are in the chunk directory.
+    //           Any hashes that are missing are added to a local list
+    //         - Append items from the rem_list to an in-memory remove list that
+    //           contains a list of hashes with the time of insertion for each
+    //         - Respond to the metadata server with the number of missing hashes
+    //           found while inspecting the add_list
 }
 
 static int
@@ -999,6 +900,8 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
     }
 
     // TODO: periodically look for chunks that have their hashes messed up and delete them
+
+    // TODO: Remove items from the remove list that got too old
 
     // TODO: periodically start downloads if some are pending and weren't started yet
     // start_download_if_necessary(state);
