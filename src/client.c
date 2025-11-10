@@ -128,7 +128,7 @@ typedef struct {
 } RequestQueue;
 
 typedef struct {
-    bool         used;
+    bool         used; // TODO: should be more like "connected"
     Address      addr;
     RequestQueue reqs;
 } MetadataServer;
@@ -369,8 +369,20 @@ static void close_chunk_server(TinyDFS *tdfs, int chunk_server_idx)
 static void
 metadata_server_request_start(TinyDFS *tdfs, MessageWriter *writer, uint16_t type)
 {
-    int conn_idx = tcp_index_from_tag(&tdfs->tcp, TAG_METADATA_SERVER);
-    ByteQueue *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
+    ByteQueue *output;
+    if (tdfs->metadata_server.used) {
+
+        int conn_idx = tcp_index_from_tag(&tdfs->tcp, TAG_METADATA_SERVER);
+        assert(conn_idx > -1);
+
+        output = tcp_output_buffer(&tdfs->tcp, conn_idx);
+    } else {
+        if (tcp_connect(&tdfs->tcp, tdfs->metadata_server.addr, TAG_METADATA_SERVER, &output) < 0) {
+            assert(0); // TODO
+        }
+        tdfs->metadata_server.used = true;
+    }
+
     message_writer_init(writer, output, type);
 }
 
@@ -1842,9 +1854,10 @@ int tinydfs_process_events(TinyDFS *tdfs, void **contexts, struct pollfd *polled
                 RequestQueue *reqs = NULL;
 
                 int tag = tcp_get_tag(&tdfs->tcp, conn_idx);
-                if (tag == TAG_METADATA_SERVER)
+                if (tag == TAG_METADATA_SERVER) {
                     reqs = &tdfs->metadata_server.reqs;
-                else {
+                    tdfs->metadata_server.used = false;
+                } else {
                     assert(tag > -1);
 
                     if (tdfs->chunk_servers[tag].connected)
