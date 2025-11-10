@@ -295,7 +295,7 @@ void message_dump(FILE *stream, ByteView msg)
                     return;
                 }
                 append_hex_as_str(hash_str, old_hash);
-                fprintf(stream, "    old_hash: %.64s\n", hash_str); // TODO: stringify
+                fprintf(stream, "    old_hash: %.64s\n", hash_str);
 
                 SHA256 new_hash;
                 if (!binary_read(&reader, &new_hash, sizeof(new_hash))) {
@@ -303,7 +303,7 @@ void message_dump(FILE *stream, ByteView msg)
                     return;
                 }
                 append_hex_as_str(hash_str, new_hash);
-                fprintf(stream, "    new_hash: %.64s\n", hash_str); // TODO: stringify
+                fprintf(stream, "    new_hash: %.64s\n", hash_str);
 
                 uint32_t num_locations;
                 if (!binary_read(&reader, &num_locations, sizeof(num_locations))) {
