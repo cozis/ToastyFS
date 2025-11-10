@@ -40,4 +40,5 @@ clean:
 		mousefs_random_test.out \
 		example_client.exe      \
 		example_client.out      \
-		libmousefs.a
+		libmousefs.a            \
+		src/*.o
