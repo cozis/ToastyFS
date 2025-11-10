@@ -1,3 +1,5 @@
 *.exe
 *.out
+*.o
+*.a
 chunk_server_data_*
