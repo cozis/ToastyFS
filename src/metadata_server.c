@@ -852,9 +852,6 @@ static int process_chunk_server_state_update_success(MetadataServer *state,
     chunk_server->add_list.count = 0;
     chunk_server->rem_list.count = 0;
 
-    // Update last response time
-    chunk_server->last_response_time = get_current_time();
-
     if (state->trace) {
         int tag = tcp_get_tag(&state->tcp, conn_idx);
         printf("Received STATE_UPDATE_SUCCESS from chunk server %d\n", tag);
@@ -866,7 +863,6 @@ static int process_chunk_server_state_update_success(MetadataServer *state,
 static int process_chunk_server_state_update_error(MetadataServer *state,
     int conn_idx, ByteView msg)
 {
-    ChunkServerPeer *chunk_server = chunk_server_from_conn(state, conn_idx);
     BinaryReader reader = { msg.ptr, msg.len, 0 };
 
     // Read header
@@ -889,35 +885,39 @@ static int process_chunk_server_state_update_error(MetadataServer *state,
         binary_read(&reader, NULL, error_len - read_len);
 
     // Read missing chunks
-    uint32_t missing_count;
-    if (!binary_read(&reader, &missing_count, sizeof(missing_count)))
+    uint32_t num_missing;
+    if (!binary_read(&reader, &num_missing, sizeof(num_missing)))
         return -1;
 
-    SHA256 *missing_chunks = sys_malloc(missing_count * sizeof(SHA256));
-    if (missing_chunks == NULL)
-        return -1;
+    ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
 
-    for (uint32_t i = 0; i < missing_count; i++) {
-        if (!binary_read(&reader, &missing_chunks[i], sizeof(SHA256))) {
-            sys_free(missing_chunks);
+    MessageWriter writer;
+    message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_LOCATIONS);
+
+    message_write(&writer, &num_missing, sizeof(num_missing));
+
+    for (uint32_t i = 0; i < num_missing; i++) {
+
+        SHA256 hash;
+        if (!binary_read(&reader, &hash, sizeof(SHA256)))
             return -1;
-        }
+
+        int holders[MAX_CHUNK_SERVERS];
+        int num_holders = all_chunk_servers_holding_chunk(state, hash, holders, MAX_CHUNK_SERVERS);
+        assert(num_holders > -1);
+        assert(num_holders <= MAX_CHUNK_SERVERS);
+
+        uint32_t tmp = num_holders;
+        message_write(&writer, &tmp, sizeof(tmp));
+
+        for (int j = 0; j < num_holders; j++)
+            message_write_server_addr(&writer, &state->chunk_servers[j]);
     }
 
-    // Update last response time
-    chunk_server->last_response_time = get_current_time();
+    if (!message_writer_free(&writer))
+        return -1;
 
-    if (state->trace) {
-        int tag = tcp_get_tag(&state->tcp, conn_idx);
-        printf("Received STATE_UPDATE_ERROR from chunk server %d: %s (missing %u chunks)\n",
-               tag, error_msg, missing_count);
-    }
-
-    // TODO: Send DOWNLOAD_LOCATIONS message to help chunk server recover missing chunks
-    // For now, we just acknowledge the error and the chunks remain in add_list
-    // They will be retried in the next STATE_UPDATE cycle
-
-    sys_free(missing_chunks);
     return 0;
 }
 
