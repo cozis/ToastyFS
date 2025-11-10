@@ -401,8 +401,14 @@ void tcp_close(TCP *tcp, int conn_idx)
     //       if the output buffer is empty, the connection should be closed here.
 }
 
-void tcp_set_tag(TCP *tcp, int conn_idx, int tag)
+void tcp_set_tag(TCP *tcp, int conn_idx, int tag, bool unique)
 {
+    assert(tag != -1);
+
+    if (unique)
+        for (int i = 0; i < tcp->num_conns; i++)
+            assert(tcp->conns[i].tag != tag);
+
     tcp->conns[conn_idx].tag = tag;
 }
 

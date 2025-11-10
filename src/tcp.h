@@ -62,7 +62,7 @@ int  tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled);
 ByteQueue *tcp_output_buffer(TCP *tcp, int conn_idx);
 int  tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output);
 void tcp_close(TCP *tcp, int conn_idx);
-void tcp_set_tag(TCP *tcp, int conn_idx, int tag);
+void tcp_set_tag(TCP *tcp, int conn_idx, int tag, bool unique);
 int  tcp_get_tag(TCP *tcp, int conn_idx);
 
 #endif // TCP_INCLUDED

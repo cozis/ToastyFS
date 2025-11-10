@@ -289,10 +289,21 @@ static int get_chunk_server(TinyDFS *tdfs, Address *addrs, int num_addrs, ByteQu
         if (!tdfs->chunk_servers[i].used)
            continue;
 
-        if (have_insertection(addrs, num_addrs, tdfs->chunk_servers[i].addrs, tdfs->chunk_servers[i].num_addrs)) {
-            found = i;
-            break;
-        }
+        if (!have_insertection(addrs, num_addrs, tdfs->chunk_servers[i].addrs, tdfs->chunk_servers[i].num_addrs))
+            continue;
+
+        // It's possible that this chunk server's connection
+        // was dropped but we still didn't process the DISCONNECT
+        // event.
+        int conn_idx = tcp_index_from_tag(&tdfs->tcp, found);
+        if (conn_idx < 0)
+            continue;
+
+        if (output)
+            *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
+
+        found = i;
+        break;
     }
 
     if (found == -1) {
@@ -322,14 +333,6 @@ static int get_chunk_server(TinyDFS *tdfs, Address *addrs, int num_addrs, ByteQu
         request_queue_init(&tdfs->chunk_servers[found].reqs);
 
         tdfs->num_chunk_servers++;
-
-    } else {
-
-        int conn_idx = tcp_index_from_tag(&tdfs->tcp, found);
-        assert(conn_idx > -1);
-
-        if (output)
-            *output = tcp_output_buffer(&tdfs->tcp, conn_idx);
     }
 
     return found;

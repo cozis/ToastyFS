@@ -880,7 +880,7 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
         switch (events[i].type) {
 
             case EVENT_CONNECT:
-            tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_UNKNOWN);
+            tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_UNKNOWN, false);
             break;
 
             case EVENT_DISCONNECT:
@@ -914,9 +914,9 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
                         if (is_chunk_server_message_type(msg_type)) {
                             int chunk_server_idx = state->num_chunk_servers++;
                             chunk_server_peer_init(&state->chunk_servers[chunk_server_idx]);
-                            tcp_set_tag(&state->tcp, conn_idx, chunk_server_idx);
+                            tcp_set_tag(&state->tcp, conn_idx, chunk_server_idx, true);
                         } else {
-                            tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_CLIENT);
+                            tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_CLIENT, false);
                         }
                     }
 
