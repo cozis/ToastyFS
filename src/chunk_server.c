@@ -493,59 +493,59 @@ process_metadata_server_download_locations(ChunkServer *state, int conn_idx, Byt
     //   }
 
     uint16_t num_groups;
-    if (binary_read(&reader, &num_groups, sizeof(num_groups)))
+    if (!binary_read(&reader, &num_groups, sizeof(num_groups)))
         return -1;
 
     for (uint16_t i = 0; i < num_groups; i++) {
 
         uint8_t num_ipv4;
-        if (binary_read(&reader, &num_ipv4, sizeof(num_ipv4)))
+        if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4)))
             return -1;
 
         uint8_t num_ipv6;
-        if (binary_read(&reader, &num_ipv6, sizeof(num_ipv6)))
+        if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6)))
             return -1;
 
         IPv4     ipv4[UINT8_MAX];
         IPv6     ipv6[UINT8_MAX];
-        uint8_t  ipv4_port[UINT8_MAX];
+        uint16_t ipv4_port[UINT8_MAX];
         uint16_t ipv6_port[UINT8_MAX];
 
         for (uint8_t j = 0; j < num_ipv4; j++) {
-            if (binary_read(&reader, &ipv4[i], sizeof(ipv4[i])))
+            if (!binary_read(&reader, &ipv4[j], sizeof(ipv4[j])))
                 return -1;
-            if (binary_read(&reader, &ipv4_port[i], sizeof(ipv4_port[i])))
+            if (!binary_read(&reader, &ipv4_port[j], sizeof(ipv4_port[j])))
                 return -1;
         }
 
         for (uint8_t j = 0; j < num_ipv6; j++) {
-            if (binary_read(&reader, &ipv6[i], sizeof(ipv6[i])))
+            if (!binary_read(&reader, &ipv6[j], sizeof(ipv6[j])))
                 return -1;
-            if (binary_read(&reader, &ipv6_port[i], sizeof(ipv6_port[i])))
+            if (!binary_read(&reader, &ipv6_port[j], sizeof(ipv6_port[j])))
                 return -1;
         }
 
         uint32_t num_hashes;
-        if (binary_read(&reader, &num_hashes, sizeof(num_hashes)))
+        if (!binary_read(&reader, &num_hashes, sizeof(num_hashes)))
             return -1;
 
         for (uint32_t j = 0; j < num_hashes; j++) {
 
             SHA256 hash;
-            if (binary_read(&reader, &hash, sizeof(hash)))
+            if (!binary_read(&reader, &hash, sizeof(hash)))
                 return -1;
 
             for (uint8_t k = 0; k < num_ipv4; k++)
                 pending_download_list_add(
                     &state->pending_download_list,
-                    (Address) { .is_ipv4=true, .ipv4=ipv4[k], .port=ipv4_port[i] },
+                    (Address) { .is_ipv4=true, .ipv4=ipv4[k], .port=ipv4_port[k] },
                     hash
                 );
 
             for (uint8_t k = 0; k < num_ipv6; k++)
                 pending_download_list_add(
                     &state->pending_download_list,
-                    (Address) { .is_ipv4=false, .ipv6=ipv6[k], .port=ipv6_port[i] },
+                    (Address) { .is_ipv4=false, .ipv6=ipv6[k], .port=ipv6_port[k] },
                     hash
                 );
         }
@@ -756,7 +756,8 @@ process_client_upload_chunk(ChunkServer *state, int conn_idx, ByteView msg)
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_UPLOAD_CHUNK_ERROR, S("Invalid message"));
 
     string data = { (char*) reader.src + reader.cur, data_len };
-    // TODO: Shoudn't we skip the data here? binary_read(&reader, NULL, data_len)
+    if (!binary_read(&reader, NULL, data_len))
+        return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_UPLOAD_CHUNK_ERROR, S("Invalid message"));
 
     // Check that there are no more bytes to read
     if (binary_read(&reader, NULL, 1))
@@ -1070,8 +1071,8 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
 
     // TODO: periodically look for chunks that have their hashes messed up and delete them
 
-    // TODO: periodically start downloads if some are pending and weren't started yet
-    // start_download_if_necessary(state);
+    // Periodically retry pending downloads
+    start_download_if_necessary(state);
 
     if (state->disconnect_time != INVALID_TIME) {
         Time reconnect_time = state->disconnect_time + (Time) CHUNK_SERVER_RECONNECT_TIME * 1000000000;
