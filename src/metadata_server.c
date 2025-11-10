@@ -744,10 +744,10 @@ static int send_state_update(MetadataServer *state, int chunk_server_idx)
     message_write(&writer, &add_count, sizeof(add_count));
     message_write(&writer, &rem_count, sizeof(rem_count));
 
-    for (int i = 0; i < add_count; i++)
+    for (uint32_t i = 0; i < add_count; i++)
         message_write(&writer, &chunk_server->add_list.items[i], sizeof(SHA256));
 
-    for (int i = 0; i < rem_count; i++)
+    for (uint32_t i = 0; i < rem_count; i++)
         message_write(&writer, &chunk_server->rem_list.items[i], sizeof(SHA256));
 
     if (!message_writer_free(&writer))

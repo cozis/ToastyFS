@@ -554,6 +554,8 @@ void tinydfs_result_free(TinyDFS_Result *result)
 static void process_event_for_create(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
+    (void) request_tag;
+
     if (msg.len == 0) {
         tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_CREATE_ERROR };
         return;
@@ -596,6 +598,8 @@ static void process_event_for_create(TinyDFS *tdfs,
 static void process_event_for_delete(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
+    (void) request_tag;
+
     if (msg.len == 0) {
         tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_DELETE_ERROR };
         return;
@@ -638,6 +642,8 @@ static void process_event_for_delete(TinyDFS *tdfs,
 static void process_event_for_list(TinyDFS *tdfs,
     int opidx, int request_tag, ByteView msg)
 {
+    (void) request_tag;
+
     if (msg.len == 0) {
         tdfs->operations[opidx].result = (TinyDFS_Result) { .type=TINYDFS_RESULT_LIST_ERROR };
         return;

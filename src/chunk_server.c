@@ -4,6 +4,7 @@
 #include <assert.h>
 
 #include "basic.h"
+#include "config.h"
 #include "sha256.h"
 #include "message.h"
 #include "file_system.h"
@@ -204,12 +205,14 @@ static int chunk_store_add(ChunkStore *store, string data)
     return store_chunk(store, data, &dummy);
 }
 
-static void chunk_store_remove(ChunkStore *store, SHA256 hash)
+static int chunk_store_remove(ChunkStore *store, SHA256 hash)
 {
     char buf[PATH_MAX];
     string path = hash2path(store, hash, buf);
 
-    remove_file_or_dir(path);
+    if (remove_file_or_dir(path) < 0)
+        return -1;
+    return 0;
 }
 
 static bool chunk_store_exists(ChunkStore *store, SHA256 hash)
@@ -366,8 +369,8 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
 
     // Check that all items in the add_list are in the chunk directory
     // Any hashes that are missing are added to a missing list
-    SHA256 *missing_list = NULL;
-    uint32_t missing_count = 0;
+    SHA256 *missing = NULL;
+    uint32_t num_missing = 0;
 
     Time current_time = get_current_time();
 
@@ -377,22 +380,16 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
 
         // Check if chunk exists in the chunk store
         if (!chunk_store_exists(&state->store, add_list[i])) {
+
             // Chunk is missing, add to missing list
-            SHA256 *new_missing_list = sys_malloc((missing_count + 1) * sizeof(SHA256));
-            if (new_missing_list == NULL) {
-                sys_free(add_list);
-                sys_free(rem_list);
-                sys_free(missing_list);
-                return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Out of memory"));
-            }
 
-            if (missing_count > 0) {
-                memcpy(new_missing_list, missing_list, missing_count * sizeof(SHA256));
-                sys_free(missing_list);
+            if (missing == NULL) {
+                missing = sys_malloc(add_count * sizeof(SHA256));
+                if (missing == NULL) {
+                    assert(0); // TODO
+                }
             }
-
-            missing_list = new_missing_list;
-            missing_list[missing_count++] = add_list[i];
+            missing[num_missing++] = add_list[i];
         }
     }
 
@@ -401,7 +398,7 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
         if (removal_list_add(&state->removal_list, rem_list[i], current_time) < 0) {
             sys_free(add_list);
             sys_free(rem_list);
-            sys_free(missing_list);
+            sys_free(missing);
             return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Out of memory"));
         }
     }
@@ -410,22 +407,26 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
     sys_free(rem_list);
 
     // Respond to the metadata server
-    if (missing_count == 0) {
+    if (num_missing == 0) {
+
         // No missing chunks, send success
-        sys_free(missing_list);
-        MessageWriter writer;
 
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
-        message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE_SUCCESS);
+        assert(output);
 
+        MessageWriter writer;
+        message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE_SUCCESS);
         if (!message_writer_free(&writer))
             return -1;
-        return 0;
+
     } else {
+
         // Some chunks are missing, send error with missing list
-        MessageWriter writer;
 
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+        assert(output);
+
+        MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE_ERROR);
 
         // Write error message
@@ -435,15 +436,17 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
         message_write(&writer, error_msg.ptr, error_msg.len);
 
         // Write missing count and missing hashes
-        message_write(&writer, &missing_count, sizeof(missing_count));
-        message_write(&writer, missing_list, missing_count * sizeof(SHA256));
+        uint32_t tmp = num_missing;
+        message_write(&writer, &tmp, sizeof(tmp));
+        message_write(&writer, missing, num_missing * sizeof(SHA256));
 
-        sys_free(missing_list);
+        sys_free(missing);
 
         if (!message_writer_free(&writer))
             return -1;
-        return 0;
     }
+
+    return 0;
 }
 
 static int
@@ -849,16 +852,12 @@ process_client_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView
     return -1;
 }
 
-static void
+static int
 start_connecting_to_metadata_server(ChunkServer *state)
 {
-    Time current_time = get_current_time();
-
     ByteQueue *output;
-    if (tcp_connect(&state->tcp, state->remote_addr, TAG_METADATA_SERVER, &output) < 0) {
-        state->disconnect_time = current_time;
-        return;
-    }
+    if (tcp_connect(&state->tcp, state->remote_addr, TAG_METADATA_SERVER, &output) < 0)
+        return -1;
 
     // Send AUTH message to authenticate with metadata server
     MessageWriter writer;
@@ -877,10 +876,9 @@ start_connecting_to_metadata_server(ChunkServer *state)
     uint32_t num_ipv6 = 0;
     message_write(&writer, &num_ipv6, sizeof(num_ipv6));
 
-    if (message_writer_free(&writer))
-        state->disconnect_time = INVALID_TIME;
-    else
-        state->disconnect_time = current_time;
+    if (!message_writer_free(&writer))
+        return -1;
+    return 0;
 }
 
 int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
@@ -1056,25 +1054,36 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         }
     }
 
-    // TODO: periodically look for chunks that have their hashes messed up and delete them
+    Time deadline = INVALID_TIME;
 
-    // TODO: Remove items from the remove list that got too old
+    // Remove items from the remove list that got too old
+    for (int i = 0; i <  state->removal_list.count; i++) {
+        PendingRemoval *removal = &state->removal_list.items[i];
+        Time removal_time = removal->marked_time + (Time) DELETION_TIMEOUT * 1000000000;
+        if (removal_time < current_time) {
+            if (chunk_store_remove(&state->store, removal->hash) == 0)
+                *removal = state->removal_list.items[--state->removal_list.count];
+        } else {
+            nearest_deadline(&deadline, removal_time);
+        }
+    }
+
+    // TODO: periodically look for chunks that have their hashes messed up and delete them
 
     // TODO: periodically start downloads if some are pending and weren't started yet
     // start_download_if_necessary(state);
 
-    if (state->disconnect_time != INVALID_TIME && (current_time - state->disconnect_time) / 1000000 >= CHUNK_SERVER_RECONNECT_TIME)
-        start_connecting_to_metadata_server(state);
-
-    if (state->disconnect_time == INVALID_TIME)
-        *timeout = -1;
-    else {
-        int elapsed = current_time - state->disconnect_time;
-        int delta_sec = 1;
-        if (elapsed > delta_sec * 1000000000)
-            *timeout = 0;
-        else
-            *timeout = delta_sec * 1000 - elapsed / 1000000;
+    if (state->disconnect_time != INVALID_TIME) {
+        Time reconnect_time = state->disconnect_time + (Time) CHUNK_SERVER_RECONNECT_TIME * 1000000000;
+        if (reconnect_time <= current_time) {
+            state->disconnect_time = INVALID_TIME;
+            if (start_connecting_to_metadata_server(state) < 0)
+                state->disconnect_time = current_time;
+        }
+        if (state->disconnect_time != INVALID_TIME)
+            nearest_deadline(&deadline, reconnect_time);
     }
+
+    *timeout = deadline_to_timeout(deadline, current_time);
     return tcp_register_events(&state->tcp, contexts, polled);
 }
