@@ -56,6 +56,77 @@ pending_download_list_add(PendingDownloadList *list, Address addr, SHA256 hash)
     return 0;
 }
 
+static void
+removal_list_init(RemovalList *list)
+{
+    list->count = 0;
+    list->capacity = 0;
+    list->items = NULL;
+}
+
+static void
+removal_list_free(RemovalList *list)
+{
+    sys_free(list->items);
+}
+
+static int
+removal_list_find(RemovalList *list, SHA256 hash)
+{
+    for (int i = 0; i < list->count; i++)
+        if (!memcmp(&list->items[i].hash, &hash, sizeof(SHA256)))
+            return i;
+    return -1;
+}
+
+static int
+removal_list_add(RemovalList *list, SHA256 hash, Time marked_time)
+{
+    // Check if already in list
+    int idx = removal_list_find(list, hash);
+    if (idx >= 0) {
+        // Already marked, keep the original time
+        return 0;
+    }
+
+    if (list->count == list->capacity) {
+        int new_capacity;
+        if (list->capacity == 0)
+            new_capacity = 8;
+        else
+            new_capacity = 2 * list->capacity;
+
+        PendingRemoval *new_items = sys_malloc(new_capacity * sizeof(PendingRemoval));
+        if (new_items == NULL)
+            return -1;
+
+        if (list->capacity > 0) {
+            memcpy(new_items, list->items, list->count * sizeof(list->items[0]));
+            sys_free(list->items);
+        }
+
+        list->items = new_items;
+        list->capacity = new_capacity;
+    }
+
+    list->items[list->count++] = (PendingRemoval) { hash, marked_time };
+    return 0;
+}
+
+static void
+removal_list_remove(RemovalList *list, SHA256 hash)
+{
+    int idx = removal_list_find(list, hash);
+    if (idx >= 0) {
+        // Remove by shifting remaining items
+        if (idx < list->count - 1) {
+            memmove(&list->items[idx], &list->items[idx + 1],
+                    (list->count - idx - 1) * sizeof(list->items[0]));
+        }
+        list->count--;
+    }
+}
+
 static int chunk_store_init(ChunkStore *store, string path)
 {
     if (create_dir(path) && errno != EEXIST)
@@ -133,7 +204,6 @@ static int chunk_store_add(ChunkStore *store, string data)
     return store_chunk(store, data, &dummy);
 }
 
-#if 0
 static void chunk_store_remove(ChunkStore *store, SHA256 hash)
 {
     char buf[PATH_MAX];
@@ -141,7 +211,20 @@ static void chunk_store_remove(ChunkStore *store, SHA256 hash)
 
     remove_file_or_dir(path);
 }
-#endif
+
+static bool chunk_store_exists(ChunkStore *store, SHA256 hash)
+{
+    char buf[PATH_MAX];
+    string path = hash2path(store, hash, buf);
+
+    // Try to open the file to check if it exists
+    Handle fd;
+    if (file_open(path, &fd) == 0) {
+        file_close(fd);
+        return true;
+    }
+    return false;
+}
 
 static int chunk_store_patch(ChunkStore *store, SHA256 target_chunk,
 	uint64_t patch_off, string patch, SHA256 *new_hash)
@@ -281,14 +364,86 @@ process_metadata_server_state_update(ChunkServer *state, int conn_idx, ByteView 
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Invalid message"));
     }
 
-    // TODO: The add_list and rem_list were received by the metadata server.
-    //       Things to be done:
-    //         - Check that all items in the add_list are in the chunk directory.
-    //           Any hashes that are missing are added to a local list
-    //         - Append items from the rem_list to an in-memory remove list that
-    //           contains a list of hashes with the time of insertion for each
-    //         - Respond to the metadata server with the number of missing hashes
-    //           found while inspecting the add_list
+    // Check that all items in the add_list are in the chunk directory
+    // Any hashes that are missing are added to a missing list
+    SHA256 *missing_list = NULL;
+    uint32_t missing_count = 0;
+
+    Time current_time = get_current_time();
+
+    for (uint32_t i = 0; i < add_count; i++) {
+        // If chunk is in removal list, unmark it (remove from removal list)
+        removal_list_remove(&state->removal_list, add_list[i]);
+
+        // Check if chunk exists in the chunk store
+        if (!chunk_store_exists(&state->store, add_list[i])) {
+            // Chunk is missing, add to missing list
+            SHA256 *new_missing_list = sys_malloc((missing_count + 1) * sizeof(SHA256));
+            if (new_missing_list == NULL) {
+                sys_free(add_list);
+                sys_free(rem_list);
+                sys_free(missing_list);
+                return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Out of memory"));
+            }
+
+            if (missing_count > 0) {
+                memcpy(new_missing_list, missing_list, missing_count * sizeof(SHA256));
+                sys_free(missing_list);
+            }
+
+            missing_list = new_missing_list;
+            missing_list[missing_count++] = add_list[i];
+        }
+    }
+
+    // Append items from the rem_list to the removal list with timestamps
+    for (uint32_t i = 0; i < rem_count; i++) {
+        if (removal_list_add(&state->removal_list, rem_list[i], current_time) < 0) {
+            sys_free(add_list);
+            sys_free(rem_list);
+            sys_free(missing_list);
+            return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_STATE_UPDATE_ERROR, S("Out of memory"));
+        }
+    }
+
+    sys_free(add_list);
+    sys_free(rem_list);
+
+    // Respond to the metadata server
+    if (missing_count == 0) {
+        // No missing chunks, send success
+        sys_free(missing_list);
+        MessageWriter writer;
+
+        ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+        message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE_SUCCESS);
+
+        if (!message_writer_free(&writer))
+            return -1;
+        return 0;
+    } else {
+        // Some chunks are missing, send error with missing list
+        MessageWriter writer;
+
+        ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+        message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE_ERROR);
+
+        // Write error message
+        string error_msg = S("Missing chunks");
+        uint16_t error_len = (uint16_t)error_msg.len;
+        message_write(&writer, &error_len, sizeof(error_len));
+        message_write(&writer, error_msg.ptr, error_msg.len);
+
+        // Write missing count and missing hashes
+        message_write(&writer, &missing_count, sizeof(missing_count));
+        message_write(&writer, missing_list, missing_count * sizeof(SHA256));
+
+        sys_free(missing_list);
+
+        if (!message_writer_free(&writer))
+            return -1;
+        return 0;
+    }
 }
 
 static int
@@ -761,6 +916,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 
     state->downloading = false;
     pending_download_list_init(&state->pending_download_list);
+    removal_list_init(&state->removal_list);
 
     char tmp[1<<10];
     if (addr.len >= (int) sizeof(tmp)) {
@@ -814,6 +970,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 int chunk_server_free(ChunkServer *state)
 {
     pending_download_list_free(&state->pending_download_list);
+    removal_list_free(&state->removal_list);
     chunk_store_free(&state->store);
     tcp_context_free(&state->tcp);
     return 0;
