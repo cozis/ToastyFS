@@ -61,6 +61,8 @@ static void chunk_server_peer_init(ChunkServerPeer *chunk_server)
     hash_list_init(&chunk_server->old_list);
     hash_list_init(&chunk_server->add_list);
     hash_list_init(&chunk_server->rem_list);
+    chunk_server->last_sync_time = INVALID_TIME;
+    chunk_server->last_response_time = INVALID_TIME;
 }
 
 static void chunk_server_peer_free(ChunkServerPeer *chunk_server)
@@ -718,6 +720,46 @@ chunk_server_from_conn(MetadataServer *state, int conn_idx)
     return &state->chunk_servers[tag];
 }
 
+static int send_state_update(MetadataServer *state, int conn_idx, int chunk_server_idx)
+{
+    ChunkServerPeer *chunk_server = &state->chunk_servers[chunk_server_idx];
+
+    if (!chunk_server->auth)
+        return -1;
+
+    // Create STATE_UPDATE message
+    ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    MessageWriter writer;
+    message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE);
+
+    // Write counts
+    uint32_t add_count = chunk_server->add_list.count;
+    uint32_t rem_count = chunk_server->rem_list.count;
+    message_write(&writer, &add_count, sizeof(add_count));
+    message_write(&writer, &rem_count, sizeof(rem_count));
+
+    // Write add_list
+    for (int i = 0; i < add_count; i++)
+        message_write(&writer, &chunk_server->add_list.items[i], sizeof(SHA256));
+
+    // Write rem_list
+    for (int i = 0; i < rem_count; i++)
+        message_write(&writer, &chunk_server->rem_list.items[i], sizeof(SHA256));
+
+    if (!message_writer_free(&writer))
+        return -1;
+
+    // Update last sync time
+    chunk_server->last_sync_time = get_current_time();
+
+    if (state->trace) {
+        printf("Sent STATE_UPDATE to chunk server %d (add=%u, rem=%u)\n",
+               chunk_server_idx, add_count, rem_count);
+    }
+
+    return 0;
+}
+
 static int process_chunk_server_auth(MetadataServer *state,
     int conn_idx, ByteView msg)
 {
@@ -795,6 +837,94 @@ static int process_chunk_server_auth(MetadataServer *state,
     // we accept all connections that provide valid address information.
     chunk_server->auth = true;
 
+    // Initialize response time to current time when authenticated
+    chunk_server->last_response_time = get_current_time();
+
+    return 0;
+}
+
+static int process_chunk_server_state_update_success(MetadataServer *state,
+    int conn_idx, ByteView msg)
+{
+    (void) msg; // Success message has no body
+    ChunkServerPeer *chunk_server = chunk_server_from_conn(state, conn_idx);
+
+    // Merge add_list into old_list
+    for (int i = 0; i < chunk_server->add_list.count; i++) {
+        if (!hash_list_contains(&chunk_server->old_list, chunk_server->add_list.items[i]))
+            hash_list_insert(&chunk_server->old_list, chunk_server->add_list.items[i]);
+    }
+
+    // Clear add_list and rem_list
+    chunk_server->add_list.count = 0;
+    chunk_server->rem_list.count = 0;
+
+    // Update last response time
+    chunk_server->last_response_time = get_current_time();
+
+    if (state->trace) {
+        int tag = tcp_get_tag(&state->tcp, conn_idx);
+        printf("Received STATE_UPDATE_SUCCESS from chunk server %d\n", tag);
+    }
+
+    return 0;
+}
+
+static int process_chunk_server_state_update_error(MetadataServer *state,
+    int conn_idx, ByteView msg)
+{
+    ChunkServerPeer *chunk_server = chunk_server_from_conn(state, conn_idx);
+    BinaryReader reader = { msg.ptr, msg.len, 0 };
+
+    // Read header
+    if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
+        return -1;
+
+    // Read error message
+    uint16_t error_len;
+    if (!binary_read(&reader, &error_len, sizeof(error_len)))
+        return -1;
+
+    char error_msg[256];
+    int read_len = error_len < sizeof(error_msg) - 1 ? error_len : sizeof(error_msg) - 1;
+    if (!binary_read(&reader, error_msg, read_len))
+        return -1;
+    error_msg[read_len] = '\0';
+
+    // Skip remaining error message if it was too long
+    if (error_len > read_len)
+        binary_read(&reader, NULL, error_len - read_len);
+
+    // Read missing chunks
+    uint32_t missing_count;
+    if (!binary_read(&reader, &missing_count, sizeof(missing_count)))
+        return -1;
+
+    SHA256 *missing_chunks = sys_malloc(missing_count * sizeof(SHA256));
+    if (missing_chunks == NULL)
+        return -1;
+
+    for (uint32_t i = 0; i < missing_count; i++) {
+        if (!binary_read(&reader, &missing_chunks[i], sizeof(SHA256))) {
+            sys_free(missing_chunks);
+            return -1;
+        }
+    }
+
+    // Update last response time
+    chunk_server->last_response_time = get_current_time();
+
+    if (state->trace) {
+        int tag = tcp_get_tag(&state->tcp, conn_idx);
+        printf("Received STATE_UPDATE_ERROR from chunk server %d: %s (missing %u chunks)\n",
+               tag, error_msg, missing_count);
+    }
+
+    // TODO: Send DOWNLOAD_LOCATIONS message to help chunk server recover missing chunks
+    // For now, we just acknowledge the error and the chunks remain in add_list
+    // They will be retried in the next STATE_UPDATE cycle
+
+    sys_free(missing_chunks);
     return 0;
 }
 
@@ -805,6 +935,12 @@ process_chunk_server_message(MetadataServer *state,
     switch (type) {
         case MESSAGE_TYPE_AUTH:
         return process_chunk_server_auth(state, conn_idx, msg);
+
+        case MESSAGE_TYPE_STATE_UPDATE_SUCCESS:
+        return process_chunk_server_state_update_success(state, conn_idx, msg);
+
+        case MESSAGE_TYPE_STATE_UPDATE_ERROR:
+        return process_chunk_server_state_update_error(state, conn_idx, msg);
     }
     return -1;
 }
@@ -859,7 +995,7 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
         port
     );
 
-    *timeout = -1;  // No timeout needed for metadata server
+    *timeout = -1;  // No timeout until we have chunk servers
     return tcp_register_events(&state->tcp, contexts, polled);
 }
 
@@ -937,6 +1073,74 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
         }
     }
 
-    *timeout = -1;  // No timeout needed for metadata server
+    // Implement periodic health checks: send STATE_UPDATE to chunk servers
+    Time current_time = get_current_time();
+    if (current_time == INVALID_TIME) {
+        *timeout = -1;
+        return tcp_register_events(&state->tcp, contexts, polled);
+    }
+
+    Time next_sync_time = INVALID_TIME;
+    bool has_authenticated_servers = false;
+
+    // Iterate through all connections to find chunk servers
+    for (int conn_idx = 0; conn_idx < MAX_CONNS; conn_idx++) {
+        int tag = tcp_get_tag(&state->tcp, conn_idx);
+        if (tag < 0 || tag >= state->num_chunk_servers)
+            continue;
+
+        ChunkServerPeer *chunk_server = &state->chunk_servers[tag];
+        if (!chunk_server->auth)
+            continue;
+
+        has_authenticated_servers = true;
+
+        // Check if we should send STATE_UPDATE
+        bool should_send = false;
+
+        if (chunk_server->last_sync_time == INVALID_TIME) {
+            // Never sent STATE_UPDATE, send immediately
+            should_send = true;
+        } else {
+            Time time_since_sync = current_time - chunk_server->last_sync_time;
+            if (time_since_sync >= HEALTH_CHECK_INTERVAL) {
+                should_send = true;
+            } else {
+                // Calculate when next sync should happen
+                Time this_next_sync = chunk_server->last_sync_time + HEALTH_CHECK_INTERVAL;
+                if (next_sync_time == INVALID_TIME || this_next_sync < next_sync_time)
+                    next_sync_time = this_next_sync;
+            }
+        }
+
+        // Send STATE_UPDATE if needed
+        if (should_send) {
+            send_state_update(state, conn_idx, tag);
+
+            // Update next_sync_time
+            Time this_next_sync = chunk_server->last_sync_time + HEALTH_CHECK_INTERVAL;
+            if (next_sync_time == INVALID_TIME || this_next_sync < next_sync_time)
+                next_sync_time = this_next_sync;
+        }
+
+        // Check if chunk server is unhealthy (no response for too long)
+        if (chunk_server->last_response_time != INVALID_TIME) {
+            Time time_since_response = current_time - chunk_server->last_response_time;
+            if (time_since_response >= HEALTH_CHECK_TIMEOUT && state->trace) {
+                printf("WARNING: Chunk server %d has not responded for %llu ms\n",
+                       tag, (unsigned long long)time_since_response);
+            }
+        }
+    }
+
+    // Calculate timeout for next poll
+    if (!has_authenticated_servers) {
+        *timeout = -1;  // No authenticated chunk servers, no timeout needed
+    } else {
+        // Set a fixed periodic timeout for health checks
+        // We'll check and send STATE_UPDATE as needed on each iteration
+        *timeout = 10000;  // Wake up every 10 seconds to check
+    }
+
     return tcp_register_events(&state->tcp, contexts, polled);
 }

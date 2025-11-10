@@ -4,6 +4,7 @@
 #include "tcp.h"
 #include "file_tree.h"
 #include "config.h"
+#include "basic.h"
 
 #define CONNECTION_TAG_CLIENT  -2
 #define CONNECTION_TAG_UNKNOWN -3
@@ -32,6 +33,12 @@ typedef struct {
     // Chunks removed from the chunk server
     // since the last update
     HashList rem_list;
+
+    // Time when last STATE_UPDATE was sent
+    Time last_sync_time;
+
+    // Time when last response was received
+    Time last_response_time;
 
 } ChunkServerPeer;
 
