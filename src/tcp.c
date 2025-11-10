@@ -223,7 +223,6 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
 int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd *polled, int num_polled)
 {
     bool removed[MAX_CONNS+1];
-    memset(removed, 0, sizeof(removed));
 
     int num_events = 0;
     for (int i = 0; i < num_polled; i++) {
@@ -244,6 +243,7 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
                     }
                 }
             }
+            removed[i] = false;
 
         } else {
 
@@ -322,13 +322,15 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
         }
     }
 
-    for (int i = 0; i < num_polled; i++)
+    for (int i = 0; i < num_polled; i++) {
         if (removed[i]) {
-            Connection *conn = &tcp->conns[i];
+            Connection *conn = contexts[i];
             assert(conn);
             conn_free(conn);
             *conn = tcp->conns[--tcp->num_conns];
         }
+    }
+
     return num_events;
 }
 
