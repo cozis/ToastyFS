@@ -1,0 +1,126 @@
+Architecture
+  A TinyDFS instance is composed by a metadata server, a number
+  of chunk servers, and a number of clients.
+
+  The metadata server stores the full file system hieararchy,
+  except instead of storing the file contents, it stores an
+  array of hashes of the chunks of each file. A "chunk" is a
+  file range that is fixed for a single file but may vary
+  between files. Chunk servers hold an array of chunks that
+  are identified by their hash. The metadata server keeps
+  track of which chunks each chunk server is holding.
+
+  Clients are users of the file system that can read and
+  write metadata and files. They are assumed to behave
+  correctly.
+
+  Any read and write operation that doesn't involve file
+  contents can be performed by clients by talking to the
+  metadata server directly. Such operations include creating
+  an empty file or a directory, deleting a file or directory,
+  listing files.
+
+  If a client wants to read a range of bytes from a file,
+  it sends the metadata server the file name and range.
+  The metadata server responds with the chunk size of that
+  file, the list of hashes for the chunks involved in the
+  read, and the IP addresses of the chunk servers that hold
+  each chunk. The metadata server also adds the IP addresses
+  of three chunk servers any new chunks should be written
+  to. The client can then download the chunks from the chunk
+  servers and reassemble the result.
+
+  If a client wants to write at a range of bytes of a file,
+  it starts by reading that range from the metadata server,
+  getting the list of hashes it will modify, their locations,
+  and locations for any new chunks. The client then modifies
+  the chunk by sending to each chunk server the hash to modify
+  and the patch (a range of bytes within a chunk plus the new
+  data). The chunk server creates a new modified chunk and
+  keeps the old version, then returns the new hash. If all
+  modifications are successful, the client holds the set of
+  old hashes and new hashes for that file range. It completes
+  the write by telling the metadata server to swap the old
+  hashes with the new ones. If the old hashes don't match,
+  another write succeded in the mean time and touched that
+  range, therefore the write fails. If the old hashes match,
+  the write succeded. If the client fails to modify any
+  chunks, it doesn't commit the write with the metadata server.
+  Note that write failures may cause chunks to be orphaned
+  on chunk servers. This is solved by a garbage collection
+  algorithm implemented by the synchronization messages
+  between metadata and chunk server.
+
+  Note that clients may cache chunks and index them by their
+  hash. When they read a file and receive its hashes, they may
+  avoid reaching for the chunk servers if they already cached
+  the chunks with those hashes. This allows reading files with
+  only one round trip at no cost of correctness. If getting
+  the up-to-date contents is not a concern, clients may also
+  cache file metadata.
+
+Metadata and chunk server exchange:
+
+  The metadata server is only aware of each chunk server
+  as long as they have a TCP connection. When a chunk server
+  first connects to the metadata server, it authenticates
+  itself and sends its own IP addresses. If the server is
+  authentic, the metadata server requests the full list
+  of chunks the chunk server is holding. Upon receiving the
+  state of chunk server, the metadata server adds all useful
+  chunks to the "old_list" and all useless chunks to the
+  "rem_list", then sends the rem_list to the chunk server
+  which removes those chunks.
+
+  When writes are committed to the metadata server involving
+  new chunks to a chunk server, the metadata server adds those
+  hashes to an "add_list" and any hashes that are not useful
+  anymore to the rem_list.
+
+  Periodically, the metadata server sends the add_list and
+  rem_list to the chunk server. These list tell the chunk
+  server the ideal state it should have from the point of
+  view of the metadata server. Elements in the add_list should
+  already be in the chunk servers, and elements from the
+  rem_list are to be removed. A chunk server marks any chunk
+  in the rem_list as to be removed and checks that hashes
+  in the add list are present. If a chunk in the add list
+  is marked as to be removed, it is unmarked. When a chunk
+  is marked as to be removed for a certain amount of time,
+  it is permanently deleted. When the synchronization is
+  complete, the metadata server merges the add_list into
+  the old_list and clears the rem_list. If chunks in the
+  add_list are not present in the chunk server, it responds
+  with an error message containing the list of missing chunks.
+  The metadata server then responds with a list of chunk
+  server addresses where the chunk server with the missing
+  chunk can download it from. Each chunk server goes
+  through its download list one at the time downloading
+  the missing chunks.
+
+  Note that if the chunk server finds that its holding some
+  chunks that are not in the hash list of the metadata server,
+  that does not mean they are orphaned. It's possible that
+  some writes are being performed by clients that have uploaded
+  chunks to that chunk server but didn't yet acknowledge it
+  to the metadata server. If all goes well and the write
+  succeded, the metadata server will add those hashes to the
+  hash list. Chunk servers should only drop chunks if they
+  are not referenced by the metadata server for a period of
+  time (say, 30 minutes).
+
+Security
+  All nodes of the system share a secret key and use it to
+  authenticate each other and encrypt messages. This allows
+  the server to accept new chunk servers and clients with
+  no prior setup
+
+Reliability
+  The metadata server is a single point of failure. To reduce
+  the impact of crashes, the metadata server stores all write
+  operations into a write-ahead log that is replayed any time
+  the process goes online.
+
+TODO: When a write occurs, the written to chunks must be marked
+      as orphaned or "to-be-deleted" unless they are used by
+      someone else
