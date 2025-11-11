@@ -121,6 +121,53 @@ Reliability
   operations into a write-ahead log that is replayed any time
   the process goes online.
 
-TODO: When a write occurs, the written to chunks must be marked
-      as orphaned or "to-be-deleted" unless they are used by
-      someone else
+Chunk Management:
+    Chunks are added to the system when:
+        1. A chunk server connects
+        2. A write operation on metadata occurs (adding chunks)
+
+    They are removed when:
+        1. A chunk server disconnects
+        2. A write operation on metadata occurs (overwriting old chunks)
+        3. A delete operation on metadata occurs
+        4. A chunk is corrupted or removed forcefully from the chunk server
+
+    The system must make sure that chunks are not over-replicated
+    or under-replicated. If they are over-replicated, some chunk
+    servers need to forget some copies. If they are under-replicated,
+    some chunk servers need to copy chunks from elsewhere.
+
+    Event 1: A chunk server connects
+        If the chunk server is holding some chunks, for each chunk
+        one of the following must be true:
+            - The chunk is not used by the file system
+                => Mark the chunk for removal
+            - The chunk is used and, with this copy, perfectly replicated
+                => Do nothing
+            - The chunk is used and under-replicated
+                => ???
+            - The chunk is used and over-replicated
+                => Mark the chunk for removal
+
+    Event 2: A write operation on metadata (adding chunks)
+        TODO
+
+    Event 3: A chunk server disconnects
+        A number of chunks are lost, but there is a chance the server will come back
+        in a short while (10s or so).
+
+        TODO
+
+    Event 4: A write operation on metadata occurs (overwriting old chunks)
+        Assuming the write overwrites some chunks:
+            - The chunks may still be referenced by some other file or section of the same file
+                => Do nothing
+            - The chunks are not used anymore
+                => Find all chunk servers holding the chunk and mark them for removal
+
+    Event 5: A delete operation on metadata occurs
+        Do the same as event 4
+
+    Event 6: A chunk is corrupted or removed forcefully from the chunk server
+        The chunk server adds the chunk name to a list of lost chunks and
+        sends them to the metadata server at the next periodic update.
