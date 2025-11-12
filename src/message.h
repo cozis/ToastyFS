@@ -38,6 +38,7 @@ enum {
 
     // Chunk server -> Metadata server
     MESSAGE_TYPE_AUTH,
+    MESSAGE_TYPE_CHUNK_LIST,
     MESSAGE_TYPE_STATE_UPDATE_ERROR,
     MESSAGE_TYPE_STATE_UPDATE_SUCCESS,
 

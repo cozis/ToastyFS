@@ -768,55 +768,49 @@ static int process_chunk_server_auth(MetadataServer *state,
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
 
-    // Read IPv4s
-    {
-        uint32_t num_ipv4;
-        if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4)))
+    uint32_t num_ipv4;
+    if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4)))
+        return -1;
+
+    for (uint32_t i = 0; i < num_ipv4; i++) {
+
+        IPv4 ipv4;
+        if (!binary_read(&reader, &ipv4, sizeof(ipv4)))
             return -1;
 
-        for (uint32_t i = 0; i < num_ipv4; i++) {
+        uint16_t port;
+        if (!binary_read(&reader, &port, sizeof(port)))
+            return -1;
 
-            IPv4 ipv4;
-            if (!binary_read(&reader, &ipv4, sizeof(ipv4)))
-                return -1;
-
-            uint16_t port;
-            if (!binary_read(&reader, &port, sizeof(port)))
-                return -1;
-
-            if (chunk_server->num_addrs < MAX_SERVER_ADDRS) {
-                Address addr = {0};
-                addr.ipv4 = ipv4;
-                addr.is_ipv4 = true;
-                addr.port = port;
-                chunk_server->addrs[chunk_server->num_addrs++] = addr;
-            }
+        if (chunk_server->num_addrs < MAX_SERVER_ADDRS) {
+            Address addr = {0};
+            addr.ipv4 = ipv4;
+            addr.is_ipv4 = true;
+            addr.port = port;
+            chunk_server->addrs[chunk_server->num_addrs++] = addr;
         }
     }
 
-    // Read IPv6s
-    {
-        uint32_t num_ipv6;
-        if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6)))
+    uint32_t num_ipv6;
+    if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6)))
+        return -1;
+
+    for (uint32_t i = 0; i < num_ipv6; i++) {
+
+        IPv6 ipv6;
+        if (!binary_read(&reader, &ipv6, sizeof(ipv6)))
             return -1;
 
-        for (uint32_t i = 0; i < num_ipv6; i++) {
+        uint16_t port;
+        if (!binary_read(&reader, &port, sizeof(port)))
+            return -1;
 
-            IPv6 ipv6;
-            if (!binary_read(&reader, &ipv6, sizeof(ipv6)))
-                return -1;
-
-            uint16_t port;
-            if (!binary_read(&reader, &port, sizeof(port)))
-                return -1;
-
-            if (chunk_server->num_addrs < MAX_SERVER_ADDRS) {
-                Address addr = {0};
-                addr.ipv6 = ipv6;
-                addr.is_ipv4 = false;
-                addr.port = port;
-                chunk_server->addrs[chunk_server->num_addrs++] = addr;
-            }
+        if (chunk_server->num_addrs < MAX_SERVER_ADDRS) {
+            Address addr = {0};
+            addr.ipv6 = ipv6;
+            addr.is_ipv4 = false;
+            addr.port = port;
+            chunk_server->addrs[chunk_server->num_addrs++] = addr;
         }
     }
 
@@ -833,7 +827,30 @@ static int process_chunk_server_auth(MetadataServer *state,
     // we accept all connections that provide valid address information.
     chunk_server->auth = true;
 
+    // TODO: Request the chunk list held by this chunk server
+
     return 0;
+}
+
+static int process_chunk_server_chunk_list(MetadataServer *state,
+    int conn_idx, ByteView msg)
+{
+    // Iterate over each chunk held by this chunk
+    // server and determine whether it's useless,
+    // under-replicated, over-replicated, or
+    // properly replicated.
+    // Chunks that are useless or over-replicated
+    // are added to the remove list of this chunk
+    // server (note that any given chunk can only
+    // be over-replicated by 1, so removing it from
+    // this chunk server will fix the issue). If
+    // the chunk is under-replicated or properly
+    // replicated, do nothing. Note that it's only
+    // possible for a chunk to be under-replicated
+    // when the number of chunk servers is lower
+    // than the replication factor.
+
+    // TODO
 }
 
 static int process_chunk_server_state_update_success(MetadataServer *state,
@@ -947,6 +964,9 @@ process_chunk_server_message(MetadataServer *state,
     switch (type) {
         case MESSAGE_TYPE_AUTH:
         return process_chunk_server_auth(state, conn_idx, msg);
+
+        case MESSAGE_TYPE_CHUNK_LIST:
+        return process_chunk_server_chunk_list(state, conn_idx, msg);
 
         case MESSAGE_TYPE_STATE_UPDATE_SUCCESS:
         return process_chunk_server_state_update_success(state, conn_idx, msg);
