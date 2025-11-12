@@ -35,6 +35,7 @@ enum {
     // Metadata server -> Chunk server
     MESSAGE_TYPE_STATE_UPDATE,
     MESSAGE_TYPE_DOWNLOAD_LOCATIONS,
+    MESSAGE_TYPE_CHUNK_LIST_REQUEST,
 
     // Chunk server -> Metadata server
     MESSAGE_TYPE_AUTH,

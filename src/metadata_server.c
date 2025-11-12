@@ -827,7 +827,13 @@ static int process_chunk_server_auth(MetadataServer *state,
     // we accept all connections that provide valid address information.
     chunk_server->auth = true;
 
-    // TODO: Request the chunk list held by this chunk server
+    ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
+
+    MessageWriter writer;
+    message_writer_init(&writer, output, MESSAGE_TYPE_CHUNK_LIST_REQUEST);
+    if (!message_writer_free(&writer))
+        return -1;
 
     return 0;
 }
@@ -835,6 +841,12 @@ static int process_chunk_server_auth(MetadataServer *state,
 static int process_chunk_server_chunk_list(MetadataServer *state,
     int conn_idx, ByteView msg)
 {
+    int chunk_server_idx = tcp_get_tag(&state->tcp, conn_idx);
+    assert(chunk_server_idx > -1);
+    assert(chunk_server_idx < MAX_CHUNK_SERVERS);
+    assert(state->chunk_servers[chunk_server_idx].used);
+    ChunkServerPeer *chunk_server = &state->chunk_servers[chunk_server_idx];
+
     // Iterate over each chunk held by this chunk
     // server and determine whether it's useless,
     // under-replicated, over-replicated, or
@@ -850,7 +862,65 @@ static int process_chunk_server_chunk_list(MetadataServer *state,
     // when the number of chunk servers is lower
     // than the replication factor.
 
-    // TODO
+    BinaryReader reader = { msg.ptr, msg.len, 0 };
+
+    // version
+    if (!binary_read(&reader, NULL, sizeof(uint16_t)))
+        return -1;
+
+    uint16_t type;
+    if (!binary_read(&reader, &type, sizeof(type)))
+        return -1;
+
+    if (type != MESSAGE_TYPE_CHUNK_LIST)
+        return -1;
+
+    // length
+    if (!binary_read(&reader, NULL, sizeof(uint32_t)))
+        return -1;
+
+    uint32_t num_hashes;
+    if (!binary_read(&reader, &num_hashes, sizeof(num_hashes)))
+        return -1;
+
+    for (uint32_t i = 0; i < num_hashes; i++) {
+
+        SHA256 hash;
+        if (!binary_read(&reader, &hash, sizeof(hash)))
+            return -1;
+
+        bool drop = false;
+        if (!file_tree_uses_hash(&state->file_tree, hash))
+            drop = true;
+        else {
+
+            int holders[MAX_CHUNK_SERVERS];
+            int num_holders = all_chunk_servers_holding_chunk(state, hash, holders, MAX_CHUNK_SERVERS);
+            assert(num_holders > -1);
+            assert(num_holders <= MAX_CHUNK_SERVERS);
+
+            assert(num_holders <= state->replication_factor);
+
+            // Adding this chunk server as a holder will cause
+            // the chunk to be over-replicated
+            if (num_holders == state->replication_factor)
+                drop = true;
+        }
+
+        HashList *list;
+        if (drop) list = &chunk_server->rem_list;
+        else      list = &chunk_server->add_list;
+
+        if (hash_list_insert(list, hash) < 0) {
+            assert(0); // TODO
+        }
+    }
+
+    if (binary_read(&reader, NULL, 1))
+        return -1;
+
+    // No need to reply here
+    return 0;
 }
 
 static int process_chunk_server_state_update_success(MetadataServer *state,
@@ -862,7 +932,7 @@ static int process_chunk_server_state_update_success(MetadataServer *state,
     // Merge add_list into old_list
     for (int i = 0; i < chunk_server->add_list.count; i++) {
         if (!hash_list_contains(&chunk_server->old_list, chunk_server->add_list.items[i]))
-            hash_list_insert(&chunk_server->old_list, chunk_server->add_list.items[i]);
+            hash_list_insert(&chunk_server->old_list, chunk_server->add_list.items[i]); // TODO: what if this fails?
     }
 
     // Clear add_list and rem_list
