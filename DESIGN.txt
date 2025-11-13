@@ -145,6 +145,7 @@ Chunk Management:
     Chunk server variables:
         cs_add_list: List of chunks added since the last update
         cs_rem_list: List of chunks marked for removal after a timeout
+        cs_lst_list: List of chunks that were lost due to errors or forceful removals of chunk files
 
     Metadata change for write:
         When clients commit a write by adding new hashes to the metadata,
@@ -172,7 +173,9 @@ Chunk Management:
            (2) Adds elements in cs_add_list that are not in ms_add_list to cs_rem_list
            (3) Removes elements that are in ms_add_list and in cs_rem_list from cs_rem_list
            (4) Elements in ms_add_list that are not held by the chunk server are added to
-               a temporary list tmp_list are sent to the metadata server
+               a temporary list tmp_list
+           (5) Elements in cs_lst_list are added to tmp_list
+           (6) tmp_list is sent to MS
         MS (1) Receives tmp_list and sends download locations to CS for those chunks
            (2) Moves elements from ms_add_list that are not in tmp_list into ms_old_list
            (3) Sets ms_add_list equal to tmp_list
