@@ -18,6 +18,7 @@ typedef struct {
 typedef struct {
     DIR *d;
     struct dirent *e;
+    bool done;
 } DirectoryScanner;
 #endif
 

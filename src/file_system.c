@@ -274,13 +274,13 @@ int file_read_all(string path, string *data)
 int directory_scanner_init(DirectoryScanner *scanner, string path)
 {
     char pattern[PATH_MAX];
-    int ret = snprintf(pattern, "%.*s\\*", path.len, path.ptr);
+    int ret = snprintf(pattern, sizeof(pattern), "%.*s\\*", path.len, path.ptr);
     if (ret < 0 || ret >= sizeof(pattern))
         return -1;
 
-    scanner->handle = sys_FindFirstFileA(path, &scanner->find_data);
+    scanner->handle = sys_FindFirstFileA(pattern, &scanner->find_data);
     if (scanner->handle == INVALID_HANDLE_VALUE) {
-        if (sys_GetLastError() == ERROR_FILE_NOT_FOUND) {
+        if (GetLastError() == ERROR_FILE_NOT_FOUND) {
             scanner->done = true;
             return 0;
         }
@@ -301,13 +301,15 @@ int directory_scanner_next(DirectoryScanner *scanner, string *name)
         BOOL ok = sys_FindNextFileA(scanner->handle, &scanner->find_data);
         if (!ok) {
             scanner->done = true;
-            if (sys_GetLastError() == ERROR_NO_MORE_FILES)
+            if (GetLastError() == ERROR_NO_MORE_FILES)
                 return 1;
             return -1;
         }
+    } else {
+        scanner->first = false;
     }
 
-    char *p = scanner->find_data.cFileName;// TODO: is this the right field?
+    char *p = scanner->find_data.cFileName;
     *name = (string) { p, strlen(p) };
     return 0;
 }
@@ -333,15 +335,16 @@ int directory_scanner_init(DirectoryScanner *scanner, string path)
         return -1;
     }
 
+    scanner->done = false;
     return 0;
 }
 
 int directory_scanner_next(DirectoryScanner *scanner, string *name)
 {
     if (scanner->done)
-        return -1;
+        return 1;
 
-    scanner->e = sys_reddir(scanner->d);
+    scanner->e = sys_readdir(scanner->d);
     if (scanner->e == NULL) {
         scanner->done = true;
         return 1;
