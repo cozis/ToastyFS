@@ -92,15 +92,20 @@ fi
 echo -e "${BLUE}========================================${NC}"
 echo
 
-# Optionally show detailed coverage for specific files
-if [ "$2" == "--detailed" ]; then
-    echo -e "${YELLOW}Detailed coverage reports available in *.gcov files${NC}"
-    echo "Use 'less <filename>.gcov' to view detailed line and branch coverage"
+# Generate HTML report if requested
+if [ "$2" == "--html" ]; then
+    echo -e "${YELLOW}Generating HTML coverage report...${NC}"
+    ./generate_coverage_html.sh
+    echo -e "${GREEN}HTML report generated in coverage_report/index.html${NC}"
+    echo "Open with: firefox coverage_report/index.html (or your preferred browser)"
+    echo
 fi
 
-# Clean up gcov files
-echo -e "${YELLOW}Cleaning up coverage files...${NC}"
-rm -f *.gcov
+# Clean up gcov files unless HTML was requested
+if [ "$2" != "--html" ] && [ "$2" != "--detailed" ]; then
+    echo -e "${YELLOW}Cleaning up coverage files...${NC}"
+    rm -f *.gcov
+fi
 
 echo
 echo -e "${GREEN}Coverage measurement complete!${NC}"

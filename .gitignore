@@ -3,3 +3,8 @@
 *.o
 *.a
 chunk_server_data_*
+# Coverage reports
+coverage_report/
+*.gcov
+*.gcda
+*.gcno
