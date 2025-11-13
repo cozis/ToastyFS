@@ -106,7 +106,7 @@ static int find_chunk_server_by_addr(MetadataServer *state, Address addr)
     for (int i = 0; i < state->num_chunk_servers; i++)
         for (int j = 0; j < state->chunk_servers[i].num_addrs; j++)
             if (addr_eql(state->chunk_servers[i].addrs[j], addr))
-                return j;
+                return i;
     return -1;
 }
 

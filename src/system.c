@@ -577,10 +577,12 @@ static int compare_processes(const void *p1, const void *p2)
     Process *b = *(Process**) p2;
     if (b->wakeup_time == INVALID_TIME) return -1;
     if (a->wakeup_time == INVALID_TIME) return +1;
-    return a->wakeup_time - b->wakeup_time;
+    if (a->wakeup_time < b->wakeup_time) return -1;
+    if (a->wakeup_time > b->wakeup_time) return +1;
+    return 0;
 }
 
-static int setup_poll_array(void *contexts, struct pollfd *polled)
+static int setup_poll_array(void **contexts, struct pollfd *polled)
 {
     int num_polled = 0;
 
