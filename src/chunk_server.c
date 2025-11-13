@@ -4,10 +4,12 @@
 #include <assert.h>
 
 #include "basic.h"
+#include "byte_queue.h"
 #include "config.h"
 #include "sha256.h"
 #include "message.h"
 #include "file_system.h"
+#include "tcp.h"
 #include "chunk_server.h"
 
 static void
@@ -563,6 +565,95 @@ process_metadata_server_download_locations(ChunkServer *state, int conn_idx, Byt
 }
 
 static int
+process_metadata_server_chunk_list_request(ChunkServer *state, int conn_idx, ByteView msg)
+{
+    BinaryReader reader = { msg.ptr, msg.len, 0 };
+
+    // version
+    if (!binary_read(&reader, NULL, sizeof(uint16_t)))
+        return -1;
+
+    // type
+    if (!binary_read(&reader, NULL, sizeof(uint16_t)))
+        return -1;
+
+    // length
+    if (!binary_read(&reader, NULL, sizeof(uint32_t)))
+        return -1;
+
+    if (binary_read(&reader, NULL, 1))
+        return 1;
+
+    ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
+
+    MessageWriter writer;
+    message_writer_init(&writer, output, MESSAGE_TYPE_CHUNK_LIST);
+
+    // Open the folder of chunks and write all hashes
+    // to the metadata server. First, write the number
+    // of hashes as a u32 integer, then that number
+    // of hashes.
+    // If the number is not known ahead of time, write
+    // a dummy value and then patch it later.
+
+    ByteQueueOffset offset = byte_queue_offset(writer.output);
+
+    uint32_t num_hashes = 0; // Dummy value
+    message_write(&writer, &num_hashes, sizeof(num_hashes));
+
+#ifdef _WIN32
+    WIN32_FIND_DATA find_data;
+    HANDLE handle = sys_FindFirstFileA(path, &find_data);
+    if (handle == INVALID_HANDLE_VALUE) {
+        if (sys_GetLastError() == ERROR_FILE_NOT_FOUND) {
+            // TODO
+        }
+        return -1;
+    }
+
+    do {
+
+        SHA256 hash;
+
+        // TODO
+
+        message_write(&writer, &hash, sizeof(hash));
+        num_hashes++;
+
+    } while (sys_FindNextFileA(handle, &find_data));
+
+    if (sys_GetLastError() != ERROR_NO_MORE_FILES)
+        return -1;
+
+    sys_FindClose(handle);
+#else
+    DIR *d = sys_opendir(path);
+    if (d == NULL)
+        return -1;
+
+    struct dirent *e;
+    while ((e = sys_readdir(d))) {
+
+        SHA256 hash;
+
+        // TODO
+
+        message_write(&writer, &hash, sizeof(hash));
+        num_hashes++;
+    }
+
+    sys_closedir(d);
+#endif
+
+    byte_queue_patch(writer.output, offset, &num_hashes, sizeof(num_hashes));
+
+    if (!message_writer_free(&writer))
+        return -1;
+    return 0;
+}
+
+static int
 process_metadata_server_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView msg)
 {
     switch (type) {
@@ -572,6 +663,9 @@ process_metadata_server_message(ChunkServer *state, int conn_idx, uint16_t type,
 
         case MESSAGE_TYPE_DOWNLOAD_LOCATIONS:
         return process_metadata_server_download_locations(state, conn_idx, msg);
+
+        case MESSAGE_TYPE_CHUNK_LIST_REQUEST:
+        return process_metadata_server_chunk_list_request(state, conn_idx, msg);
     }
 
     return -1;
