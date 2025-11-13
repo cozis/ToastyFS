@@ -31,6 +31,7 @@ typedef enum {
     DESC_SOCKET,
     DESC_LISTEN_SOCKET,
     DESC_CONNECTION_SOCKET,
+    DESC_DIRECTORY,
 } DescriptorType;
 
 typedef enum {
@@ -83,6 +84,14 @@ typedef struct {
     // ------ File ------------------
 
     NATIVE_HANDLE real_fd;
+
+    // ------ Directory -------------
+
+#ifdef _WIN32
+    HANDLE real_d;
+#else
+    DIR *real_d;
+#endif
 
     // ------ Socket ----------------
 
@@ -1236,6 +1245,14 @@ static void close_desc(Descriptor *desc)
         }
         // TODO
         break;
+
+        case DESC_DIRECTORY:
+#ifdef _WIN32
+        FindClose(desc->real_d);
+#else
+        closedir(desc->real_d);
+#endif
+        break;
     }
     desc->type = DESC_EMPTY;
     desc->generation++;
@@ -1503,6 +1520,71 @@ int mock_ioctlsocket(SOCKET fd, long cmd, u_long *argp)
     return -1;
 }
 
+HANDLE mock_FindFirstFileA(char *lpFileName, WIN32_FIND_DATAA *lpFindFileData)
+{
+    HANDLE handle = FindFirstFileA(lpFileName, lpFindFileData);
+    if (handle == INVALID_HANDLE_VALUE)
+        return INVALID_HANDLE_VALUE;
+
+    if (current_process->num_desc == MAX_DESCRIPTORS) {
+        FindClose(handle);
+        SetLastError(ERROR_TOO_MANY_OPEN_FILES);
+        return INVALID_HANDLE_VALUE;
+    }
+
+    int idx = 0;
+    while (current_process->desc[idx].type != DESC_EMPTY) {
+        idx++;
+        assert(idx < MAX_DESCRIPTORS);
+    }
+
+    Descriptor *desc = &current_process->desc[idx];
+    desc->type = DESC_DIRECTORY;
+    desc->real_d = handle;
+
+    current_process->num_desc++;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
+    return (HANDLE) idx;
+}
+
+BOOL mock_FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA *lpFindFileData)
+{
+    if (hFindFile == INVALID_HANDLE_VALUE || (int)hFindFile < 0 || (int)hFindFile >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    int idx = (int) hFindFile;
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_DIRECTORY) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+
+    // Forward to real FindNextFileA, last error is set by the real call
+    return FindNextFileA(desc->real_d, lpFindFileData);
+}
+
+BOOL mock_FindClose(HANDLE hFindFile)
+{
+    if (hFindFile == INVALID_HANDLE_VALUE || (int)hFindFile < 0 || (int)hFindFile >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    int idx = (int) hFindFile;
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_DIRECTORY) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+
+    close_desc(desc);
+    current_process->num_desc--;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
+    return TRUE;
+}
+
 #else
 
 int mock_clock_gettime(clockid_t clockid, struct timespec *tp)
@@ -1734,6 +1816,81 @@ int mock_fcntl(int fd, int cmd, ...)
 
     errno = EINVAL;
     return -1;
+}
+
+DIR *mock_opendir(char *name)
+{
+    DIR *dir = opendir(name);
+    if (dir == NULL)
+        return NULL;
+
+    if (current_process->num_desc == MAX_DESCRIPTORS) {
+        closedir(dir);
+        errno = EMFILE;  // Too many open files
+        return NULL;
+    }
+
+    int idx = 0;
+    while (current_process->desc[idx].type != DESC_EMPTY) {
+        idx++;
+        assert(idx < MAX_DESCRIPTORS);
+    }
+
+    Descriptor *desc = &current_process->desc[idx];
+    desc->type = DESC_DIRECTORY;
+    desc->real_d = dir;
+
+    current_process->num_desc++;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
+    return (DIR *)(intptr_t) idx;
+}
+
+struct dirent *mock_readdir(DIR *dirp)
+{
+    if (dirp == NULL) {
+        errno = EBADF;  // Bad file descriptor
+        return NULL;
+    }
+    int idx = (int)(intptr_t) dirp;
+
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        errno = EBADF;
+        return NULL;
+    }
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_DIRECTORY) {
+        errno = EBADF;
+        return NULL;
+    }
+
+    // Forward to real readdir, errno is set by the real call
+    return readdir(desc->real_d);
+}
+
+int mock_closedir(DIR *dirp)
+{
+    if (dirp == NULL) {
+        errno = EBADF;  // Bad file descriptor
+        return -1;
+    }
+    int idx = (int)(intptr_t) dirp;
+
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        errno = EBADF;
+        return -1;
+    }
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_DIRECTORY) {
+        errno = EBADF;
+        return -1;
+    }
+
+    close_desc(desc);
+    current_process->num_desc--;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
+    return 0;
 }
 
 #endif // !_WIN32
