@@ -27,17 +27,6 @@ typedef struct {
 } PendingDownloadList;
 
 typedef struct {
-    SHA256 hash;
-    Time   time;
-} TimedHash;
-
-typedef struct {
-    int count;
-    int capacity;
-    TimedHash *items;
-} TimedHashList;
-
-typedef struct {
 
     bool trace;
 
@@ -56,13 +45,13 @@ typedef struct {
     PendingDownloadList pending_download_list;
 
     // List of chunks added since the last update
-    HashList cs_add_list;
+    HashSet cs_add_list;
 
     // List of chunks marked for removal after a timeout
-    TimedHashList cs_rem_list;
+    TimedHashSet cs_rem_list;
 
     // List of chunks that were lost due to errors or forceful removals of chunk files
-    HashList cs_lst_list;
+    HashSet cs_lst_list;
 
 } ChunkServer;
 

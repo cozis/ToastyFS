@@ -40,6 +40,7 @@ enum {
     // Chunk server -> Metadata server
     MESSAGE_TYPE_AUTH,
     MESSAGE_TYPE_SYNC,
+    MESSAGE_TYPE_SYNC_3,
 
     // Chunk server -> Client
     MESSAGE_TYPE_CREATE_CHUNK_ERROR,

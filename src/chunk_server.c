@@ -59,77 +59,6 @@ pending_download_list_add(PendingDownloadList *list, Address addr, SHA256 hash)
     return 0;
 }
 
-static void
-removal_list_init(RemovalList *list)
-{
-    list->count = 0;
-    list->capacity = 0;
-    list->items = NULL;
-}
-
-static void
-removal_list_free(RemovalList *list)
-{
-    sys_free(list->items);
-}
-
-static int
-removal_list_find(RemovalList *list, SHA256 hash)
-{
-    for (int i = 0; i < list->count; i++)
-        if (!memcmp(&list->items[i].hash, &hash, sizeof(SHA256)))
-            return i;
-    return -1;
-}
-
-static int
-removal_list_add(RemovalList *list, SHA256 hash, Time marked_time)
-{
-    // Check if already in list
-    int idx = removal_list_find(list, hash);
-    if (idx >= 0) {
-        // Already marked, keep the original time
-        return 0;
-    }
-
-    if (list->count == list->capacity) {
-        int new_capacity;
-        if (list->capacity == 0)
-            new_capacity = 8;
-        else
-            new_capacity = 2 * list->capacity;
-
-        PendingRemoval *new_items = sys_malloc(new_capacity * sizeof(PendingRemoval));
-        if (new_items == NULL)
-            return -1;
-
-        if (list->capacity > 0) {
-            memcpy(new_items, list->items, list->count * sizeof(list->items[0]));
-            sys_free(list->items);
-        }
-
-        list->items = new_items;
-        list->capacity = new_capacity;
-    }
-
-    list->items[list->count++] = (PendingRemoval) { hash, marked_time };
-    return 0;
-}
-
-static void
-removal_list_remove(RemovalList *list, SHA256 hash)
-{
-    int idx = removal_list_find(list, hash);
-    if (idx >= 0) {
-        // Remove by shifting remaining items
-        if (idx < list->count - 1) {
-            memmove(&list->items[idx], &list->items[idx + 1],
-                    (list->count - idx - 1) * sizeof(list->items[0]));
-        }
-        list->count--;
-    }
-}
-
 static int chunk_store_init(ChunkStore *store, string path)
 {
     if (create_dir(path) && errno != EEXIST)
@@ -333,8 +262,13 @@ static int process_metadata_server_sync_2(ChunkServer *state,
     if (!binary_read(&reader, &add_count, sizeof(add_count)))
         return -1;
 
-    HashList tmp_list;
-    hash_list_init(&tmp_list);
+    Time current_time = get_current_time();
+    if (current_time == INVALID_TIME) {
+        assert(0); // TODO
+    }
+
+    HashSet tmp_list;
+    hash_set_init(&tmp_list);
 
     for (uint32_t i = 0; i < add_count; i++) {
 
@@ -345,22 +279,24 @@ static int process_metadata_server_sync_2(ChunkServer *state,
         // Elements in ms_add_list that are not held by the
         // chunk server are added to a temporary list tmp_list
 
-        if (chunk_store_exists(&state->store, hash) < 0) { // TODO: does it return a boolean?
-            if (hash_list_insert(&tmp_list, hash) < 0) {
+        if (!chunk_store_exists(&state->store, hash)) {
+            if (hash_set_insert(&tmp_list, hash) < 0) {
                 assert(0); // TODO
             }
             continue;
         }
 
-        hash_list_remove(&state->cs_rem_list, hash);
-        hash_list_remove(&state->cs_add_list, hash);
+        timed_hash_set_remove(&state->cs_rem_list, hash);
+        hash_set_remove(&state->cs_add_list, hash);
     }
 
-    if (hash_list_merge(&state->cs_rem_list, state->cs_add_list) < 0) {
-        assert(0); // TODO
+    for (int i = 0; i < state->cs_add_list.count; i++) {
+        if (timed_hash_set_insert(&state->cs_rem_list, state->cs_add_list.items[i], current_time) < 0) {
+            assert(0); // TODO
+        }
     }
 
-    hash_list_clear(&state->cs_add_list);
+    hash_set_clear(&state->cs_add_list);
 
     uint32_t rem_count;
     if (!binary_read(&reader, &rem_count, sizeof(rem_count)))
@@ -372,7 +308,7 @@ static int process_metadata_server_sync_2(ChunkServer *state,
         if (!binary_read(&reader, &hash, sizeof(hash)))
             return -1;
 
-        if (timed_hash_list_insert(&state->cs_rem_list, hash, current_time) < 0) {
+        if (timed_hash_set_insert(&state->cs_rem_list, hash, current_time) < 0) {
             assert(0); // TODO
         }
     }
@@ -389,12 +325,12 @@ static int process_metadata_server_sync_2(ChunkServer *state,
     uint32_t count = tmp_list.count + state->cs_lst_list.count; // TODO: overflow
     message_write(&writer, &count, sizeof(count));
 
-    for (uint32_t i = 0; i < tmp_list.count; i++) {
+    for (int i = 0; i < tmp_list.count; i++) {
         SHA256 hash = tmp_list.items[i];
         message_write(&writer, &hash, sizeof(hash));
     }
 
-    for (uint32_t i = 0; i < state->cs_lst_list.count; i++) {
+    for (int i = 0; i < state->cs_lst_list.count; i++) {
         SHA256 hash = state->cs_lst_list.items[i];
         message_write(&writer, &hash, sizeof(hash));
     }
@@ -839,6 +775,12 @@ static int send_sync_message(ChunkServer *state)
 {
     assert(state->disconnect_time == INVALID_TIME);
 
+    int conn_idx = tcp_index_from_tag(&state->tcp, TAG_METADATA_SERVER);
+    assert(conn_idx > -1);
+
+    ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
+
     MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_SYNC);
 
@@ -888,7 +830,9 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 
     state->downloading = false;
     pending_download_list_init(&state->pending_download_list);
-    removal_list_init(&state->removal_list);
+    hash_set_init(&state->cs_add_list);
+    hash_set_init(&state->cs_lst_list);
+    timed_hash_set_init(&state->cs_rem_list);
 
     char tmp[1<<10];
     if (addr.len >= (int) sizeof(tmp)) {
@@ -942,7 +886,9 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 int chunk_server_free(ChunkServer *state)
 {
     pending_download_list_free(&state->pending_download_list);
-    removal_list_free(&state->removal_list);
+    timed_hash_set_free(&state->cs_rem_list);
+    hash_set_free(&state->cs_lst_list);
+    hash_set_free(&state->cs_add_list);
     chunk_store_free(&state->store);
     tcp_context_free(&state->tcp);
     return 0;
@@ -1031,12 +977,12 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
     Time deadline = INVALID_TIME;
 
     // Remove items from the remove list that got too old
-    for (int i = 0; i <  state->removal_list.count; i++) {
-        PendingRemoval *removal = &state->removal_list.items[i];
-        Time removal_time = removal->marked_time + (Time) DELETION_TIMEOUT * 1000000000;
+    for (int i = 0; i < state->cs_rem_list.count; i++) {
+        TimedHash *removal = &state->cs_rem_list.items[i];
+        Time removal_time = removal->time + (Time) DELETION_TIMEOUT * 1000000000;
         if (removal_time < current_time) {
             if (chunk_store_remove(&state->store, removal->hash) == 0)
-                *removal = state->removal_list.items[--state->removal_list.count];
+                *removal = state->cs_rem_list.items[--state->cs_rem_list.count];
         } else {
             nearest_deadline(&deadline, removal_time);
         }

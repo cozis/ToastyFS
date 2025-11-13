@@ -5,15 +5,10 @@
 #include "file_tree.h"
 #include "config.h"
 #include "basic.h"
+#include "hash_set.h"
 
 #define CONNECTION_TAG_CLIENT  -2
 #define CONNECTION_TAG_UNKNOWN -3
-
-typedef struct {
-    int count;
-    int capacity;
-    SHA256 *items;
-} HashList;
 
 typedef struct {
 
@@ -24,13 +19,13 @@ typedef struct {
     Address addrs[MAX_SERVER_ADDRS];
 
     // List of chunks that are known to be held by CS
-    HashList ms_old_list;
+    HashSet ms_old_list; // TODO: rename all *_list symbols to *_set
 
     // List of chunks that should be held by CS
-    HashList ms_add_list;
+    HashSet ms_add_list;
 
     // List of chunks that may be held by CS but should removed from it
-    HashList ms_rem_list;
+    HashSet ms_rem_list;
 
     // Time when last STATE_UPDATE was sent
     Time last_sync_time;
