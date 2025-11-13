@@ -72,12 +72,32 @@ bool hash_set_contains(HashSet *set, SHA256 hash)
 
 int hash_set_merge(HashSet *dst, HashSet src)
 {
-    assert(0); // TODO
+    HashSet ret;
+    hash_set_init(&ret);
+
+    for (int i = 0; i < dst->count; i++) {
+        if (hash_set_insert(&ret, dst->items[i]) < 0)
+            goto error;
+    }
+
+    for (int i = 0; i < src.count; i++) {
+        if (hash_set_insert(&ret, src.items[i]) < 0)
+            goto error;
+    }
+
+    hash_set_free(dst);
+    *dst = ret;
+    return 0;
+
+error:
+    hash_set_free(&ret);
+    return -1;
 }
 
 void hash_set_remove_set(HashSet *dst, HashSet src)
 {
-    assert(0); // TODO
+    for (int i = 0; i < src.count; i++)
+        hash_set_remove(dst, src.items[i]);
 }
 
 void timed_hash_set_init(TimedHashSet *set)

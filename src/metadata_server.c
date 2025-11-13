@@ -1088,7 +1088,7 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
 
         Time response_timeout = chunk_server->last_response_time + (Time) RESPONSE_TIME_LIMIT * 1000000000;
         if (current_time > response_timeout) {
-            // TODO: drop the chunk server
+            assert(0); // TODO: drop the chunk server
             continue;
         }
         nearest_deadline(&next_wakeup, response_timeout);

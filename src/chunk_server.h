@@ -35,6 +35,7 @@ typedef struct {
     Address remote_addr;
 
     Time disconnect_time;
+    Time last_sync_time;
 
     TCP tcp;
 

@@ -580,6 +580,77 @@ static int compare_processes(const void *p1, const void *p2)
     return a->wakeup_time - b->wakeup_time;
 }
 
+static int setup_poll_array(void *contexts, struct pollfd *polled)
+{
+    int num_polled = 0;
+
+    for (int j = 0, k = 0; k < current_process->num_desc; j++) {
+
+        assert(j < MAX_DESCRIPTORS);
+        Descriptor *desc = &current_process->desc[j];
+        if (desc->type == DESC_EMPTY)
+            continue;
+        k++;
+
+        int revents = 0;
+        switch (desc->type) {
+
+            case DESC_FILE:
+            assert(0); // TODO: error
+            break;
+
+            case DESC_SOCKET:
+            // Ignore
+            break;
+
+            case DESC_LISTEN_SOCKET:
+            if (!accept_queue_empty(&desc->accept_queue))
+                revents |= POLLIN;
+            break;
+
+            case DESC_CONNECTION_SOCKET:
+            switch (desc->connection_state) {
+
+                case CONNECTION_DELAYED:
+                break;
+
+                case CONNECTION_QUEUED:
+                break;
+
+                case CONNECTION_ESTABLISHED:
+                {
+                    Descriptor *peer = handle_to_desc(desc->connection_peer);
+                    if (peer == NULL) {
+                        revents |= POLLIN;
+                    } else {
+                        if (!data_queue_full(&desc->output_data))
+                            revents |= POLLOUT;
+                        if (!data_queue_empty(&peer->output_data))
+                            revents |= POLLIN;
+                    }
+                }
+                break;
+
+                case CONNECTION_FAILED:
+                assert(0); // TODO
+                break;
+            }
+            break;
+        }
+
+        revents &= desc->events;
+        if (revents) {
+            polled[num_polled].fd = (SOCKET) j;
+            polled[num_polled].events = desc->events;
+            polled[num_polled].revents = revents;
+            contexts[num_polled] = desc->context;
+            num_polled++;
+        }
+    }
+
+    return num_polled;
+}
+
 void update_simulation(void)
 {
     // Order processes by wakeup time. Those with no
@@ -596,76 +667,13 @@ void update_simulation(void)
 
         void *contexts[MAX_CONNS+1];
         struct pollfd polled[MAX_CONNS+1];
-        int num_polled = 0;
-
-        for (int j = 0, k = 0; k < current_process->num_desc; j++) {
-
-            assert(j < MAX_DESCRIPTORS);
-            Descriptor *desc = &current_process->desc[j];
-            if (desc->type == DESC_EMPTY)
-                continue;
-            k++;
-
-            int revents = 0;
-            switch (desc->type) {
-
-                case DESC_FILE:
-                assert(0); // TODO: error
-                break;
-
-                case DESC_SOCKET:
-                // Ignore
-                break;
-
-                case DESC_LISTEN_SOCKET:
-                if (!accept_queue_empty(&desc->accept_queue))
-                    revents |= POLLIN;
-                break;
-
-                case DESC_CONNECTION_SOCKET:
-                switch (desc->connection_state) {
-
-                    case CONNECTION_DELAYED:
-                    break;
-
-                    case CONNECTION_QUEUED:
-                    break;
-
-                    case CONNECTION_ESTABLISHED:
-                    {
-                        Descriptor *peer = handle_to_desc(desc->connection_peer);
-                        if (peer == NULL) {
-                            revents |= POLLIN;
-                        } else {
-                            if (!data_queue_full(&desc->output_data))
-                                revents |= POLLOUT;
-                            if (!data_queue_empty(&peer->output_data))
-                                revents |= POLLIN;
-                        }
-                    }
-                    break;
-
-                    case CONNECTION_FAILED:
-                    assert(0); // TODO
-                    break;
-                }
-                break;
-            }
-
-            revents &= desc->events;
-            if (revents) {
-                polled[num_polled].fd = (SOCKET) j;
-                polled[num_polled].events = desc->events;
-                polled[num_polled].revents = revents;
-                contexts[num_polled] = desc->context;
-                num_polled++;
-            }
-        }
+        int num_polled = setup_poll_array(contexts, polled);
 
         if (num_polled == 0) {
 
             Time wakeup_time = current_process->wakeup_time;
-            if (wakeup_time == INVALID_TIME) continue;
+            if (wakeup_time == INVALID_TIME)
+                continue;
 
             assert(current_time <= wakeup_time);
             current_time = wakeup_time;
@@ -703,13 +711,13 @@ void update_simulation(void)
         }
 
         if (num_polled < 0) {
-            // TODO
+            assert(0); // TODO
         }
 
         if (timeout < 0) {
             current_process->wakeup_time = INVALID_TIME;
         } else {
-            current_process->wakeup_time = current_time + timeout * 1000000;
+            current_process->wakeup_time = current_time + (Time) timeout * 1000000;
         }
 
         process_poll_array(current_process, contexts, polled, num_polled);

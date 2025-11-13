@@ -812,6 +812,8 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     if (remote_port <= 0 || remote_port >= 1<<16)
         return -1;
 
+    Time current_time = get_current_time();
+
     state->trace = trace;
 
     tcp_context_init(&state->tcp);
@@ -865,6 +867,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     }
     state->remote_addr.port = remote_port;
     state->disconnect_time = INVALID_TIME;
+    state->last_sync_time = current_time;
 
     start_connecting_to_metadata_server(state);
 
@@ -988,11 +991,15 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         }
     }
 
-    // TODO: periodically send a SYNC message
-    bool should_sync = false;
-    if (should_sync) {
-        if (send_sync_message(state) < 0) {
-            assert(0); // TODO
+    if (state->disconnect_time == INVALID_TIME) {
+        Time next_sync_time = state->last_sync_time + (Time) SYNC_INTERVAL * 1000000000;
+        if (current_time >= next_sync_time) {
+            if (send_sync_message(state) < 0) {
+                assert(0); // TODO
+            }
+            state->last_sync_time = current_time;
+        } else {
+            nearest_deadline(&deadline, next_sync_time);
         }
     }
 
