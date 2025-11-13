@@ -95,7 +95,9 @@ echo
 # Generate HTML report if requested
 if [ "$2" == "--html" ]; then
     echo -e "${YELLOW}Generating HTML coverage report...${NC}"
-    ./generate_coverage_html.sh
+    # Get the directory where this script is located
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    "$SCRIPT_DIR/generate_coverage_html.sh"
     echo -e "${GREEN}HTML report generated in coverage_report/index.html${NC}"
     echo "Open with: firefox coverage_report/index.html (or your preferred browser)"
     echo

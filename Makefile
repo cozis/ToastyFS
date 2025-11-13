@@ -15,11 +15,17 @@ CFILES = $(shell find src -name '*.c')
 HFILES = $(shell find src -name '*.h')
 OFILES = $(CFILES:.c=.o)
 
-.PHONY: all clean coverage
+.PHONY: all clean coverage coverage-report coverage-html
 
 all: mousefs$(EXT) mousefs_random_test$(EXT) example_client$(EXT) libmousefs.a
 
 coverage: mousefs_random_test_coverage$(EXT)
+
+coverage-report:
+	@./scripts/measure_coverage.sh 5
+
+coverage-html:
+	@./scripts/measure_coverage.sh 5 --html
 
 mousefs$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_SERVER
