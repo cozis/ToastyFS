@@ -3,6 +3,10 @@
 
 #include "basic.h"
 
+#ifndef _WIN32
+#include <dirent.h>
+#endif
+
 typedef struct {
     uint64_t data;
 } Handle;

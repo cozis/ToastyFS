@@ -604,7 +604,8 @@ process_metadata_server_chunk_list_request(ChunkServer *state, int conn_idx, Byt
     message_write(&writer, &num_hashes, sizeof(num_hashes));
 
     DirectoryScanner scanner;
-    if (directory_scanner_init(&scanner, xxx) < 0)
+    string chunks_dir = (string) { state->store.path, strlen(state->store.path) };
+    if (directory_scanner_init(&scanner, chunks_dir) < 0)
         return -1;
 
     for (;;) {
