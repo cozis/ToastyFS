@@ -223,6 +223,7 @@ static bool chunk_store_exists(ChunkStore *store, SHA256 hash)
     string path = hash2path(store, hash, buf);
 
     // Try to open the file to check if it exists
+    // TODO: this isn't right
     Handle fd;
     if (file_open(path, &fd) == 0) {
         file_close(fd);
@@ -602,49 +603,30 @@ process_metadata_server_chunk_list_request(ChunkServer *state, int conn_idx, Byt
     uint32_t num_hashes = 0; // Dummy value
     message_write(&writer, &num_hashes, sizeof(num_hashes));
 
-#ifdef _WIN32
-    WIN32_FIND_DATA find_data;
-    HANDLE handle = sys_FindFirstFileA(path, &find_data);
-    if (handle == INVALID_HANDLE_VALUE) {
-        if (sys_GetLastError() == ERROR_FILE_NOT_FOUND) {
-            // TODO
+    DirectoryScanner scanner;
+    if (directory_scanner_init(&scanner, xxx) < 0)
+        return -1;
+
+    for (;;) {
+
+        string name;
+        int ret = directory_scanner_next(&scanner, &name);
+
+        if (ret == 1)
+            break;
+
+        if (ret < 0) {
+            directory_scanner_free(&scanner);
+            return -1;
         }
-        return -1;
-    }
-
-    do {
 
         SHA256 hash;
-
-        // TODO
-
-        message_write(&writer, &hash, sizeof(hash));
-        num_hashes++;
-
-    } while (sys_FindNextFileA(handle, &find_data));
-
-    if (sys_GetLastError() != ERROR_NO_MORE_FILES)
-        return -1;
-
-    sys_FindClose(handle);
-#else
-    DIR *d = sys_opendir(path);
-    if (d == NULL)
-        return -1;
-
-    struct dirent *e;
-    while ((e = sys_readdir(d))) {
-
-        SHA256 hash;
-
-        // TODO
+        // TODO: file name to hash
 
         message_write(&writer, &hash, sizeof(hash));
         num_hashes++;
     }
-
-    sys_closedir(d);
-#endif
+    directory_scanner_free(&scanner);
 
     byte_queue_patch(writer.output, offset, &num_hashes, sizeof(num_hashes));
 
