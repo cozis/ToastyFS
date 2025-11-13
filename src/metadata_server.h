@@ -23,17 +23,14 @@ typedef struct {
     int num_addrs;
     Address addrs[MAX_SERVER_ADDRS];
 
-    // Chunks held by the chunk server during
-    // the last update
-    HashList old_list;
+    // List of chunks that are known to be held by CS
+    HashList ms_old_list;
 
-    // Chunks added to the chunk server since
-    // the last update
-    HashList add_list;
+    // List of chunks that should be held by CS
+    HashList ms_add_list;
 
-    // Chunks removed from the chunk server
-    // since the last update
-    HashList rem_list;
+    // List of chunks that may be held by CS but should removed from it
+    HashList ms_rem_list;
 
     // Time when last STATE_UPDATE was sent
     Time last_sync_time;

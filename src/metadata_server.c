@@ -1,3 +1,8 @@
+#include "basic.h"
+#include "byte_queue.h"
+#include "config.h"
+#include "file_tree.h"
+#include "tcp.h"
 #define _GNU_SOURCE
 
 #include <string.h>
@@ -59,18 +64,18 @@ static void chunk_server_peer_init(ChunkServerPeer *chunk_server, Time current_t
     chunk_server->used = true;
     chunk_server->auth = false;
     chunk_server->num_addrs = 0;
-    hash_list_init(&chunk_server->old_list);
-    hash_list_init(&chunk_server->add_list);
-    hash_list_init(&chunk_server->rem_list);
+    hash_list_init(&chunk_server->ms_old_list);
+    hash_list_init(&chunk_server->ms_add_list);
+    hash_list_init(&chunk_server->ms_rem_list);
     chunk_server->last_sync_time = current_time;
     chunk_server->last_response_time = current_time;
 }
 
 static void chunk_server_peer_free(ChunkServerPeer *chunk_server)
 {
-    hash_list_free(&chunk_server->rem_list);
-    hash_list_free(&chunk_server->add_list);
-    hash_list_free(&chunk_server->old_list);
+    hash_list_free(&chunk_server->ms_rem_list);
+    hash_list_free(&chunk_server->ms_add_list);
+    hash_list_free(&chunk_server->ms_old_list);
     chunk_server->used = false;
 }
 
@@ -284,6 +289,7 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
     if (binary_read(&reader, NULL, 1))
         return -1;
 
+    // TODO: return unused hashes and add them to the ms_rem_list of holder chunk servers
     int ret = file_tree_delete_entity(&state->file_tree, path);
 
     if (ret < 0) {
@@ -671,7 +677,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
                 int k = find_chunk_server_by_addr(state, results[i].addrs[j]);
                 if (k == -1) return -1;
 
-                if (hash_list_insert(&state->chunk_servers[k].add_list, new_hashes[i]) < 0)
+                if (hash_list_insert(&state->chunk_servers[k].ms_add_list, new_hashes[i]) < 0)
                     return -1;
             }
         }
@@ -684,7 +690,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
             // Add to rem_list for all chunk servers that have this chunk
             for (int j = 0; j < state->num_chunk_servers; j++) {
                 if (chunk_server_peer_contains(&state->chunk_servers[j], removed_hash)) {
-                    if (!hash_list_insert(&state->chunk_servers[j].rem_list, removed_hash))
+                    if (!hash_list_insert(&state->chunk_servers[j].ms_rem_list, removed_hash))
                         return -1;
                 }
             }
@@ -724,36 +730,6 @@ chunk_server_from_conn(MetadataServer *state, int conn_idx)
     assert(tag >= 0);
 
     return &state->chunk_servers[tag];
-}
-
-static int send_state_update(MetadataServer *state, int chunk_server_idx)
-{
-    ChunkServerPeer *chunk_server = &state->chunk_servers[chunk_server_idx];
-
-    int conn_idx = tcp_index_from_tag(&state->tcp, chunk_server_idx);
-    assert(conn_idx > -1);
-
-    ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
-    assert(output);
-
-    MessageWriter writer;
-    message_writer_init(&writer, output, MESSAGE_TYPE_STATE_UPDATE);
-
-    uint32_t add_count = chunk_server->add_list.count;
-    uint32_t rem_count = chunk_server->rem_list.count;
-    message_write(&writer, &add_count, sizeof(add_count));
-    message_write(&writer, &rem_count, sizeof(rem_count));
-
-    for (uint32_t i = 0; i < add_count; i++)
-        message_write(&writer, &chunk_server->add_list.items[i], sizeof(SHA256));
-
-    for (uint32_t i = 0; i < rem_count; i++)
-        message_write(&writer, &chunk_server->rem_list.items[i], sizeof(SHA256));
-
-    if (!message_writer_free(&writer))
-        return -1;
-
-    return 0;
 }
 
 static int process_chunk_server_auth(MetadataServer *state,
@@ -838,172 +814,130 @@ static int process_chunk_server_auth(MetadataServer *state,
     return 0;
 }
 
-static int process_chunk_server_chunk_list(MetadataServer *state,
+static int process_chunk_server_sync(MetadataServer *state,
     int conn_idx, ByteView msg)
 {
     int chunk_server_idx = tcp_get_tag(&state->tcp, conn_idx);
     assert(chunk_server_idx > -1);
-    assert(chunk_server_idx < MAX_CHUNK_SERVERS);
-    assert(state->chunk_servers[chunk_server_idx].used);
-    ChunkServerPeer *chunk_server = &state->chunk_servers[chunk_server_idx];
+    assert(chunk_server_idx <= MAX_CHUNK_SERVERS);
 
-    // Iterate over each chunk held by this chunk
-    // server and determine whether it's useless,
-    // under-replicated, over-replicated, or
-    // properly replicated.
-    // Chunks that are useless or over-replicated
-    // are added to the remove list of this chunk
-    // server (note that any given chunk can only
-    // be over-replicated by 1, so removing it from
-    // this chunk server will fix the issue). If
-    // the chunk is under-replicated or properly
-    // replicated, do nothing. Note that it's only
-    // possible for a chunk to be under-replicated
-    // when the number of chunk servers is lower
-    // than the replication factor.
+    ChunkServerPeer *chunk_server = &state->chunk_servers[chunk_server_idx];
+    assert(chunk_server->used);
 
     BinaryReader reader = { msg.ptr, msg.len, 0 };
 
-    // version
-    if (!binary_read(&reader, NULL, sizeof(uint16_t)))
+    if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
 
-    uint16_t type;
-    if (!binary_read(&reader, &type, sizeof(type)))
+    uint32_t count;
+    if (!binary_read(&reader, &count, sizeof(count)))
         return -1;
 
-    if (type != MESSAGE_TYPE_CHUNK_LIST)
-        return -1;
-
-    // length
-    if (!binary_read(&reader, NULL, sizeof(uint32_t)))
-        return -1;
-
-    uint32_t num_hashes;
-    if (!binary_read(&reader, &num_hashes, sizeof(num_hashes)))
-        return -1;
-
-    for (uint32_t i = 0; i < num_hashes; i++) {
+    for (uint32_t i = 0; i < count; i++) {
 
         SHA256 hash;
         if (!binary_read(&reader, &hash, sizeof(hash)))
             return -1;
 
-        bool drop = false;
+        // If the chunk is not referenced by the file tree, do
+        // nothing.
+
         if (!file_tree_uses_hash(&state->file_tree, hash))
-            drop = true;
-        else {
+            continue;
 
-            int holders[MAX_CHUNK_SERVERS];
-            int num_holders = all_chunk_servers_holding_chunk(state, hash, holders, MAX_CHUNK_SERVERS);
-            assert(num_holders > -1);
-            assert(num_holders <= MAX_CHUNK_SERVERS);
+        // If the chunk is properly replicated or under-replicated,
+        // add it to the ms_add_list.
 
-            assert(num_holders <= state->replication_factor);
+        int holders[MAX_CHUNK_SERVERS];
+        int num_holders = all_chunk_servers_holding_chunk(state, hash, holders, MAX_CHUNK_SERVERS);
+        assert(num_holders > -1);
+        assert(num_holders <= MAX_CHUNK_SERVERS);
 
-            // Adding this chunk server as a holder will cause
-            // the chunk to be over-replicated
-            if (num_holders == state->replication_factor)
-                drop = true;
+        if (num_holders <= state->replication_factor) {
+            if (hash_list_insert(&chunk_server->ms_add_list, hash) < 0) {
+                assert(0); // TODO
+            }
+            continue;
         }
 
-        HashList *list;
-        if (drop) list = &chunk_server->rem_list;
-        else      list = &chunk_server->add_list;
+        // If the chunk is over-replicated, either don't add
+        // it to the ms_add_list or add it to the ms_rem_list
+        // of some other holder.
 
-        if (hash_list_insert(list, hash) < 0) {
+        if (hash_list_insert(xxx, hash) < 0) {
             assert(0); // TODO
         }
     }
 
-    if (binary_read(&reader, NULL, 1))
+    if (binary_read(&reader, NULL, 1)) // TODO: this should probably be an assertion
         return -1;
 
-    // No need to reply here
-    return 0;
-}
-
-static int process_chunk_server_state_update_success(MetadataServer *state,
-    int conn_idx, ByteView msg)
-{
-    (void) msg; // Success message has no body
-    ChunkServerPeer *chunk_server = chunk_server_from_conn(state, conn_idx);
-
-    // Merge add_list into old_list
-    for (int i = 0; i < chunk_server->add_list.count; i++) {
-        if (!hash_list_contains(&chunk_server->old_list, chunk_server->add_list.items[i]))
-            hash_list_insert(&chunk_server->old_list, chunk_server->add_list.items[i]); // TODO: what if this fails?
-    }
-
-    // Clear add_list and rem_list
-    chunk_server->add_list.count = 0;
-    chunk_server->rem_list.count = 0;
-
-    if (state->trace) {
-        int tag = tcp_get_tag(&state->tcp, conn_idx);
-        printf("Received STATE_UPDATE_SUCCESS from chunk server %d\n", tag);
-    }
-
-    return 0;
-}
-
-static int process_chunk_server_state_update_error(MetadataServer *state,
-    int conn_idx, ByteView msg)
-{
-    BinaryReader reader = { msg.ptr, msg.len, 0 };
-
-    // Read header
-    if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
-        return -1;
-
-    // Read error message
-    uint16_t error_len;
-    if (!binary_read(&reader, &error_len, sizeof(error_len)))
-        return -1;
-
-    char error_msg[256];
-    int read_len = error_len < sizeof(error_msg) - 1 ? error_len : sizeof(error_msg) - 1;
-    if (!binary_read(&reader, error_msg, read_len))
-        return -1;
-    error_msg[read_len] = '\0';
-
-    // Skip remaining error message if it was too long
-    if (error_len > read_len)
-        binary_read(&reader, NULL, error_len - read_len);
-
-    // Read missing chunks
-    uint32_t num_missing;
-    if (!binary_read(&reader, &num_missing, sizeof(num_missing)))
-        return -1;
-
-    SHA256 *missing_chunks = sys_malloc(num_missing * sizeof(SHA256));
-    if (missing_chunks == NULL)
-        return -1;
-
-    for (uint32_t i = 0; i < num_missing; i++) {
-        if (!binary_read(&reader, &missing_chunks[i], sizeof(SHA256))) {
-            sys_free(missing_chunks);
-            return -1;
-        }
-    }
-
-    if (state->trace) {
-        int tag = tcp_get_tag(&state->tcp, conn_idx);
-        printf("Received STATE_UPDATE_ERROR from chunk server %d: %s (missing %u chunks)\n",
-               tag, error_msg, num_missing);
-    }
+    // Respond with ms_add_list and ms_rem_list
 
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
     assert(output);
 
     MessageWriter writer;
-    message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_LOCATIONS);
+    message_writer_init(&writer, output, MESSAGE_TYPE_SYNC_2);
 
-    message_write(&writer, &num_missing, sizeof(num_missing));
+    uint32_t add_count = chunk_server->ms_add_list.count; // TODO: check implicit casts
+    message_write(&writer, &add_count, sizeof(add_count));
 
-    for (uint32_t i = 0; i < num_missing; i++) {
+    for (uint32_t i = 0; i < add_count; i++) {
+        SHA256 hash = chunk_server->ms_add_list.items[i];
+        message_write(&writer, &hash, sizeof(hash));
+    }
 
-        SHA256 hash = missing_chunks[i];
+    uint32_t rem_count = chunk_server->ms_rem_list.count; // TODO: check implicit casts
+    message_write(&writer, &rem_count, sizeof(rem_count));
+
+    for (uint32_t i = 0; i < rem_count; i++) {
+        SHA256 hash = chunk_server->ms_rem_list.items[i];
+        message_write(&writer, &hash, sizeof(hash));
+    }
+
+    if (!message_writer_free(&writer))
+        return -1;
+    return 0;
+}
+
+static int process_chunk_server_sync_3(MetadataServer *state,
+    int conn_idx, ByteView msg)
+{
+    int chunk_server_idx = tcp_get_tag(&state->tcp, conn_idx);
+    assert(chunk_server_idx > -1);
+    assert(chunk_server_idx <= MAX_CHUNK_SERVERS);
+
+    ChunkServerPeer *chunk_server = &state->chunk_servers[chunk_server_idx];
+    assert(chunk_server->used);
+
+    BinaryReader reader = { msg.ptr, msg.len, 0 };
+
+    if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
+        return -1;
+
+    uint32_t count;
+    if (!binary_read(&reader, &count, sizeof(count)))
+        return -1;
+
+    ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
+
+    MessageWriter writer;
+    message_writer_init(&writer, output, MESSAGE_TYPE_SYNC_4);
+
+    HashList tmp_list;
+    hash_list_init(&tmp_list);
+
+    for (uint32_t i = 0; i < count; i++) {
+
+        SHA256 hash;
+        if (!binary_read(&reader, &hash, sizeof(hash)))
+            return -1;
+
+        if (hash_list_insert(&tmp_list, hash) < 0) {
+            assert(0); // TODO
+        }
 
         int holders[MAX_CHUNK_SERVERS];
         int num_holders = all_chunk_servers_holding_chunk(state, hash, holders, MAX_CHUNK_SERVERS);
@@ -1013,17 +947,26 @@ static int process_chunk_server_state_update_error(MetadataServer *state,
         uint32_t tmp = num_holders;
         message_write(&writer, &tmp, sizeof(tmp));
 
-        for (int j = 0; j < num_holders; j++)
-            message_write_server_addr(&writer, &state->chunk_servers[holders[j]]);
-
-        message_write(&writer, &hash, sizeof(hash));
+        for (int i = 0; i < num_holders; i++)
+            message_write_server_addr(&writer, xxx);
     }
 
-    sys_free(missing_chunks);
+    if (binary_read(&reader, NULL, 1)) // TODO: this should probably be an assertion
+        return -1;
+
+    if (hash_list_merge(&state->ms_old_list, state->ms_add_list) < 0) {
+        assert(0); // TODO
+    }
+
+    if (hash_list_remove_set(&state->ms_old_list, tmp_list) < 0) {
+        assert(0); // TODO
+    }
+
+    hash_list_free(&state->ms_add_list);
+    state->ms_add_list = tmp_list;
 
     if (!message_writer_free(&writer))
         return -1;
-
     return 0;
 }
 
@@ -1035,14 +978,11 @@ process_chunk_server_message(MetadataServer *state,
         case MESSAGE_TYPE_AUTH:
         return process_chunk_server_auth(state, conn_idx, msg);
 
-        case MESSAGE_TYPE_CHUNK_LIST:
-        return process_chunk_server_chunk_list(state, conn_idx, msg);
+        case MESSAGE_TYPE_SYNC:
+        return process_chunk_server_sync(state, conn_idx, msg);
 
-        case MESSAGE_TYPE_STATE_UPDATE_SUCCESS:
-        return process_chunk_server_state_update_success(state, conn_idx, msg);
-
-        case MESSAGE_TYPE_STATE_UPDATE_ERROR:
-        return process_chunk_server_state_update_error(state, conn_idx, msg);
+        case MESSAGE_TYPE_SYNC_3:
+        return process_chunk_server_sync_3(state, conn_idx, msg);
     }
     return -1;
 }
@@ -1051,8 +991,7 @@ static bool is_chunk_server_message_type(uint16_t type)
 {
     switch (type) {
         case MESSAGE_TYPE_AUTH:
-        case MESSAGE_TYPE_STATE_UPDATE_ERROR:
-        case MESSAGE_TYPE_STATE_UPDATE_SUCCESS:
+        case MESSAGE_TYPE_SYNC:
         return true;
 
         default:
@@ -1115,7 +1054,6 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
     Event events[MAX_CONNS+1];
     int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
 
-    // Implement periodic health checks: send STATE_UPDATE to chunk servers
     Time current_time = get_current_time();
     if (current_time == INVALID_TIME) {
         assert(0); // TODO
@@ -1213,19 +1151,6 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
             continue;
         }
         nearest_deadline(&next_wakeup, response_timeout);
-
-        if (chunk_server->auth && chunk_server->last_sync_done) {
-            Time sync_timeout = chunk_server->last_sync_time + (Time) SYNC_INTERVAL * 1000000000;
-            if (current_time > sync_timeout) {
-                if (send_state_update(state, i) < 0) {
-                    assert(0); // TODO
-                }
-                chunk_server->last_sync_time = current_time;
-                chunk_server->last_sync_done = false;
-                continue;
-            }
-            nearest_deadline(&next_wakeup, sync_timeout);
-        }
     }
 
     *timeout = deadline_to_timeout(next_wakeup, current_time);

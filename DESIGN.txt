@@ -170,14 +170,14 @@ Chunk Management:
         MS may add a subset of cs_add_list to ms_add_list based on the chunk replication and distribution policy
         MS sends ms_add_list and ms_rem_list to CS
         CS (1) Adds all elements from ms_rem_list to cs_rem_list
-           (2) Adds elements in cs_add_list that are not in ms_add_list to cs_rem_list
-           (3) Removes elements that are in ms_add_list and in cs_rem_list from cs_rem_list
-           (4) Elements in ms_add_list that are not held by the chunk server are added to
+           (2) Elements in ms_add_list that are not held by the chunk server are added to
                a temporary list tmp_list
-           (5) Elements in cs_lst_list are added to tmp_list
+           (3) Removes elements in ms_add_list from cs_add_list and cs_rem_list, then merges cs_add_list into cs_rem_list and clears cs_add_list.
+           (4) Elements in cs_lst_list are added to tmp_list, then cs_lst_list is cleared.
            (6) tmp_list is sent to MS
+           (7) cs_add_list is cleared
         MS (1) Receives tmp_list and sends download locations to CS for those chunks
-           (2) Moves elements from ms_add_list that are not in tmp_list into ms_old_list
+           (2) Merges ms_add_list into ms_old_list, then removes all items in tmp_list from ms_old_list
            (3) Sets ms_add_list equal to tmp_list
 
     Chunk replication and distribution policy:
@@ -190,6 +190,22 @@ Chunk Management:
             - The chunk is properly replicated with the new copy
             - The chunk is over-replicated with the new copy
 
-        If the chunk is useless, it is added to the cs_rem_list. If the chunk is
-        over-replicated, it is added to the cs_rem_list of this chunk or any other
-        holder of that chunk. Otherwise, add the chunk to the cs_add_list.
+        If the chunk is not referenced by the file tree, do nothing.
+
+        If the chunk is properly replicated or under-replicated, add it to the ms_add_list.
+
+        If the chunk is over-replicated, either don't add it to the ms_add_list or add it to the ms_rem_list of some other holder.
+
+    TODO: The way chunk servers tell about the chunks they are holding
+          recently changed. Now instead of sending a full chunk list when
+          connecting, they send batches of chunks to the metadata server
+          during state updates. It also changed that now chunk servers
+          initiate updates.
+
+    When a chunk server connects (and authenticates)
+    it sends alongside the auth message the hash of
+    the hash list of all chunks. The metadata server
+    then replies with a message saying whether it
+    already cached that chunk list or not. If it didn't, the chunk server sends the entire list
+    in chunks during state updates, with an increased
+    update frequency.
