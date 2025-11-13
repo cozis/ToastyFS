@@ -137,62 +137,56 @@ Chunk Management:
     servers need to forget some copies. If they are under-replicated,
     some chunk servers need to copy chunks from elsewhere.
 
-    The metadata server holds an authoritative list of hashes that each
-    chunk server needs to hold. These lists are enforced periodically and
-    automatically during the state updates, therefore the metadata server
-    only needs to reorganize the chunks in its in-memory lists. The changes
-    will propagate over the chunk servers in time. The metadata server's
-    in-memory representation is the ideal state the system is converging
-    to, which means every chunk if always replicated correctly. Given this
-    setup, a chunk can only be under-replicated when there are not enough
-    chunk servers.
+    Metadata server variables for a chunk server:
+        ms_old_list: List of chunks that are known to be held by CS
+        ms_add_list: List of chunks that should be held by CS
+        ms_rem_list: List of chunks that may be held by CS but should removed from it
 
-    Case 1: The first chunk server connects with no chunks
-        CS connects
-        MS accepts
-        CS sends auth message
-        MS validates auth
-        MS requests list of chunks
-        CS sends the chunk list
-        MS notices it's empty
+    Chunk server variables:
+        cs_add_list: List of chunks added since the last update
+        cs_rem_list: List of chunks marked for removal after a timeout
 
-    Case 2: The first chunk server connects with some chunks
-        CS connects
-        MS accepts
-        CS sends auth message
-        MS valudates auth
-        MS requests list of chunks
-        CS sends the chunk list
-        MS iterates over each chunk. For each chunk it determines
-           whether it's useless, under-replicated, over-replicated,
-           or properly replicated.
-        MS adds all useless or over-replicated chunks to the rem_list
-           of the newly connected chunk server. Note that it's only
-           possible for a chunk to be over-replicated by 1, so removing
-           it from the new chunk server will fix the issue.
-        MS If a chunk is under-replicated, it means that there are not
-           enough chunk servers to hold all the replicas, so there is
-           nothing to be done.
+    Metadata change for write:
+        When clients commit a write by adding new hashes to the metadata,
+        MS adds those hashes to the ms_add_list for the CS where the client
+        uploaded the chunks. If a hash was overwritten and became useless,
+        that hash is added to the ms_rem_list for all CS holding it.
 
-    Case 3: Chunk server with some chunks disconnects
-        TODO
+    Metadata change for delete:
+        All hashes that are no longer reachable by the file tree are added
+        to the ms_rem_list of their holders
 
-    Event 3: A chunk server disconnects
-        A number of chunks are lost, but there is a chance the server will come back
-        in a short while (10s or so).
-            => Wait for about 10s. If the chunk server doesn't come back, distribute
-               its hashes to other chunk servers
+    Chunk upload:
+        When a chunk is uploaded to a chunk server, its hash is added to
+        the cs_add_list.
 
-    Event 4: A write operation on metadata occurs (overwriting old chunks)
-        Assuming the write overwrites some chunks:
-            - The chunks may still be referenced by some other file or section of the same file
-                => Do nothing
-            - The chunks are not used anymore
-                => Find all chunk servers holding the chunk and mark them for removal
+    Periodically on the chunk server:
+        Elements in the cs_rem_list have a 30 minute timeout after which they are deleted
+        permanently.
 
-    Event 5: A delete operation on metadata occurs
-        Do the same as event 4
+    Periodically:
+        CS sends cs_add_list to MS
+        MS may add a subset of cs_add_list to ms_add_list based on the chunk replication and distribution policy
+        MS sends ms_add_list and ms_rem_list to CS
+        CS (1) Adds all elements from ms_rem_list to cs_rem_list
+           (2) Adds elements in cs_add_list that are not in ms_add_list to cs_rem_list
+           (3) Removes elements that are in ms_add_list and in cs_rem_list from cs_rem_list
+           (4) Elements in ms_add_list that are not held by the chunk server are added to
+               a temporary list tmp_list are sent to the metadata server
+        MS (1) Receives tmp_list and sends download locations to CS for those chunks
+           (2) Moves elements from ms_add_list that are not in tmp_list into ms_old_list
+           (3) Sets ms_add_list equal to tmp_list
 
-    Event 6: A chunk is corrupted or removed forcefully from the chunk server
-        The chunk server adds the chunk name to a list of lost chunks and
-        sends them to the metadata server at the next periodic update.
+    Chunk replication and distribution policy:
+        During an update, when CS reports a new chunk to MS, MS has to decide whether
+        to allow the CS to keep it or not.
+
+        There are 4 cases:
+            - The chunk is useless (not referenced by any file)
+            - The chunk is under-replicated even counting the new copy
+            - The chunk is properly replicated with the new copy
+            - The chunk is over-replicated with the new copy
+
+        If the chunk is useless, it is added to the cs_rem_list. If the chunk is
+        over-replicated, it is added to the cs_rem_list of this chunk or any other
+        holder of that chunk. Otherwise, add the chunk to the cs_add_list.

@@ -8,3 +8,9 @@
 - find a way to remove over-replicated chunks and formalize the chunk management policy
 - add logging of:
     - when chunk servers connect and disconnect to the metadata server
+- Should list scenarios that need testing, like those where chunks would be dropped
+
+Roadmap:
+    [ ] Complete all endpoints
+    [ ] Add fault injections to the simulation
+    [ ] Implement WAL
