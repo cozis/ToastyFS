@@ -13,14 +13,6 @@ cat > "$OUTPUT_DIR/index.html" <<'HTMLHEADER'
 <head>
     <meta charset="UTF-8">
     <title>Branch Coverage Report</title>
-    <style>
-        body { font-family: sans-serif; margin: 20px; }
-        table { border-collapse: collapse; width: 100%; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f0f0f0; }
-        .branch-taken { background-color: #d4edda; }
-        .branch-not-taken { background-color: #f8d7da; }
-    </style>
 </head>
 <body>
     <h1>Branch Coverage Report</h1>
@@ -90,19 +82,9 @@ HTMLSUMMARY
 <head>
     <meta charset="UTF-8">
     <title>Coverage: $filename</title>
-    <style>
-        body { font-family: sans-serif; margin: 20px; }
-        pre { background-color: #f5f5f5; padding: 10px; overflow-x: auto; font-family: monospace; font-size: 12px; }
-        .line { display: block; }
-        .line-number { color: #666; display: inline-block; width: 50px; text-align: right; margin-right: 10px; }
-        .exec-count { color: #666; display: inline-block; width: 50px; text-align: right; margin-right: 10px; }
-        .branch-taken { background-color: #d4edda; }
-        .branch-not-taken { background-color: #f8d7da; }
-        .branch-info { color: #666; font-size: 10px; }
-    </style>
 </head>
 <body>
-    <p><a href="index.html">← Back to Summary</a></p>
+    <p><a href="index.html">Back to Summary</a></p>
     <h1>Coverage: $filename</h1>
     <p><strong>Branches Taken:</strong> $taken / $branches ($percentage%)</p>
     <pre>
@@ -124,34 +106,22 @@ FILEHEADER
                         # Get the actual source line
                         line_content = substr($0, index($0, $3))
 
-                        # Determine background color based on branch coverage
-                        bg_class = ""
-                        if (branch_info != "") {
-                            if (branch_info ~ /taken 0/) {
-                                bg_class = "branch-not-taken"
-                            } else if (branch_info ~ /never executed/) {
-                                bg_class = "branch-not-taken"
-                            } else {
-                                bg_class = "branch-taken"
-                            }
-                        }
-
                         # Format execution count
                         if (exec_count == "-") {
                             exec_str = "-"
                         } else if (exec_count == "#####") {
                             exec_str = "0"
-                            if (bg_class == "") bg_class = "branch-not-taken"
                         } else {
                             exec_str = exec_count
                         }
 
-                        printf "<span class=\"line %s\"><span class=\"line-number\">%s</span><span class=\"exec-count\">%s</span>%s", bg_class, line_num, exec_str, line_content
+                        # Output line number, execution count, and source
+                        printf "%6s: %5s:%s", line_num, exec_str, line_content
 
                         if (branch_info != "") {
-                            printf "<span class=\"branch-info\">%s</span>", branch_info
+                            printf " [%s]", branch_info
                         }
-                        printf "</span>\n"
+                        printf "\n"
 
                         branch_info = ""
                     }
