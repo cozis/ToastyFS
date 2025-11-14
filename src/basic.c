@@ -30,7 +30,7 @@ Time get_current_time(void)
         ok = sys_QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
         if (!ok) return INVALID_TIME;
 
-        uint64_t res = 1000 * (double) count / freq;
+        uint64_t res = 1000000000 * (double) count / freq;
         return res;
     }
 #else
@@ -45,12 +45,12 @@ Time get_current_time(void)
         uint64_t sec = time.tv_sec;
         if (sec > UINT64_MAX / 1000000000)
             return INVALID_TIME;
-        res = sec * 1000;
+        res = sec * 1000000000;
 
         uint64_t nsec = time.tv_nsec;
         if (res > UINT64_MAX - nsec)
             return INVALID_TIME;
-        res += nsec / 1000000;
+        res += nsec;
 
         return res;
     }

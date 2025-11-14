@@ -94,13 +94,14 @@ static char *message_type_to_str(uint16_t type)
         case MESSAGE_TYPE_WRITE_SUCCESS: return "WRITE_SUCCESS";
 
         // Metadata server -> Chunk server
-        case MESSAGE_TYPE_STATE_UPDATE: return "STATE_UPDATE";
+        case MESSAGE_TYPE_SYNC_2: return "SYNC_2";
+        case MESSAGE_TYPE_SYNC_4: return "SYNC_4";
         case MESSAGE_TYPE_DOWNLOAD_LOCATIONS: return "DOWNLOAD_LOCATIONS";
 
         // Chunk server -> Metadata server
         case MESSAGE_TYPE_AUTH: return "AUTH";
-        case MESSAGE_TYPE_STATE_UPDATE_ERROR: return "UPDATE_ERROR";
-        case MESSAGE_TYPE_STATE_UPDATE_SUCCESS: return "UPDATE_SUCCESS";
+        case MESSAGE_TYPE_SYNC: return "SYNC";
+        case MESSAGE_TYPE_SYNC_3: return "SYNC_3";
 
         // Chunk server -> Client
         case MESSAGE_TYPE_CREATE_CHUNK_ERROR: return "CREATE_CHUNK_ERROR";
@@ -418,99 +419,7 @@ void message_dump(FILE *stream, ByteView msg)
         }
         break;
 
-        case MESSAGE_TYPE_DOWNLOAD_CHUNK:
-        printf("    (TODO)\n");
-        break;
-
-        // Metadata server -> Client
-
-        case MESSAGE_TYPE_CREATE_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_CREATE_SUCCESS:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_DELETE_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_DELETE_SUCCESS:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_LIST_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_LIST_SUCCESS:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_READ_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_READ_SUCCESS:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_WRITE_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_WRITE_SUCCESS:
-        printf("    (TODO)\n");
-        break;
-
-        // Metadata server -> Chunk server
-
-        case MESSAGE_TYPE_STATE_UPDATE:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_DOWNLOAD_LOCATIONS:
-        printf("    (TODO)\n");
-        break;
-
-        // Chunk server -> Metadata server
-
-        case MESSAGE_TYPE_AUTH:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_STATE_UPDATE_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_STATE_UPDATE_SUCCESS:
-        printf("    (TODO)\n");
-        break;
-
-        // Chunk server -> Client
-
-        case MESSAGE_TYPE_CREATE_CHUNK_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_CREATE_CHUNK_SUCCESS:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_UPLOAD_CHUNK_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR:
-        printf("    (TODO)\n");
-        break;
-
-        case MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS:
+        default:
         printf("    (TODO)\n");
         break;
     }

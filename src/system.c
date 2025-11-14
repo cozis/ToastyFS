@@ -31,6 +31,7 @@ typedef enum {
     DESC_SOCKET,
     DESC_LISTEN_SOCKET,
     DESC_CONNECTION_SOCKET,
+    DESC_DIRECTORY,
 } DescriptorType;
 
 typedef enum {
@@ -83,6 +84,14 @@ typedef struct {
     // ------ File ------------------
 
     NATIVE_HANDLE real_fd;
+
+    // ------ Directory -------------
+
+#ifdef _WIN32
+    HANDLE real_d;
+#else
+    DIR *real_d;
+#endif
 
     // ------ Socket ----------------
 
@@ -562,152 +571,79 @@ static bool data_queue_full(DataQueue *queue)
     return queue->used == queue->size;
 }
 
-static int compare_processes(const void *p1, const void *p2)
+static int setup_poll_array(void **contexts, struct pollfd *polled)
 {
-    Process *a = *(Process**) p1;
-    Process *b = *(Process**) p2;
-    if (b->wakeup_time == INVALID_TIME) return -1;
-    if (a->wakeup_time == INVALID_TIME) return +1;
-    return a->wakeup_time - b->wakeup_time;
-}
+    int num_polled = 0;
 
-void update_simulation(void)
-{
-    // Order processes by wakeup time. Those with no
-    // wakeup time go last.
-    Process *ordered_processes[MAX_PROCESSES];
-    for (int i = 0; i < num_processes; i++)
-        ordered_processes[i] = processes[i];
+    for (int j = 0, k = 0; k < current_process->num_desc; j++) {
 
-    qsort(ordered_processes, num_processes, sizeof(*ordered_processes), compare_processes);
+        assert(j < MAX_DESCRIPTORS);
+        Descriptor *desc = &current_process->desc[j];
+        if (desc->type == DESC_EMPTY)
+            continue;
+        k++;
 
-    for (int i = 0; i < num_processes; i++) {
+        int revents = 0;
+        switch (desc->type) {
 
-        current_process = ordered_processes[i];
+            case DESC_FILE:
+            assert(0); // TODO: error
+            break;
 
-        void *contexts[MAX_CONNS+1];
-        struct pollfd polled[MAX_CONNS+1];
-        int num_polled = 0;
+            case DESC_SOCKET:
+            // Ignore
+            break;
 
-        for (int j = 0, k = 0; k < current_process->num_desc; j++) {
+            case DESC_LISTEN_SOCKET:
+            if (!accept_queue_empty(&desc->accept_queue))
+                revents |= POLLIN;
+            break;
 
-            assert(j < MAX_DESCRIPTORS);
-            Descriptor *desc = &current_process->desc[j];
-            if (desc->type == DESC_EMPTY)
-                continue;
-            k++;
+            case DESC_CONNECTION_SOCKET:
+            switch (desc->connection_state) {
 
-            int revents = 0;
-            switch (desc->type) {
-
-                case DESC_FILE:
-                assert(0); // TODO: error
+                case CONNECTION_DELAYED:
                 break;
 
-                case DESC_SOCKET:
-                // Ignore
+                case CONNECTION_QUEUED:
                 break;
 
-                case DESC_LISTEN_SOCKET:
-                if (!accept_queue_empty(&desc->accept_queue))
-                    revents |= POLLIN;
-                break;
-
-                case DESC_CONNECTION_SOCKET:
-                switch (desc->connection_state) {
-
-                    case CONNECTION_DELAYED:
-                    break;
-
-                    case CONNECTION_QUEUED:
-                    break;
-
-                    case CONNECTION_ESTABLISHED:
-                    {
-                        Descriptor *peer = handle_to_desc(desc->connection_peer);
-                        if (peer == NULL) {
+                case CONNECTION_ESTABLISHED:
+                {
+                    Descriptor *peer = handle_to_desc(desc->connection_peer);
+                    if (peer == NULL) {
+                        revents |= POLLIN;
+                    } else {
+                        if (!data_queue_full(&desc->output_data))
+                            revents |= POLLOUT;
+                        if (!data_queue_empty(&peer->output_data))
                             revents |= POLLIN;
-                        } else {
-                            if (!data_queue_full(&desc->output_data))
-                                revents |= POLLOUT;
-                            if (!data_queue_empty(&peer->output_data))
-                                revents |= POLLIN;
-                        }
                     }
-                    break;
-
-                    case CONNECTION_FAILED:
-                    assert(0); // TODO
-                    break;
                 }
                 break;
+
+                case CONNECTION_FAILED:
+                assert(0); // TODO
+                break;
             }
-
-            revents &= desc->events;
-            if (revents) {
-                polled[num_polled].fd = (SOCKET) j;
-                polled[num_polled].events = desc->events;
-                polled[num_polled].revents = revents;
-                contexts[num_polled] = desc->context;
-                num_polled++;
-            }
+            break;
         }
 
-        if (num_polled == 0) {
-
-            Time wakeup_time = current_process->wakeup_time;
-            if (wakeup_time == INVALID_TIME) continue;
-
-            assert(current_time <= wakeup_time);
-            current_time = wakeup_time;
+        revents &= desc->events;
+        if (revents) {
+            polled[num_polled].fd = (SOCKET) j;
+            polled[num_polled].events = desc->events;
+            polled[num_polled].revents = revents;
+            contexts[num_polled] = desc->context;
+            num_polled++;
         }
-
-        int timeout = -1;
-        switch (current_process->type) {
-            case PROCESS_TYPE_METADATA_SERVER:
-                num_polled = metadata_server_step(
-                    &current_process->metadata_server,
-                    contexts,
-                    polled,
-                    num_polled,
-                    &timeout
-                );
-                break;
-            case PROCESS_TYPE_CHUNK_SERVER:
-                num_polled = chunk_server_step(
-                    &current_process->chunk_server,
-                    contexts,
-                    polled,
-                    num_polled,
-                    &timeout
-                );
-                break;
-            case PROCESS_TYPE_CLIENT:
-                num_polled = simulation_client_step(
-                    &current_process->simulation_client,
-                    contexts,
-                    polled,
-                    num_polled,
-                    &timeout
-                );
-                break;
-        }
-
-        if (num_polled < 0) {
-            // TODO
-        }
-
-        if (timeout < 0) {
-            current_process->wakeup_time = INVALID_TIME;
-        } else {
-            current_process->wakeup_time = current_time + timeout * 1000000;
-        }
-
-        process_poll_array(current_process, contexts, polled, num_polled);
-
-        current_process = NULL;
     }
 
+    return num_polled;
+}
+
+static void update_network(void)
+{
     for (int i = 0; i < num_processes; i++) {
 
         for (int j = 0, k = 0; k < processes[i]->num_desc; j++) {
@@ -765,6 +701,142 @@ void update_simulation(void)
             }
         }
     }
+}
+
+void update_simulation(void)
+{
+    for (;;) {
+        int num_ready = 0;
+        for (int i = 0; i < num_processes; i++) {
+
+            current_process = processes[i];
+
+            void *contexts[MAX_CONNS+1];
+            struct pollfd polled[MAX_CONNS+1];
+            int num_polled = setup_poll_array(contexts, polled);
+
+            if (num_polled > 0) {
+
+                num_ready++;
+
+                int timeout = -1;
+                switch (current_process->type) {
+                    case PROCESS_TYPE_METADATA_SERVER:
+                        num_polled = metadata_server_step(
+                            &current_process->metadata_server,
+                            contexts,
+                            polled,
+                            num_polled,
+                            &timeout
+                        );
+                        break;
+                    case PROCESS_TYPE_CHUNK_SERVER:
+                        num_polled = chunk_server_step(
+                            &current_process->chunk_server,
+                            contexts,
+                            polled,
+                            num_polled,
+                            &timeout
+                        );
+                        break;
+                    case PROCESS_TYPE_CLIENT:
+                        num_polled = simulation_client_step(
+                            &current_process->simulation_client,
+                            contexts,
+                            polled,
+                            num_polled,
+                            &timeout
+                        );
+                        break;
+                }
+
+                if (num_polled < 0) {
+                    assert(0); // TODO
+                }
+
+                if (timeout < 0) {
+                    current_process->wakeup_time = INVALID_TIME;
+                } else {
+                    current_process->wakeup_time = current_time + (Time) timeout * 1000000;
+                }
+
+                process_poll_array(current_process, contexts, polled, num_polled);
+            }
+
+            current_process = NULL;
+
+            update_network();
+        }
+
+        if (num_ready == 0)
+            break;
+    }
+
+    Process *next_process = NULL;
+    for (int i = 0; i < num_processes; i++)
+        if (processes[i]->wakeup_time != INVALID_TIME)
+            if (next_process == NULL || processes[i]->wakeup_time < next_process->wakeup_time)
+                next_process = processes[i];
+
+    if (next_process == NULL) {
+        assert(0); // Nothing to schedule next
+    }
+
+    assert(current_time <= next_process->wakeup_time);
+    current_time = next_process->wakeup_time;
+
+    current_process = next_process;
+
+    void *contexts[MAX_CONNS+1];
+    struct pollfd polled[MAX_CONNS+1];
+    int num_polled = setup_poll_array(contexts, polled);
+
+    int timeout = -1;
+    switch (current_process->type) {
+        case PROCESS_TYPE_METADATA_SERVER:
+            num_polled = metadata_server_step(
+                &current_process->metadata_server,
+                contexts,
+                polled,
+                num_polled,
+                &timeout
+            );
+            break;
+        case PROCESS_TYPE_CHUNK_SERVER:
+            num_polled = chunk_server_step(
+                &current_process->chunk_server,
+                contexts,
+                polled,
+                num_polled,
+                &timeout
+            );
+            break;
+        case PROCESS_TYPE_CLIENT:
+            num_polled = simulation_client_step(
+                &current_process->simulation_client,
+                contexts,
+                polled,
+                num_polled,
+                &timeout
+            );
+            break;
+    }
+
+    if (num_polled < 0) {
+        assert(0); // TODO
+    }
+
+    if (timeout < 0) {
+        current_process->wakeup_time = INVALID_TIME;
+    } else {
+        current_process->wakeup_time = current_time + (Time) timeout * 1000000;
+    }
+
+    process_poll_array(current_process, contexts, polled, num_polled);
+
+    current_process = NULL;
+
+    update_network();
 }
 
 void *mock_malloc(size_t len)
@@ -1236,6 +1308,14 @@ static void close_desc(Descriptor *desc)
         }
         // TODO
         break;
+
+        case DESC_DIRECTORY:
+#ifdef _WIN32
+        FindClose(desc->real_d);
+#else
+        closedir(desc->real_d);
+#endif
+        break;
     }
     desc->type = DESC_EMPTY;
     desc->generation++;
@@ -1503,6 +1583,71 @@ int mock_ioctlsocket(SOCKET fd, long cmd, u_long *argp)
     return -1;
 }
 
+HANDLE mock_FindFirstFileA(char *lpFileName, WIN32_FIND_DATAA *lpFindFileData)
+{
+    HANDLE handle = FindFirstFileA(lpFileName, lpFindFileData);
+    if (handle == INVALID_HANDLE_VALUE)
+        return INVALID_HANDLE_VALUE;
+
+    if (current_process->num_desc == MAX_DESCRIPTORS) {
+        FindClose(handle);
+        SetLastError(ERROR_TOO_MANY_OPEN_FILES);
+        return INVALID_HANDLE_VALUE;
+    }
+
+    int idx = 0;
+    while (current_process->desc[idx].type != DESC_EMPTY) {
+        idx++;
+        assert(idx < MAX_DESCRIPTORS);
+    }
+
+    Descriptor *desc = &current_process->desc[idx];
+    desc->type = DESC_DIRECTORY;
+    desc->real_d = handle;
+
+    current_process->num_desc++;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
+    return (HANDLE) idx;
+}
+
+BOOL mock_FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA *lpFindFileData)
+{
+    if (hFindFile == INVALID_HANDLE_VALUE || (int)hFindFile < 0 || (int)hFindFile >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    int idx = (int) hFindFile;
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_DIRECTORY) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+
+    // Forward to real FindNextFileA, last error is set by the real call
+    return FindNextFileA(desc->real_d, lpFindFileData);
+}
+
+BOOL mock_FindClose(HANDLE hFindFile)
+{
+    if (hFindFile == INVALID_HANDLE_VALUE || (int)hFindFile < 0 || (int)hFindFile >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    int idx = (int) hFindFile;
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_DIRECTORY) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+
+    close_desc(desc);
+    current_process->num_desc--;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
+    return TRUE;
+}
+
 #else
 
 int mock_clock_gettime(clockid_t clockid, struct timespec *tp)
@@ -1734,6 +1879,81 @@ int mock_fcntl(int fd, int cmd, ...)
 
     errno = EINVAL;
     return -1;
+}
+
+DIR *mock_opendir(char *name)
+{
+    DIR *dir = opendir(name);
+    if (dir == NULL)
+        return NULL;
+
+    if (current_process->num_desc == MAX_DESCRIPTORS) {
+        closedir(dir);
+        errno = EMFILE;  // Too many open files
+        return NULL;
+    }
+
+    int idx = 0;
+    while (current_process->desc[idx].type != DESC_EMPTY) {
+        idx++;
+        assert(idx < MAX_DESCRIPTORS);
+    }
+
+    Descriptor *desc = &current_process->desc[idx];
+    desc->type = DESC_DIRECTORY;
+    desc->real_d = dir;
+
+    current_process->num_desc++;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
+    return (DIR *)(intptr_t) idx;
+}
+
+struct dirent *mock_readdir(DIR *dirp)
+{
+    if (dirp == NULL) {
+        errno = EBADF;  // Bad file descriptor
+        return NULL;
+    }
+    int idx = (int)(intptr_t) dirp;
+
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        errno = EBADF;
+        return NULL;
+    }
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_DIRECTORY) {
+        errno = EBADF;
+        return NULL;
+    }
+
+    // Forward to real readdir, errno is set by the real call
+    return readdir(desc->real_d);
+}
+
+int mock_closedir(DIR *dirp)
+{
+    if (dirp == NULL) {
+        errno = EBADF;  // Bad file descriptor
+        return -1;
+    }
+    int idx = (int)(intptr_t) dirp;
+
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        errno = EBADF;
+        return -1;
+    }
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_DIRECTORY) {
+        errno = EBADF;
+        return -1;
+    }
+
+    close_desc(desc);
+    current_process->num_desc--;
+    CHECK_NON_EMPTY_DESC_INVARIANT;
+    return 0;
 }
 
 #endif // !_WIN32

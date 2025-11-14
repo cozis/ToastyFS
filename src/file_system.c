@@ -268,3 +268,95 @@ int file_read_all(string path, string *data)
     file_close(fd);
     return 0;
 }
+
+#ifdef _WIN32
+
+int directory_scanner_init(DirectoryScanner *scanner, string path)
+{
+    char pattern[PATH_MAX];
+    int ret = snprintf(pattern, sizeof(pattern), "%.*s\\*", path.len, path.ptr);
+    if (ret < 0 || ret >= sizeof(pattern))
+        return -1;
+
+    scanner->handle = sys_FindFirstFileA(pattern, &scanner->find_data);
+    if (scanner->handle == INVALID_HANDLE_VALUE) {
+        if (GetLastError() == ERROR_FILE_NOT_FOUND) {
+            scanner->done = true;
+            return 0;
+        }
+        return -1;
+    }
+
+    scanner->done = false;
+    scanner->first = true;
+    return 0;
+}
+
+int directory_scanner_next(DirectoryScanner *scanner, string *name)
+{
+    if (scanner->done)
+        return 1;
+
+    if (!scanner->first) {
+        BOOL ok = sys_FindNextFileA(scanner->handle, &scanner->find_data);
+        if (!ok) {
+            scanner->done = true;
+            if (GetLastError() == ERROR_NO_MORE_FILES)
+                return 1;
+            return -1;
+        }
+    } else {
+        scanner->first = false;
+    }
+
+    char *p = scanner->find_data.cFileName;
+    *name = (string) { p, strlen(p) };
+    return 0;
+}
+
+void directory_scanner_free(DirectoryScanner *scanner)
+{
+    sys_FindClose(scanner->handle);
+}
+
+#else
+
+int directory_scanner_init(DirectoryScanner *scanner, string path)
+{
+    char path_copy[PATH_MAX];
+    if (path.len >= PATH_MAX)
+        return -1;
+    memcpy(path_copy, path.ptr, path.len);
+    path_copy[path.len] = '\0';
+
+    scanner->d = sys_opendir(path_copy);
+    if (scanner->d == NULL) {
+        scanner->done = true;
+        return -1;
+    }
+
+    scanner->done = false;
+    return 0;
+}
+
+int directory_scanner_next(DirectoryScanner *scanner, string *name)
+{
+    if (scanner->done)
+        return 1;
+
+    scanner->e = sys_readdir(scanner->d);
+    if (scanner->e == NULL) {
+        scanner->done = true;
+        return 1;
+    }
+
+    *name = (string) { scanner->e->d_name, strlen(scanner->e->d_name) };
+    return 0;
+}
+
+void directory_scanner_free(DirectoryScanner *scanner)
+{
+    sys_closedir(scanner->d);
+}
+
+#endif

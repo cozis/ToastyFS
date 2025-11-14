@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <sys/socket.h>
@@ -69,6 +70,9 @@ BOOL     mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
 BOOL     mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
 char*    mock__fullpath(char *path, char *dst, int cap);
 int      mock__mkdir(char *path);
+HANDLE   mock_FindFirstFileA(char *lpFileName, WIN32_FIND_DATAA *lpFindFileData);
+BOOL     mock_FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA *lpFindFileData);
+BOOL     mock_FindClose(HANDLE hFindFile);
 #else
 int     mock_clock_gettime(clockid_t clockid, struct timespec *tp);
 int     mock_open(char *path, int flags, int mode);
@@ -82,6 +86,9 @@ int     mock_mkstemp(char *path);
 char*   mock_realpath(char *path, char *dst);
 int     mock_mkdir(char *path, mode_t mode);
 int     mock_fcntl(int fd, int cmd, ...);
+DIR*    mock_opendir(char *name);
+struct dirent* mock_readdir(DIR *dirp);
+int     mock_closedir(DIR *dirp);
 #endif
 
 // Common
@@ -114,6 +121,9 @@ int     mock_fcntl(int fd, int cmd, ...);
 #define sys__fullpath        mock__fullpath
 #define sys_QueryPerformanceCounter   mock_QueryPerformanceCounter
 #define sys_QueryPerformanceFrequency mock_QueryPerformanceFrequency
+#define sys_FindFirstFileA   mock_FindFirstFileA
+#define sys_FindNextFileA    mock_FindNextFileA
+#define sys_FindClose        mock_FindClose
 
 // Linux
 #define sys_mkdir            mock_mkdir
@@ -129,6 +139,9 @@ int     mock_fcntl(int fd, int cmd, ...);
 #define sys_clock_gettime    mock_clock_gettime
 #define sys_fcntl            mock_fcntl
 #define sys_getrandom        mock_getrandom
+#define sys_opendir          mock_opendir
+#define sys_readdir          mock_readdir
+#define sys_closedir         mock_closedir
 
 #else
 
@@ -162,6 +175,9 @@ int     mock_fcntl(int fd, int cmd, ...);
 #define sys__fullpath        _fullpath
 #define sys_QueryPerformanceCounter   QueryPerformanceCounter
 #define sys_QueryPerformanceFrequency QueryPerformanceFrequency
+#define sys_FindFirstFileA   FindFirstFileA
+#define sys_FindNextFileA    FindNextFileA
+#define sys_FindClose        FindClose
 
 // Linux
 #define sys_mkdir            mkdir
@@ -176,6 +192,9 @@ int     mock_fcntl(int fd, int cmd, ...);
 #define sys_realpath         realpath
 #define sys_clock_gettime    clock_gettime
 #define sys_fcntl            fcntl
+#define sys_opendir          opendir
+#define sys_readdir          readdir
+#define sys_closedir         closedir
 
 #endif
 #endif // SYSTEM_INCLUDED

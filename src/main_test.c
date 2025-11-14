@@ -8,12 +8,20 @@
 
 static sig_atomic_t simulation_should_stop = false;
 
+static void signal_handler(int signum)
+{
+    (void)signum;
+    simulation_should_stop = true;
+}
+
 int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
 
-    // TODO: set simulation_should_stop=true on ctrl+C
+    // Set up signal handlers for clean shutdown
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
 
     startup_simulation(2);
 
