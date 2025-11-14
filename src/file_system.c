@@ -275,7 +275,7 @@ int directory_scanner_init(DirectoryScanner *scanner, string path)
 {
     char pattern[PATH_MAX];
     int ret = snprintf(pattern, sizeof(pattern), "%.*s\\*", path.len, path.ptr);
-    if (ret < 0 || ret >= sizeof(pattern))
+    if (ret < 0 || ret >= (int) sizeof(pattern))
         return -1;
 
     scanner->handle = sys_FindFirstFileA(pattern, &scanner->find_data);

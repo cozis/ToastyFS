@@ -1,5 +1,3 @@
-#include "byte_queue.h"
-#include "tcp.h"
 #define _GNU_SOURCE
 
 #include <string.h>

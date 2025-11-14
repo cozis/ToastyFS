@@ -28,7 +28,10 @@ static void download_targets_free(DownloadTargets *targets)
 static void download_targets_remove(DownloadTargets *targets,
     SHA256 hash)
 {
-    assert(0); // TODO: remove all downloads of this chunk
+    // NOTE: This changes the download order!
+    for (int i = 0; i < targets->count; i++)
+        if (!memcmp(&targets->items[i].hash, &hash, sizeof(SHA256)))
+            targets->items[i--] = targets->items[--targets->count];
 }
 
 static int download_targets_push(DownloadTargets *targets,
@@ -497,8 +500,10 @@ process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView
     if (avoid_full_scan)
         return 0;
 
+    string path = { state->store.path, strlen(state->store.path) };
+
     DirectoryScanner scanner;
-    if (directory_scanner_init(&scanner, state->path) < 0) {
+    if (directory_scanner_init(&scanner, path) < 0) {
         assert(0); // TODO
     }
 
@@ -513,7 +518,33 @@ process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView
             break;
         assert(ret == 0);
 
-        // TODO: translate name to hash
+        SHA256 hash;
+
+        // Hash length as a string is 64 bytes
+        if (name.len != 64)
+            continue;
+
+        bool invalid = false;
+        for (int i = 0; i < 64; i += 2) {
+
+            uint8_t h = name.ptr[i+0];
+            uint8_t l = name.ptr[i+1];
+
+            if (0) {}
+            else if (h >= '0' && h <= '9') h = h - '0';
+            else if (h >= 'a' && h <= 'f') h = h - 'a' + 10;
+            else if (h >= 'A' && h <= 'F') h = h - 'A' + 10;
+            else { invalid = true; break; }
+
+            if (0) {}
+            else if (l >= '0' && l <= '9') l = l - '0';
+            else if (l >= 'a' && l <= 'f') l = l - 'a' + 10;
+            else if (l >= 'A' && l <= 'F') l = l - 'A' + 10;
+            else { invalid = true; break; }
+
+            hash.data[i >> 1] = (h << 4) | l;
+        }
+        if (invalid) continue;
 
         if (hash_set_insert(&state->cs_add_list, hash) < 0) {
             assert(0); // TODO
