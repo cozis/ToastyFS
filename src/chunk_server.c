@@ -13,30 +13,32 @@
 #include "tcp.h"
 #include "chunk_server.h"
 
-static void
-download_targets_init(DownloadTargets *targets)
+static void download_targets_init(DownloadTargets *targets)
 {
     targets->count = 0;
     targets->capacity = 0;
     targets->items = NULL;
 }
 
-static void
-download_targets_free(DownloadTargets *targets)
+static void download_targets_free(DownloadTargets *targets)
 {
     sys_free(targets->items);
 }
 
-static void
-download_targets_remove(DownloadTargets *targets, SHA256 hash)
+static void download_targets_remove(DownloadTargets *targets,
+    SHA256 hash)
 {
     assert(0); // TODO: remove all downloads of this chunk
 }
 
-static int
-download_targets_add(DownloadTargets *targets, Address addr, SHA256 hash)
+static int download_targets_push(DownloadTargets *targets,
+    Address addr, SHA256 hash)
 {
-    // Avoid duplicates
+    // Avoid duplicates! This is important as the metadata server may
+    // tell us to download our missing chunks again while we are still
+    // going through the previous list of downloads. This check becomes
+    // relevant as the update period approaches the time the chunk server
+    // needs to go through a list of downloads.
     for (int i = 0; i < targets->count; i++)
         if (addr_eql(targets->items[i].addr, addr) && !memcmp(&targets->items[i].hash, &hash, sizeof(SHA256)))
             return 0;
@@ -64,6 +66,32 @@ download_targets_add(DownloadTargets *targets, Address addr, SHA256 hash)
 
     targets->items[targets->count++] = (DownloadTarget) { addr, hash };
     return 0;
+}
+
+static bool download_targets_pop(DownloadTargets *targets,
+    DownloadTarget *target)
+{
+    // Read the head
+    if (targets->count == 0)
+        return false;
+    *target = targets->items[0];
+
+    // Pop the head
+    for (int i = 0; i < targets->count-1; i++)
+        targets->items[i] = targets->items[i+1];
+    targets->count--;
+
+    // We expect the download list to be empty most
+    // of the time, so if this was the last element
+    // there may not be a new one for a while and we
+    // can clear the array.
+    if (targets->count == 0) {
+        free(targets->items);
+        targets->items = NULL;
+        targets->capacity = 0;
+    }
+
+    return true;
 }
 
 static int chunk_store_init(ChunkStore *store, string path)
@@ -214,23 +242,6 @@ static int send_error(TCP *tcp, int conn_idx,
     if (close)
         return -1;
     return 0;
-}
-
-static bool download_targets_pop(DownloadTargets *targets,
-    DownloadTarget *target)
-{
-    if (targets->count == 0)
-        return false;
-    *target = targets->items[0];
-    for (int i = 0; i < targets->count-1; i++)
-        targets->items[i] = targets->items[i+1];
-    targets->count--;
-    if (targets->count == 0) {
-        free(targets->items);
-        targets->items = NULL;
-        targets->capacity = 0;
-    }
-    return true;
 }
 
 static void start_download(ChunkServer *state)
@@ -445,14 +456,14 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
 
         // Add to pending download list
         for (uint32_t k = 0; k < total_ipv4; k++)
-            download_targets_add(
+            download_targets_push(
                 &state->download_targets,
                 (Address) { .is_ipv4=true, .ipv4=ipv4[k], .port=ipv4_port[k] },
                 hash
             );
 
         for (uint32_t k = 0; k < total_ipv6; k++)
-            download_targets_add(
+            download_targets_push(
                 &state->download_targets,
                 (Address) { .is_ipv4=false, .ipv6=ipv6[k], .port=ipv6_port[k] },
                 hash
