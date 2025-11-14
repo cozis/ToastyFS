@@ -485,7 +485,8 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
 static int
 process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView msg)
 {
-    BinaryReader reader;
+    BinaryReader reader = { msg.ptr, msg.len, 0 };
+
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
 
