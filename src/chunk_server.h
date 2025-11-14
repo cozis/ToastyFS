@@ -3,6 +3,7 @@
 
 #include <limits.h>
 
+#include "basic.h"
 #include "metadata_server.h"
 #include "tcp.h"
 
@@ -18,13 +19,13 @@ typedef struct {
 typedef struct {
     Address addr;
     SHA256  hash;
-} PendingDownload;
+} DownloadTarget;
 
 typedef struct {
+    DownloadTarget *items;
     int count;
     int capacity;
-    PendingDownload *items;
-} PendingDownloadList;
+} DownloadTargets;
 
 typedef struct {
 
@@ -41,9 +42,13 @@ typedef struct {
 
     ChunkStore store;
 
-    bool downloading;
+    // --- Download Management ---
 
-    PendingDownloadList pending_download_list;
+    bool downloading;
+    SHA256 current_download_target_hash;
+    DownloadTargets download_targets;
+
+    // --- Chunk Management ---
 
     // List of chunks added since the last update
     HashSet cs_add_list;

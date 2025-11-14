@@ -1,3 +1,5 @@
+#include "byte_queue.h"
+#include "tcp.h"
 #define _GNU_SOURCE
 
 #include <string.h>
@@ -752,7 +754,18 @@ static int process_chunk_server_auth(MetadataServer *state,
     // we accept all connections that provide valid address information.
     chunk_server->auth = true;
 
-    // No need to respond
+    ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
+
+    MessageWriter writer;
+    message_writer_init(&writer, output, MESSAGE_TYPE_AUTH_RESPONSE);
+
+    // TODO: Check whether we already hold the chunk list
+    //       of this chunk server. If we do, tell it.
+
+    if (!message_writer_free(&writer)) {
+        assert(0); // TODO
+    }
     return 0;
 }
 

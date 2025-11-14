@@ -34,7 +34,7 @@ bool message_writer_free(MessageWriter *writer)
 {
     uint32_t length = byte_queue_size_from_offset(writer->output, writer->start);
     byte_queue_patch(writer->output, writer->patch, &length, sizeof(length));
-    if (byte_queue_error(writer->output))
+    if (byte_queue_error(writer->output)) // TODO: is it possible to restore the state of the queue to before the failure?
         return false;
     return true;
 }

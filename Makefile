@@ -1,5 +1,5 @@
 
-CFLAGS = -Wall -Wextra -ggdb -fsanitize=address,undefined
+CFLAGS = -Wall -Wextra -ggdb
 COVERAGE_CFLAGS = $(CFLAGS) --coverage
 COVERAGE_LFLAGS = --coverage
 

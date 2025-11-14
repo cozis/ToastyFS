@@ -6,6 +6,7 @@
 #include "basic.h"
 #include "byte_queue.h"
 #include "config.h"
+#include "hash_set.h"
 #include "sha256.h"
 #include "message.h"
 #include "file_system.h"
@@ -13,49 +14,55 @@
 #include "chunk_server.h"
 
 static void
-pending_download_list_init(PendingDownloadList *list)
+download_targets_init(DownloadTargets *targets)
 {
-    list->count = 0;
-    list->capacity = 0;
-    list->items = NULL;
+    targets->count = 0;
+    targets->capacity = 0;
+    targets->items = NULL;
 }
 
 static void
-pending_download_list_free(PendingDownloadList *list)
+download_targets_free(DownloadTargets *targets)
 {
-    sys_free(list->items);
+    sys_free(targets->items);
+}
+
+static void
+download_targets_remove(DownloadTargets *targets, SHA256 hash)
+{
+    assert(0); // TODO: remove all downloads of this chunk
 }
 
 static int
-pending_download_list_add(PendingDownloadList *list, Address addr, SHA256 hash)
+download_targets_add(DownloadTargets *targets, Address addr, SHA256 hash)
 {
     // Avoid duplicates
-    for (int i = 0; i < list->count; i++)
-        if (addr_eql(list->items[i].addr, addr) && !memcmp(&list->items[i].hash, &hash, sizeof(SHA256)))
+    for (int i = 0; i < targets->count; i++)
+        if (addr_eql(targets->items[i].addr, addr) && !memcmp(&targets->items[i].hash, &hash, sizeof(SHA256)))
             return 0;
 
-    if (list->count == list->capacity) {
+    if (targets->count == targets->capacity) {
 
         int new_capacity;
-        if (list->capacity == 0)
+        if (targets->capacity == 0)
             new_capacity = 8;
         else
-            new_capacity = 2 * list->capacity;
+            new_capacity = 2 * targets->capacity;
 
-        PendingDownload *new_items = sys_malloc(new_capacity * sizeof(PendingDownload));
+        DownloadTarget *new_items = sys_malloc(new_capacity * sizeof(DownloadTarget));
         if (new_items == NULL)
             return -1;
 
-        if (list->capacity > 0) {
-            memcpy(new_items, list->items, list->count * sizeof(list->items[0]));
-            sys_free(list->items);
+        if (targets->capacity > 0) {
+            memcpy(new_items, targets->items, targets->count * sizeof(targets->items[0]));
+            sys_free(targets->items);
         }
 
-        list->items = new_items;
-        list->capacity = new_capacity;
+        targets->items = new_items;
+        targets->capacity = new_capacity;
     }
 
-    list->items[list->count++] = (PendingDownload) { addr, hash };
+    targets->items[targets->count++] = (DownloadTarget) { addr, hash };
     return 0;
 }
 
@@ -152,7 +159,7 @@ static bool chunk_store_exists(ChunkStore *store, SHA256 hash)
     string path = hash2path(store, hash, buf);
 
     // Try to open the file to check if it exists
-    // TODO: this isn't right
+    // TODO: this isn't right. There should be something like file_exists
     Handle fd;
     if (file_open(path, &fd) == 0) {
         file_close(fd);
@@ -209,45 +216,52 @@ static int send_error(TCP *tcp, int conn_idx,
     return 0;
 }
 
-static void start_download_if_necessary(ChunkServer *state)
+static bool download_targets_pop(DownloadTargets *targets,
+    DownloadTarget *target)
 {
-    if (state->pending_download_list.count == 0 || state->downloading)
-        return;
+    if (targets->count == 0)
+        return false;
+    *target = targets->items[0];
+    for (int i = 0; i < targets->count-1; i++)
+        targets->items[i] = targets->items[i+1];
+    targets->count--;
+    if (targets->count == 0) {
+        free(targets->items);
+        targets->items = NULL;
+        targets->capacity = 0;
+    }
+    return true;
+}
+
+static void start_download(ChunkServer *state)
+{
+    if (state->downloading)
+        return; // Already started
+
+    DownloadTarget target;
+    if (!download_targets_pop(&state->download_targets, &target))
+        return; // No more downloads
 
     ByteQueue *output;
-    if (tcp_connect(&state->tcp, state->pending_download_list.items[0].addr, TAG_CHUNK_SERVER, &output) < 0) {
-        // Failed to connect, remove this download from the list and try next time
-        if (state->pending_download_list.count > 1) {
-            memmove(&state->pending_download_list.items[0],
-                    &state->pending_download_list.items[1],
-                    (state->pending_download_list.count - 1) * sizeof(PendingDownload));
-        }
-        state->pending_download_list.count--;
-        return;
-    }
-
-    state->downloading = true;
+    if (tcp_connect(&state->tcp, target.addr, TAG_CHUNK_SERVER, &output) < 0)
+        return; // Couldn't start connect operation
 
     MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK);
 
-    // Write the hash of the chunk to download
-    message_write(&writer, &state->pending_download_list.items[0].hash,
-                  sizeof(state->pending_download_list.items[0].hash));
+    message_write(&writer, &target.hash, sizeof(target.hash));
 
-    // Request the entire chunk: offset = 0
     uint32_t offset = 0;
     message_write(&writer, &offset, sizeof(offset));
 
-    // Request maximum reasonable chunk size (64MB)
-    uint32_t length = 64 * 1024 * 1024;
+    uint32_t length = 64 * 1024 * 1024; // TODO: there should be a special value for this
     message_write(&writer, &length, sizeof(length));
 
-    if (!message_writer_free(&writer)) {
-        // Failed to send message, close connection and retry
-        state->downloading = false;
-        return;
-    }
+    if (!message_writer_free(&writer))
+        return; // ???
+
+    state->current_download_target_hash = target.hash;
+    state->downloading = true;
 }
 
 static int process_metadata_server_sync_2(ChunkServer *state,
@@ -431,15 +445,15 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
 
         // Add to pending download list
         for (uint32_t k = 0; k < total_ipv4; k++)
-            pending_download_list_add(
-                &state->pending_download_list,
+            download_targets_add(
+                &state->download_targets,
                 (Address) { .is_ipv4=true, .ipv4=ipv4[k], .port=ipv4_port[k] },
                 hash
             );
 
         for (uint32_t k = 0; k < total_ipv6; k++)
-            pending_download_list_add(
-                &state->pending_download_list,
+            download_targets_add(
+                &state->download_targets,
                 (Address) { .is_ipv4=false, .ipv6=ipv6[k], .port=ipv6_port[k] },
                 hash
             );
@@ -448,16 +462,61 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
     if (binary_read(&reader, NULL, 1))
         return -1;
 
-    start_download_if_necessary(state);
+    start_download(state);
 
     // There is no need to respond here
     return 0;
 }
 
 static int
+process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView msg)
+{
+    BinaryReader reader;
+    if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
+        return -1;
+
+    // TODO: Read whether the metadata server already
+    //       holds our list of chunks. If it doesn't,
+    //       add all held chunks to the add list.
+    bool avoid_full_scan = false;
+
+    if (binary_read(&reader, NULL, 1))
+        return -1;
+
+    if (avoid_full_scan)
+        return 0;
+
+    DirectoryScanner scanner;
+    if (directory_scanner_init(&scanner, state->path) < 0) {
+        assert(0); // TODO
+    }
+
+    for (;;) {
+
+        string name;
+        int ret = directory_scanner_next(&scanner, &name);
+        if (ret < 0) {
+            assert(0); // TODO
+        }
+        if (ret == 1)
+            break;
+        assert(ret == 0);
+
+        // TODO: translate name to hash
+
+        if (hash_set_insert(&state->cs_add_list, hash) < 0) {
+            assert(0); // TODO
+        }
+    }
+
+    directory_scanner_free(&scanner);
+}
+
+static int
 process_metadata_server_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView msg)
 {
     switch (type) {
+        case MESSAGE_TYPE_AUTH_RESPONSE: return process_metadata_server_auth_response(state, conn_idx, msg);
         case MESSAGE_TYPE_SYNC_2: return process_metadata_server_sync_2(state, conn_idx, msg);
         case MESSAGE_TYPE_SYNC_4: return process_metadata_server_sync_4(state, conn_idx, msg);
     }
@@ -470,22 +529,9 @@ process_chunk_server_download_error(ChunkServer *state, int conn_idx, ByteView m
     (void) msg;
     (void) conn_idx;
 
-    // Download failed, mark as not downloading and remove the failed item
     state->downloading = false;
 
-    if (state->pending_download_list.count > 0) {
-        // Remove the first item (the one that failed)
-        if (state->pending_download_list.count > 1) {
-            memmove(&state->pending_download_list.items[0],
-                    &state->pending_download_list.items[1],
-                    (state->pending_download_list.count - 1) * sizeof(PendingDownload));
-        }
-        state->pending_download_list.count--;
-    }
-
-    // Try next download if any pending
-    start_download_if_necessary(state);
-
+    start_download(state);
     return 0;
 }
 
@@ -496,53 +542,43 @@ process_chunk_server_download_success(ChunkServer *state, int conn_idx, ByteView
 
     BinaryReader reader = { msg.ptr, msg.len, 0 };
 
-    // Read header
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
 
-    // Read data length
     uint32_t data_len;
     if (!binary_read(&reader, &data_len, sizeof(data_len)))
         return -1;
 
-    // Read the chunk data
     if (data_len > (uint32_t) (reader.len - reader.cur))
         return -1;
-
     string data = { (char*) reader.src + reader.cur, data_len };
+
+    if (!binary_read(&reader, NULL, data_len))
+        return -1;
+
+    if (binary_read(&reader, NULL, 1))
+        return -1;
 
     // Store the downloaded chunk
     if (chunk_store_add(&state->store, data) < 0) {
-        // Failed to store, treat as error
-        state->downloading = false;
-        if (state->pending_download_list.count > 0) {
-            if (state->pending_download_list.count > 1) {
-                memmove(&state->pending_download_list.items[0],
-                        &state->pending_download_list.items[1],
-                        (state->pending_download_list.count - 1) * sizeof(PendingDownload));
-            }
-            state->pending_download_list.count--;
-        }
-        start_download_if_necessary(state);
-        return 0;
+        assert(0); // TODO
     }
 
-    // Download succeeded, mark as not downloading and remove the completed item
+    // The download succeded!
+
+    // Mark that we are not downloading anymore
     state->downloading = false;
 
-    if (state->pending_download_list.count > 0) {
-        // Remove the first item (the one that succeeded)
-        if (state->pending_download_list.count > 1) {
-            memmove(&state->pending_download_list.items[0],
-                    &state->pending_download_list.items[1],
-                    (state->pending_download_list.count - 1) * sizeof(PendingDownload));
-        }
-        state->pending_download_list.count--;
+    // Since we managed to acquire this chunk, we can
+    // remove any other downloads to it.
+    download_targets_remove(&state->download_targets, state->current_download_target_hash);
+
+    // Add the newly acquired chunk to the add list
+    if (hash_set_insert(&state->cs_add_list, state->current_download_target_hash) < 0) {
+        assert(0); // TODO
     }
 
-    // Try next download if any pending
-    start_download_if_necessary(state);
-
+    start_download(state);
     return 0;
 }
 
@@ -784,6 +820,9 @@ static int send_sync_message(ChunkServer *state)
     MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_SYNC);
 
+    // TODO: May be worth it to add a limit to how many
+    //       items from the add list are sent every update
+    //       to keep messages under 4GB.
     uint32_t count = state->cs_add_list.count; // TODO: check implicit conversions
     message_write(&writer, &count, sizeof(count));
 
@@ -831,7 +870,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     }
 
     state->downloading = false;
-    pending_download_list_init(&state->pending_download_list);
+    download_targets_init(&state->download_targets);
     hash_set_init(&state->cs_add_list);
     hash_set_init(&state->cs_lst_list);
     timed_hash_set_init(&state->cs_rem_list);
@@ -890,7 +929,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 
 int chunk_server_free(ChunkServer *state)
 {
-    pending_download_list_free(&state->pending_download_list);
+    download_targets_free(&state->download_targets);
     timed_hash_set_free(&state->cs_rem_list);
     hash_set_free(&state->cs_lst_list);
     hash_set_free(&state->cs_add_list);
@@ -1015,7 +1054,7 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
     // TODO: periodically look for chunks that have their hashes messed up and delete them
 
     // Periodically retry pending downloads
-    start_download_if_necessary(state);
+    start_download(state);
 
     if (state->disconnect_time != INVALID_TIME) {
         Time reconnect_time = state->disconnect_time + (Time) CHUNK_SERVER_RECONNECT_TIME * 1000000000;
