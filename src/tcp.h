@@ -23,6 +23,7 @@ typedef enum {
 typedef struct {
     EventType type;
     int conn_idx;
+    int tag;
 } Event;
 
 typedef struct {

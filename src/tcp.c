@@ -240,8 +240,8 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
                     if (set_socket_blocking(new_fd, false) < 0)
                         CLOSE_SOCKET(new_fd);
                     else {
-                        events[num_events++] = (Event) { EVENT_CONNECT, tcp->num_conns };
                         conn_init(&tcp->conns[tcp->num_conns++], new_fd, false);
+                        events[num_events++] = (Event) { EVENT_CONNECT, tcp->num_conns-1, tcp->conns[tcp->num_conns-1].tag };
                     }
                 }
             }
@@ -266,7 +266,7 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
                         defer_close = true;
                     else {
                         conn->connecting = false;
-                        events[num_events++] = (Event) { EVENT_CONNECT, conn - tcp->conns };
+                        events[num_events++] = (Event) { EVENT_CONNECT, conn - tcp->conns, conn->tag };
                     }
                 }
 
@@ -319,8 +319,8 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
 
             removed[i] = defer_close;
             if (0) {}
-            else if (defer_close) events[num_events++] = (Event) { EVENT_DISCONNECT, conn - tcp->conns };
-            else if (defer_ready) events[num_events++] = (Event) { EVENT_MESSAGE,    conn - tcp->conns };
+            else if (defer_close) events[num_events++] = (Event) { EVENT_DISCONNECT, conn - tcp->conns, conn->tag };
+            else if (defer_ready) events[num_events++] = (Event) { EVENT_MESSAGE,    conn - tcp->conns, conn->tag };
         }
     }
 

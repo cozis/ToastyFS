@@ -870,6 +870,8 @@ static int process_chunk_server_sync_3(MetadataServer *state,
     HashSet tmp_list;
     hash_set_init(&tmp_list);
 
+    message_write(&writer, &count, sizeof(count));
+
     for (uint32_t i = 0; i < count; i++) {
 
         SHA256 hash;
@@ -933,6 +935,7 @@ static bool is_chunk_server_message_type(uint16_t type)
     switch (type) {
         case MESSAGE_TYPE_AUTH:
         case MESSAGE_TYPE_SYNC:
+        case MESSAGE_TYPE_SYNC_3:
         return true;
 
         default:
@@ -1010,9 +1013,9 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
 
             case EVENT_DISCONNECT:
             {
-                int tag = tcp_get_tag(&state->tcp, conn_idx);
-                if (tag >= 0) {
-                    chunk_server_peer_free(&state->chunk_servers[tag]);
+                if (events[i].tag >= 0) {
+                    chunk_server_peer_free(&state->chunk_servers[events[i].tag]);
+                    assert(state->num_chunk_servers > 0);
                     state->num_chunk_servers--;
                 }
             }
@@ -1048,6 +1051,7 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
                             }
 
                             chunk_server_peer_init(&state->chunk_servers[j], current_time);
+                            state->num_chunk_servers++;
 
                             tcp_set_tag(&state->tcp, conn_idx, j, true);
 

@@ -1,5 +1,5 @@
 
-CFLAGS = -Wall -Wextra -ggdb
+CFLAGS = -Wall -Wextra -ggdb -fsanitize=address,undefined
 COVERAGE_CFLAGS = $(CFLAGS) --coverage
 COVERAGE_LFLAGS = --coverage
 
@@ -22,10 +22,10 @@ all: mousefs$(EXT) mousefs_random_test$(EXT) example_client$(EXT) libmousefs.a
 coverage: mousefs_random_test_coverage$(EXT)
 
 coverage-report:
-	@./scripts/measure_coverage.sh 5
+	@./scripts/measure_coverage.sh 60
 
 coverage-html:
-	@./scripts/measure_coverage.sh 5 --html
+	@./scripts/measure_coverage.sh 60 --html
 
 mousefs$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_SERVER

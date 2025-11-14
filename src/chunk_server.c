@@ -871,6 +871,8 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 
     start_connecting_to_metadata_server(state);
 
+    // TODO: add all chunk hashes to the add list
+
     printf("Chunk server set up (local=%.*s:%d, remote=%.*s:%d, path=%.*s)\n",
         addr.len,
         addr.ptr,
@@ -911,14 +913,16 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         switch (events[i].type) {
 
             case EVENT_CONNECT:
-            if (tcp_get_tag(&state->tcp, conn_idx) == TAG_METADATA_SERVER)
-                state->disconnect_time = INVALID_TIME;
+            if (tcp_get_tag(&state->tcp, conn_idx) == TAG_METADATA_SERVER) {
+                assert(state->disconnect_time == INVALID_TIME);
+            }
             break;
 
             case EVENT_DISCONNECT:
-            switch (tcp_get_tag(&state->tcp, conn_idx)) {
+            switch (events[i].tag) {
 
                 case TAG_METADATA_SERVER:
+                assert(state->disconnect_time == INVALID_TIME);
                 state->disconnect_time = current_time;
                 break;
 
@@ -975,6 +979,11 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
             }
             break;
         }
+    }
+
+    {
+        int conn_idx = tcp_index_from_tag(&state->tcp, TAG_METADATA_SERVER);
+        assert((conn_idx < 0) == (state->disconnect_time != INVALID_TIME));
     }
 
     Time deadline = INVALID_TIME;
