@@ -798,6 +798,8 @@ static int process_chunk_server_sync(MetadataServer *state,
         if (!file_tree_uses_hash(&state->file_tree, hash))
             continue;
 
+        // TODO: execution never reaches this point for some reason
+
         // If the chunk is properly replicated or under-replicated,
         // add it to the ms_add_list.
 

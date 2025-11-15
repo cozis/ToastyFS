@@ -146,7 +146,7 @@ static int store_chunk(ChunkStore *store, string data, SHA256 *hash)
     // This is okay as long as we check that the hash
     // is correct while reading back the data.
     Handle fd;
-    if (file_open(path, &fd) < 0)
+    if (file_open(path, &fd) < 0) // TODO: open in overwrite mode
         return -1;
     int copied = 0;
     while (copied < data.len) {

@@ -292,12 +292,8 @@ static int get_chunk_server(MouseFS *mfs, Address *addrs, int num_addrs, ByteQue
         if (!have_insertection(addrs, num_addrs, mfs->chunk_servers[i].addrs, mfs->chunk_servers[i].num_addrs))
             continue;
 
-        // It's possible that this chunk server's connection
-        // was dropped but we still didn't process the DISCONNECT
-        // event.
-        int conn_idx = tcp_index_from_tag(&mfs->tcp, found);
-        if (conn_idx < 0)
-            continue;
+        int conn_idx = tcp_index_from_tag(&mfs->tcp, i);
+        assert(conn_idx > -1);
 
         if (output)
             *output = tcp_output_buffer(&mfs->tcp, conn_idx);
@@ -1251,6 +1247,8 @@ static void process_event_for_write(MouseFS *mfs,
                 mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
                 return;
             }
+
+            mfs->operations[opidx].hashes[i] = hash;
 
             uint32_t num_holders;
             if (!binary_read(&reader, &num_holders, sizeof(num_holders))) {

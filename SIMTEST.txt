@@ -1,0 +1,2 @@
+Notes on simulation testing:
+    - Trace the branch coverage of the test and find why some branches are never reached
