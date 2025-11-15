@@ -10,8 +10,6 @@
 #define TAG_METADATA_SERVER 1
 #define TAG_CHUNK_SERVER    2
 
-#define CHUNK_SERVER_RECONNECT_TIME 10000
-
 typedef struct {
     char path[PATH_MAX];
 } ChunkStore;
@@ -37,6 +35,7 @@ typedef struct {
 
     Time disconnect_time;
     Time last_sync_time;
+    int reconnect_delay; // In seconds
 
     TCP tcp;
 

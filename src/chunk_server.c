@@ -890,10 +890,10 @@ static int send_sync_message(ChunkServer *state)
 
 int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
-    string addr  = getargs(argc, argv, "--addr", "127.0.0.1");
-    int    port  = getargi(argc, argv, "--port", 8081);
-    string path  = getargs(argc, argv, "--path", "chunk_server_data/");
-    bool   trace = getargb(argc, argv, "--trace");
+    string addr        = getargs(argc, argv, "--addr", "127.0.0.1");
+    int    port        = getargi(argc, argv, "--port", 8081);
+    string path        = getargs(argc, argv, "--path", "chunk_server_data/");
+    bool   trace       = getargb(argc, argv, "--trace");
     string remote_addr = getargs(argc, argv, "--remote-addr", "127.0.0.1");
     int    remote_port = getargi(argc, argv, "--remote-port", 8080);
 
@@ -906,6 +906,8 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     Time current_time = get_current_time();
 
     state->trace = trace;
+
+    state->reconnect_delay = 1; // 1 second
 
     tcp_context_init(&state->tcp);
 
@@ -1109,7 +1111,7 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
     start_download(state);
 
     if (state->disconnect_time != INVALID_TIME) {
-        Time reconnect_time = state->disconnect_time + (Time) CHUNK_SERVER_RECONNECT_TIME * 1000000000;
+        Time reconnect_time = state->disconnect_time + (Time) state->reconnect_delay * 1000000000;
         if (reconnect_time <= current_time) {
             state->disconnect_time = INVALID_TIME;
             if (start_connecting_to_metadata_server(state) < 0)
