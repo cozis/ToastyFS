@@ -1,2 +1,3 @@
 Notes on simulation testing:
+    - Make sure your program works without fault injections
     - Trace the branch coverage of the test and find why some branches are never reached

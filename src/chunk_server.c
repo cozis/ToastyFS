@@ -553,6 +553,7 @@ process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView
     }
 
     directory_scanner_free(&scanner);
+    return 0;
 }
 
 static int
@@ -686,6 +687,10 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
 
     sys_free(mem);
 
+    if (hash_set_insert(&state->cs_add_list, new_hash) < 0) {
+        assert(0); // TODO
+    }
+
     if (ret < 0)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("I/O error"));
 
@@ -736,6 +741,10 @@ process_client_upload_chunk(ChunkServer *state, int conn_idx, ByteView msg)
 
     if (ret < 0)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_UPLOAD_CHUNK_ERROR, S("I/O error"));
+
+    if (hash_set_insert(&state->cs_add_list, new_hash) < 0) {
+        assert(0); // TODO
+    }
 
     MessageWriter writer;
 
