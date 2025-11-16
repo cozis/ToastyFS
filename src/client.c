@@ -1935,9 +1935,14 @@ int toastyfs_process_events(ToastyFS *tfs, void **contexts, struct pollfd *polle
     return tcp_register_events(&tfs->tcp, contexts, polled);
 }
 
-void toastyfs_wait(ToastyFS *tfs, int opidx, ToastyFS_Result *result, int timeout)
+int toastyfs_wait(ToastyFS *tfs, int opidx, ToastyFS_Result *result, int timeout)
 {
-    // TODO: use the timeout parameter
+    Time start_time = INVALID_TIME;
+    if (timeout > -1) {
+        start_time = get_current_time();
+        if (start_time == INVALID_TIME)
+            return -1;
+    }
 
     void *contexts[MAX_CONNS+1];
     struct pollfd polled[MAX_CONNS+1];
@@ -1946,7 +1951,29 @@ void toastyfs_wait(ToastyFS *tfs, int opidx, ToastyFS_Result *result, int timeou
     num_polled = toastyfs_process_events(tfs, contexts, polled, 0);
 
     while (!toastyfs_isdone(tfs, opidx, result)) {
-        POLL(polled, num_polled, -1);
+
+        int remaining_timeout = -1;
+        if (timeout > -1) {
+
+            Time current_time = get_current_time();
+            if (current_time == INVALID_TIME)
+                return -1;
+
+            int elapsed = (current_time - start_time) / 1000000;
+            if (elapsed > timeout)
+                return 1; // Timed out
+
+            remaining_timeout = timeout - elapsed;
+        }
+
+        int ret = POLL(polled, num_polled, remaining_timeout);
+        if (ret < 0)
+            return -1;
+
         num_polled = toastyfs_process_events(tfs, contexts, polled, num_polled);
+        if (num_polled < 0)
+            return -1;
     }
+
+    return 0;
 }
