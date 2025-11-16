@@ -886,11 +886,19 @@ static int process_chunk_server_sync_3(MetadataServer *state,
     for (uint32_t i = 0; i < count; i++) {
 
         SHA256 hash;
-        if (!binary_read(&reader, &hash, sizeof(hash)))
+        if (!binary_read(&reader, &hash, sizeof(hash))) {
+            hash_set_free(&tmp_list);
             return -1;
+        }
+
+        // Only hashes that were actually expected to be
+        // in on the server should be recovered.
+        assert(hash_set_contains(&chunk_server->ms_add_list, hash)
+            || hash_set_contains(&chunk_server->ms_old_list, hash));
 
         if (hash_set_insert(&tmp_list, hash) < 0) {
-            assert(0); // TODO
+            hash_set_free(&tmp_list);
+            return -1;
         }
 
         int holders[MAX_CHUNK_SERVERS];
@@ -907,11 +915,14 @@ static int process_chunk_server_sync_3(MetadataServer *state,
         }
     }
 
-    if (binary_read(&reader, NULL, 1)) // TODO: this should probably be an assertion
+    if (binary_read(&reader, NULL, 1)) { // TODO: this should probably be an assertion
+        hash_set_free(&tmp_list);
         return -1;
+    }
 
     if (hash_set_merge(&chunk_server->ms_old_list, chunk_server->ms_add_list) < 0) {
-        assert(0); // TODO
+        hash_set_free(&tmp_list);
+        return -1;
     }
 
     hash_set_remove_set(&chunk_server->ms_old_list, tmp_list);
@@ -1010,9 +1021,8 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
     int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
 
     Time current_time = get_current_time();
-    if (current_time == INVALID_TIME) {
-        assert(0); // TODO
-    }
+    if (current_time == INVALID_TIME)
+        return -1;
 
     for (int i = 0; i < num_events; i++) {
         int conn_idx = events[i].conn_idx;
@@ -1053,8 +1063,10 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
                         if (is_chunk_server_message_type(msg_type)) {
 
                             if (state->num_chunk_servers == MAX_CHUNK_SERVERS) {
-                                assert(0); // TODO
+                                tcp_close(&state->tcp, conn_idx);
+                                break;
                             }
+
                             int j = 0;
                             while (state->chunk_servers[j].used) {
                                 j++;

@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#include "tcp.h"
 #include "basic.h"
 #include "byte_queue.h"
 #include "config.h"
@@ -10,14 +11,13 @@
 #include "sha256.h"
 #include "message.h"
 #include "file_system.h"
-#include "tcp.h"
 #include "chunk_server.h"
 
 static void download_targets_init(DownloadTargets *targets)
 {
+    targets->items = NULL;
     targets->count = 0;
     targets->capacity = 0;
-    targets->items = NULL;
 }
 
 static void download_targets_free(DownloadTargets *targets)
@@ -127,12 +127,25 @@ static string hash2path(ChunkStore *store, SHA256 hash, char *out)
     return (string) { out, strlen(out) };
 }
 
+// TODO: return an error when bitrot
 static int load_chunk(ChunkStore *store, SHA256 hash, string *data)
 {
     char buf[PATH_MAX];
     string path = hash2path(store, hash, buf);
-    // TODO: check that the hash matches
-    return file_read_all(path, data);
+
+    int ret = file_read_all(path, data);
+    if (ret < 0)
+        return -1;
+
+    SHA256 fresh_hash;
+    sha256(data->ptr, data->len, (uint8_t*) &fresh_hash.data);
+
+    if (memcmp(&hash, &fresh_hash, sizeof(SHA256))) {
+        free(data->ptr);
+        return -1;
+    }
+
+    return 0;
 }
 
 static int store_chunk(ChunkStore *store, string data, SHA256 *hash)
@@ -272,7 +285,7 @@ static void start_download(ChunkServer *state)
     message_write(&writer, &length, sizeof(length));
 
     if (!message_writer_free(&writer))
-        return; // ???
+        return;
 
     state->current_download_target_hash = target.hash;
     state->downloading = true;
@@ -291,9 +304,8 @@ static int process_metadata_server_sync_2(ChunkServer *state,
         return -1;
 
     Time current_time = get_current_time();
-    if (current_time == INVALID_TIME) {
-        assert(0); // TODO
-    }
+    if (current_time == INVALID_TIME)
+        return -1;
 
     HashSet tmp_list;
     hash_set_init(&tmp_list);
@@ -309,7 +321,8 @@ static int process_metadata_server_sync_2(ChunkServer *state,
 
         if (!chunk_store_exists(&state->store, hash)) {
             if (hash_set_insert(&tmp_list, hash) < 0) {
-                assert(0); // TODO
+                hash_set_free(&tmp_list);
+                return -1;
             }
             continue;
         }
@@ -320,29 +333,37 @@ static int process_metadata_server_sync_2(ChunkServer *state,
 
     for (int i = 0; i < state->cs_add_list.count; i++) {
         if (timed_hash_set_insert(&state->cs_rem_list, state->cs_add_list.items[i], current_time) < 0) {
-            assert(0); // TODO
+            hash_set_free(&tmp_list);
+            return -1;
         }
     }
 
     hash_set_clear(&state->cs_add_list);
 
     uint32_t rem_count;
-    if (!binary_read(&reader, &rem_count, sizeof(rem_count)))
+    if (!binary_read(&reader, &rem_count, sizeof(rem_count))) {
+        hash_set_free(&tmp_list);
         return -1;
+    }
 
     for (uint32_t i = 0; i < rem_count; i++) {
 
         SHA256 hash;
-        if (!binary_read(&reader, &hash, sizeof(hash)))
+        if (!binary_read(&reader, &hash, sizeof(hash))) {
+            hash_set_free(&tmp_list);
             return -1;
+        }
 
         if (timed_hash_set_insert(&state->cs_rem_list, hash, current_time) < 0) {
-            assert(0); // TODO
+            hash_set_free(&tmp_list);
+            return -1;
         }
     }
 
-    if (binary_read(&reader, NULL, 1))
+    if (binary_read(&reader, NULL, 1)) {
+        hash_set_free(&tmp_list);
         return -1;
+    }
 
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
     assert(output);
@@ -350,7 +371,11 @@ static int process_metadata_server_sync_2(ChunkServer *state,
     MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_SYNC_3);
 
-    uint32_t count = tmp_list.count + state->cs_lst_list.count; // TODO: overflow
+    if ((uint32_t) state->cs_lst_list.count > UINT32_MAX - tmp_list.count) {
+        hash_set_free(&tmp_list);
+        return -1;
+    }
+    uint32_t count = tmp_list.count + state->cs_lst_list.count;
     message_write(&writer, &count, sizeof(count));
 
     for (int i = 0; i < tmp_list.count; i++) {
@@ -362,6 +387,8 @@ static int process_metadata_server_sync_2(ChunkServer *state,
         SHA256 hash = state->cs_lst_list.items[i];
         message_write(&writer, &hash, sizeof(hash));
     }
+
+    hash_set_free(&tmp_list);
 
     if (!message_writer_free(&writer))
         return -1;
@@ -505,7 +532,7 @@ process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView
 
     DirectoryScanner scanner;
     if (directory_scanner_init(&scanner, path) < 0) {
-        assert(0); // TODO
+        return -1;
     }
 
     for (;;) {
@@ -513,7 +540,8 @@ process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView
         string name;
         int ret = directory_scanner_next(&scanner, &name);
         if (ret < 0) {
-            assert(0); // TODO
+            directory_scanner_free(&scanner);
+            return -1;
         }
         if (ret == 1)
             break;
@@ -548,7 +576,8 @@ process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView
         if (invalid) continue;
 
         if (hash_set_insert(&state->cs_add_list, hash) < 0) {
-            assert(0); // TODO
+            directory_scanner_free(&scanner);
+            return -1;
         }
     }
 
@@ -604,9 +633,8 @@ process_chunk_server_download_success(ChunkServer *state, int conn_idx, ByteView
         return -1;
 
     // Store the downloaded chunk
-    if (chunk_store_add(&state->store, data) < 0) {
-        assert(0); // TODO
-    }
+    if (chunk_store_add(&state->store, data) < 0)
+        return -1;
 
     // The download succeded!
 
@@ -618,9 +646,8 @@ process_chunk_server_download_success(ChunkServer *state, int conn_idx, ByteView
     download_targets_remove(&state->download_targets, state->current_download_target_hash);
 
     // Add the newly acquired chunk to the add list
-    if (hash_set_insert(&state->cs_add_list, state->current_download_target_hash) < 0) {
-        assert(0); // TODO
-    }
+    if (hash_set_insert(&state->cs_add_list, state->current_download_target_hash) < 0)
+        return -1;
 
     start_download(state);
     return 0;
@@ -687,16 +714,16 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
 
     sys_free(mem);
 
-    if (hash_set_insert(&state->cs_add_list, new_hash) < 0) {
-        assert(0); // TODO
-    }
-
     if (ret < 0)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("I/O error"));
 
-    MessageWriter writer;
+    if (hash_set_insert(&state->cs_add_list, new_hash) < 0)
+        return -1;
 
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
+
+    MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_CREATE_CHUNK_SUCCESS);
 
     message_write(&writer, &new_hash, sizeof(new_hash));
@@ -739,12 +766,13 @@ process_client_upload_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     SHA256 new_hash;
     int ret = chunk_store_patch(&state->store, target_hash, target_off, data, &new_hash);
 
-    if (ret < 0)
+    if (ret < 0) {
+        // TODO: if the chunk is missing add it to the missing list
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_UPLOAD_CHUNK_ERROR, S("I/O error"));
-
-    if (hash_set_insert(&state->cs_add_list, new_hash) < 0) {
-        assert(0); // TODO
     }
+
+    if (hash_set_insert(&state->cs_add_list, new_hash) < 0)
+        return -1;
 
     MessageWriter writer;
 
@@ -786,8 +814,10 @@ process_client_download_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     string data;
     int ret = chunk_store_get(&state->store, target_hash, &data);
 
-    if (ret < 0)
+    if (ret < 0) {
+        // TODO: if the chunk is missing add it to the missing list
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("I/O error"));
+    }
 
     if (target_off >= (size_t) data.len || target_len > (size_t) data.len - target_off) {
         sys_free(data.ptr);
@@ -875,7 +905,7 @@ static int send_sync_message(ChunkServer *state)
     // TODO: May be worth it to add a limit to how many
     //       items from the add list are sent every update
     //       to keep messages under 4GB.
-    uint32_t count = state->cs_add_list.count; // TODO: check implicit conversions
+    uint32_t count = state->cs_add_list.count;
     message_write(&writer, &count, sizeof(count));
 
     for (uint32_t i = 0; i < count; i++) {
@@ -904,6 +934,8 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
         return -1;
 
     Time current_time = get_current_time();
+    if (current_time == INVALID_TIME)
+        return -1;
 
     state->trace = trace;
 
@@ -963,8 +995,6 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     state->last_sync_time = current_time;
 
     start_connecting_to_metadata_server(state);
-
-    // TODO: add all chunk hashes to the add list
 
     printf("Chunk server set up (local=%.*s:%d, remote=%.*s:%d, path=%.*s)\n",
         addr.len,
