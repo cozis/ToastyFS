@@ -1733,9 +1733,9 @@ static void process_event_for_write(ToastyFS *toasty,
             MessageWriter writer;
             metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_WRITE);
 
-            string   path   = toasty->operations[opidx].path;
-            uint32_t offset = toasty->operations[opidx].off;
-            uint32_t length = toasty->operations[opidx].len;
+            ToastyString path   = toasty->operations[opidx].path;
+            uint32_t     offset = toasty->operations[opidx].off;
+            uint32_t     length = toasty->operations[opidx].len;
 
             if (path.len > UINT16_MAX) {
                 // TODO
@@ -2046,7 +2046,7 @@ int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *resu
             remaining_timeout = timeout - elapsed;
         }
 
-        int ret = POLL(polled, num_polled, remaining_timeout);
+        ret = POLL(polled, num_polled, remaining_timeout);
         if (ret < 0)
             return -1;
 
