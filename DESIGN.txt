@@ -1,5 +1,5 @@
 Architecture
-  A MouseFS instance is composed by a metadata server, a number
+  A ToastyFS instance is composed by a metadata server, a number
   of chunk servers, and a number of clients.
 
   The metadata server stores the full file system hieararchy,

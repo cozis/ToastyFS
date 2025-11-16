@@ -17,9 +17,9 @@ OFILES = $(CFILES:.c=.o)
 
 .PHONY: all clean coverage coverage-report coverage-html
 
-all: mousefs$(EXT) mousefs_random_test$(EXT) example_client$(EXT) libmousefs.a
+all: toastyfs$(EXT) toastyfs_random_test$(EXT) example_client$(EXT) libtoastyfs.a
 
-coverage: mousefs_random_test_coverage$(EXT)
+coverage: toastyfs_random_test_coverage$(EXT)
 
 coverage-report:
 	@./scripts/measure_coverage.sh 60
@@ -27,35 +27,35 @@ coverage-report:
 coverage-html:
 	@./scripts/measure_coverage.sh 60 --html
 
-mousefs$(EXT): $(CFILES) $(HFILES)
+toastyfs$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_SERVER
 
-mousefs_random_test$(EXT): $(CFILES) $(HFILES)
+toastyfs_random_test$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_TEST
 
-mousefs_random_test_coverage$(EXT): $(CFILES) $(HFILES)
+toastyfs_random_test_coverage$(EXT): $(CFILES) $(HFILES)
 	gcc -o $@ $(CFILES) $(COVERAGE_CFLAGS) $(LFLAGS) $(COVERAGE_LFLAGS) -Iinc -DBUILD_TEST
 
-example_client$(EXT): libmousefs.a
-	gcc -o $@ examples/main.c $(CFLAGS) -lmousefs $(LFLAGS) -Iinc -L.
+example_client$(EXT): libtoastyfs.a
+	gcc -o $@ examples/main.c $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinc -L.
 
 %.o: %.c $(HFILES)
 	gcc -c -o $@ $< $(CFLAGS) -Iinc
 
-libmousefs.a: $(OFILES)
+libtoastyfs.a: $(OFILES)
 	ar rcs $@ $^
 
 clean:
 	rm -f                                \
-		mousefs.exe                      \
-		mousefs.out                      \
-		mousefs_random_test.exe          \
-		mousefs_random_test.out          \
-		mousefs_random_test_coverage.exe \
-		mousefs_random_test_coverage.out \
+		toastyfs.exe                      \
+		toastyfs.out                      \
+		toastyfs_random_test.exe          \
+		toastyfs_random_test.out          \
+		toastyfs_random_test_coverage.exe \
+		toastyfs_random_test_coverage.out \
 		example_client.exe               \
 		example_client.out               \
-		libmousefs.a                     \
+		libtoastyfs.a                     \
 		src/*.o                          \
 		src/*.gcda                       \
 		src/*.gcno                       \

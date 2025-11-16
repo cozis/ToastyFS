@@ -15,7 +15,7 @@
 #include "system.h"
 #include "config.h"
 #include "message.h"
-#include <MouseFS.h>
+#include <ToastyFS.h>
 
 #define TAG_METADATA_SERVER -2
 
@@ -34,7 +34,7 @@ typedef struct {
     uint32_t offset_within_chunk;
     uint32_t length_within_chunk;
     Address  server_addr;      // Chunk server address for this chunk
-    int      chunk_server_idx; // Index in mfs->chunk_servers array
+    int      chunk_server_idx; // Index in tfs->chunk_servers array
 } Range;
 
 typedef enum {
@@ -113,7 +113,7 @@ typedef struct {
     int num_uploads;
     int cap_uploads;
 
-    MouseFS_Result result;
+    ToastyFS_Result result;
 } Operation;
 
 typedef struct {
@@ -151,7 +151,7 @@ typedef struct {
 
 } ChunkServer;
 
-struct MouseFS {
+struct ToastyFS {
 
     TCP tcp;
 
@@ -166,77 +166,77 @@ struct MouseFS {
 
 static void request_queue_init(RequestQueue *reqs);
 
-MouseFS *mousefs_init(char *addr, uint16_t port)
+ToastyFS *toastyfs_init(char *addr, uint16_t port)
 {
-    MouseFS *mfs = sys_malloc(sizeof(MouseFS));
-    if (mfs == NULL)
+    ToastyFS *tfs = sys_malloc(sizeof(ToastyFS));
+    if (tfs == NULL)
         return NULL;
 
     Address addr2;
     addr2.is_ipv4 = true;
     addr2.port = port;
     if (inet_pton(AF_INET, addr, &addr2.ipv4) != 1) {
-        sys_free(mfs);
+        sys_free(tfs);
         return NULL;
     }
 
-    tcp_context_init(&mfs->tcp);
+    tcp_context_init(&tfs->tcp);
 
-    if (tcp_connect(&mfs->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
-        tcp_context_free(&mfs->tcp);
-        sys_free(mfs);
+    if (tcp_connect(&tfs->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
+        tcp_context_free(&tfs->tcp);
+        sys_free(tfs);
         return NULL;
     }
 
-    mfs->num_operations = 0;
+    tfs->num_operations = 0;
 
     for (int i = 0; i < MAX_OPERATIONS; i++)
-        mfs->operations[i].type = OPERATION_TYPE_FREE;
+        tfs->operations[i].type = OPERATION_TYPE_FREE;
 
     // Initialize metadata server (connected during init)
-    mfs->metadata_server.used = true;
-    mfs->metadata_server.addr = addr2;
-    request_queue_init(&mfs->metadata_server.reqs);
+    tfs->metadata_server.used = true;
+    tfs->metadata_server.addr = addr2;
+    request_queue_init(&tfs->metadata_server.reqs);
 
     // Initialize chunk servers array (connections created on demand)
-    mfs->num_chunk_servers = 0;
+    tfs->num_chunk_servers = 0;
     for (int i = 0; i < MAX_CHUNK_SERVERS; i++) {
-        mfs->chunk_servers[i].used = false;
+        tfs->chunk_servers[i].used = false;
     }
 
-    return mfs;
+    return tfs;
 }
 
-void mousefs_free(MouseFS *mfs)
+void toastyfs_free(ToastyFS *tfs)
 {
-    tcp_context_free(&mfs->tcp);
-    sys_free(mfs);
+    tcp_context_free(&tfs->tcp);
+    sys_free(tfs);
 }
 
 static int
-alloc_operation(MouseFS *mfs, OperationType type, int off, void *ptr, int len)
+alloc_operation(ToastyFS *tfs, OperationType type, int off, void *ptr, int len)
 {
-    if (mfs->num_operations == MAX_OPERATIONS)
+    if (tfs->num_operations == MAX_OPERATIONS)
         return -1;
-    Operation *o = mfs->operations;
+    Operation *o = tfs->operations;
     while (o->type != OPERATION_TYPE_FREE) {
         o++;
-        assert(o < mfs->operations + MAX_OPERATIONS);
+        assert(o < tfs->operations + MAX_OPERATIONS);
     }
     o->type = type;
     o->ptr  = ptr;
     o->off  = off;
     o->len  = len;
-    o->result = (MouseFS_Result) { .type=MOUSEFS_RESULT_EMPTY };
+    o->result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_EMPTY };
 
-    mfs->num_operations++;
-    return o - mfs->operations;
+    tfs->num_operations++;
+    return o - tfs->operations;
 }
 
-static void free_operation(MouseFS *mfs, int opidx)
+static void free_operation(ToastyFS *tfs, int opidx)
 {
-    mfs->operations[opidx].type = OPERATION_TYPE_FREE;
-    mfs->num_operations--;
+    tfs->operations[opidx].type = OPERATION_TYPE_FREE;
+    tfs->num_operations--;
 }
 
 static void
@@ -279,24 +279,24 @@ have_insertection(Address *a, int a_num, Address *b, int b_num)
 }
 
 // Get or create connection to a chunk server
-static int get_chunk_server(MouseFS *mfs, Address *addrs, int num_addrs, ByteQueue **output)
+static int get_chunk_server(ToastyFS *tfs, Address *addrs, int num_addrs, ByteQueue **output)
 {
     // Check if already connected
 
     int found = -1;
-    for (int i = 0; i < mfs->num_chunk_servers; i++) {
+    for (int i = 0; i < tfs->num_chunk_servers; i++) {
 
-        if (!mfs->chunk_servers[i].used)
+        if (!tfs->chunk_servers[i].used)
            continue;
 
-        if (!have_insertection(addrs, num_addrs, mfs->chunk_servers[i].addrs, mfs->chunk_servers[i].num_addrs))
+        if (!have_insertection(addrs, num_addrs, tfs->chunk_servers[i].addrs, tfs->chunk_servers[i].num_addrs))
             continue;
 
-        int conn_idx = tcp_index_from_tag(&mfs->tcp, i);
+        int conn_idx = tcp_index_from_tag(&tfs->tcp, i);
         assert(conn_idx > -1);
 
         if (output)
-            *output = tcp_output_buffer(&mfs->tcp, conn_idx);
+            *output = tcp_output_buffer(&tfs->tcp, conn_idx);
 
         found = i;
         break;
@@ -304,45 +304,45 @@ static int get_chunk_server(MouseFS *mfs, Address *addrs, int num_addrs, ByteQue
 
     if (found == -1) {
 
-        if (mfs->num_chunk_servers == MAX_CHUNK_SERVERS)
+        if (tfs->num_chunk_servers == MAX_CHUNK_SERVERS)
             return -1;
 
         // Find free slot
         found = 0;
-        while (mfs->chunk_servers[found].used) {
+        while (tfs->chunk_servers[found].used) {
             found++;
             assert(found < MAX_CHUNK_SERVERS);
         }
 
-        if (tcp_connect(&mfs->tcp, addrs[0], found, output) < 0)
+        if (tcp_connect(&tfs->tcp, addrs[0], found, output) < 0)
             return -1;
 
         if (num_addrs > MAX_SERVER_ADDRS)
             num_addrs = MAX_SERVER_ADDRS;
-        mfs->chunk_servers[found].num_addrs = num_addrs;
-        memcpy(mfs->chunk_servers[found].addrs, addrs, num_addrs * sizeof(Address));
+        tfs->chunk_servers[found].num_addrs = num_addrs;
+        memcpy(tfs->chunk_servers[found].addrs, addrs, num_addrs * sizeof(Address));
 
-        mfs->chunk_servers[found].used = true;
-        mfs->chunk_servers[found].current_addr_idx = 0;
-        mfs->chunk_servers[found].connected = false;
+        tfs->chunk_servers[found].used = true;
+        tfs->chunk_servers[found].current_addr_idx = 0;
+        tfs->chunk_servers[found].connected = false;
 
-        request_queue_init(&mfs->chunk_servers[found].reqs);
+        request_queue_init(&tfs->chunk_servers[found].reqs);
 
-        mfs->num_chunk_servers++;
+        tfs->num_chunk_servers++;
     }
 
     return found;
 }
 
 // Send download request for a chunk
-static int send_download_chunk(MouseFS *mfs, int chunk_server_idx,
+static int send_download_chunk(ToastyFS *tfs, int chunk_server_idx,
     SHA256 hash, uint32_t offset, uint32_t length, int opidx, int range_idx)
 {
-    int conn_idx = tcp_index_from_tag(&mfs->tcp, chunk_server_idx);
+    int conn_idx = tcp_index_from_tag(&tfs->tcp, chunk_server_idx);
     if (conn_idx < 0) return -1;
 
     MessageWriter writer;
-    ByteQueue *output = tcp_output_buffer(&mfs->tcp, conn_idx);
+    ByteQueue *output = tcp_output_buffer(&tfs->tcp, conn_idx);
     message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK);
 
     message_write(&writer, &hash,   sizeof(hash));
@@ -352,63 +352,63 @@ static int send_download_chunk(MouseFS *mfs, int chunk_server_idx,
     if (!message_writer_free(&writer))
         return -1;
 
-    RequestQueue *reqs = &mfs->chunk_servers[chunk_server_idx].reqs;
+    RequestQueue *reqs = &tfs->chunk_servers[chunk_server_idx].reqs;
     return request_queue_push(reqs, (Request) { range_idx, opidx });
 }
 
-static void close_chunk_server(MouseFS *mfs, int chunk_server_idx)
+static void close_chunk_server(ToastyFS *tfs, int chunk_server_idx)
 {
-    int conn_idx = tcp_index_from_tag(&mfs->tcp, chunk_server_idx);
-    tcp_close(&mfs->tcp, conn_idx);
+    int conn_idx = tcp_index_from_tag(&tfs->tcp, chunk_server_idx);
+    tcp_close(&tfs->tcp, conn_idx);
 }
 
 static void
-metadata_server_request_start(MouseFS *mfs, MessageWriter *writer, uint16_t type)
+metadata_server_request_start(ToastyFS *tfs, MessageWriter *writer, uint16_t type)
 {
     ByteQueue *output;
-    if (mfs->metadata_server.used) {
+    if (tfs->metadata_server.used) {
 
-        int conn_idx = tcp_index_from_tag(&mfs->tcp, TAG_METADATA_SERVER);
+        int conn_idx = tcp_index_from_tag(&tfs->tcp, TAG_METADATA_SERVER);
         assert(conn_idx > -1);
 
-        output = tcp_output_buffer(&mfs->tcp, conn_idx);
+        output = tcp_output_buffer(&tfs->tcp, conn_idx);
     } else {
-        if (tcp_connect(&mfs->tcp, mfs->metadata_server.addr, TAG_METADATA_SERVER, &output) < 0) {
+        if (tcp_connect(&tfs->tcp, tfs->metadata_server.addr, TAG_METADATA_SERVER, &output) < 0) {
             assert(0); // TODO
         }
-        mfs->metadata_server.used = true;
+        tfs->metadata_server.used = true;
     }
 
     message_writer_init(writer, output, type);
 }
 
 static int
-metadata_server_request_end(MouseFS *mfs, MessageWriter *writer, int opidx, int tag)
+metadata_server_request_end(ToastyFS *tfs, MessageWriter *writer, int opidx, int tag)
 {
     if (!message_writer_free(writer))
         return -1;
 
-    RequestQueue *reqs = &mfs->metadata_server.reqs;
+    RequestQueue *reqs = &tfs->metadata_server.reqs;
     if (request_queue_push(reqs, (Request) { tag, opidx }) < 0)
         return -1;
 
     return 0;
 }
 
-int mousefs_submit_create(MouseFS *mfs, char *path, int path_len,
+int toastyfs_submit_create(ToastyFS *tfs, char *path, int path_len,
     bool is_dir, uint32_t chunk_size)
 {
     if (path_len < 0) path_len = strlen(path);
 
     OperationType type = OPERATION_TYPE_CREATE;
-    int opidx = alloc_operation(mfs, type, 0, NULL, 0);
+    int opidx = alloc_operation(tfs, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
     MessageWriter writer;
-    metadata_server_request_start(mfs, &writer, MESSAGE_TYPE_CREATE);
+    metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_CREATE);
 
     if (path_len > UINT16_MAX) {
-        free_operation(mfs, opidx);
+        free_operation(tfs, opidx);
         return -1;
     }
     uint16_t tmp = path_len;
@@ -421,139 +421,139 @@ int mousefs_submit_create(MouseFS *mfs, char *path, int path_len,
 
     if (!is_dir) {
         if (chunk_size == 0 || chunk_size > UINT32_MAX) {
-            free_operation(mfs, opidx);
+            free_operation(tfs, opidx);
             return -1;
         }
         uint32_t tmp_u32 = chunk_size;
         message_write(&writer, &tmp_u32, sizeof(tmp_u32));
     }
 
-    if (metadata_server_request_end(mfs, &writer, opidx, 0) < 0) {
-        free_operation(mfs, opidx);
+    if (metadata_server_request_end(tfs, &writer, opidx, 0) < 0) {
+        free_operation(tfs, opidx);
         return -1;
     }
 
     return opidx;
 }
 
-int mousefs_submit_delete(MouseFS *mfs, char *path, int path_len)
+int toastyfs_submit_delete(ToastyFS *tfs, char *path, int path_len)
 {
     if (path_len < 0) path_len = strlen(path);
 
     OperationType type = OPERATION_TYPE_DELETE;
-    int opidx = alloc_operation(mfs, type, 0, NULL, 0);
+    int opidx = alloc_operation(tfs, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
     if (path_len > UINT16_MAX) {
-        free_operation(mfs, opidx);
+        free_operation(tfs, opidx);
         return -1;
     }
     uint16_t tmp = path_len;
 
     MessageWriter writer;
-    metadata_server_request_start(mfs, &writer, MESSAGE_TYPE_DELETE);
+    metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_DELETE);
     message_write(&writer, &tmp, sizeof(tmp));
     message_write(&writer, path, path_len);
-    if (metadata_server_request_end(mfs, &writer, opidx, 0) < 0) {
-        free_operation(mfs, opidx);
+    if (metadata_server_request_end(tfs, &writer, opidx, 0) < 0) {
+        free_operation(tfs, opidx);
         return -1;
     }
 
     return opidx;
 }
 
-int mousefs_submit_list(MouseFS *mfs, char *path, int path_len)
+int toastyfs_submit_list(ToastyFS *tfs, char *path, int path_len)
 {
     if (path_len < 0) path_len = strlen(path);
 
     OperationType type = OPERATION_TYPE_LIST;
-    int opidx = alloc_operation(mfs, type, 0, NULL, 0);
+    int opidx = alloc_operation(tfs, type, 0, NULL, 0);
     if (opidx < 0) return -1;
 
     if (path_len > UINT16_MAX) {
-        free_operation(mfs, opidx);
+        free_operation(tfs, opidx);
         return -1;
     }
     uint16_t tmp = path_len;
 
     MessageWriter writer;
-    metadata_server_request_start(mfs, &writer, MESSAGE_TYPE_LIST);
+    metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_LIST);
 
     message_write(&writer, &tmp, sizeof(tmp));
     message_write(&writer, path, path_len);
 
-    if (metadata_server_request_end(mfs, &writer, opidx, 0) < 0) {
-        free_operation(mfs, opidx);
+    if (metadata_server_request_end(tfs, &writer, opidx, 0) < 0) {
+        free_operation(tfs, opidx);
         return -1;
     }
 
     return opidx;
 }
 
-static int send_read_message(MouseFS *mfs, int opidx, int tag, string path, uint32_t offset, uint32_t length)
+static int send_read_message(ToastyFS *tfs, int opidx, int tag, string path, uint32_t offset, uint32_t length)
 {
     if (path.len > UINT16_MAX)
         return -1;
     uint16_t path_len = path.len;
 
     MessageWriter writer;
-    metadata_server_request_start(mfs, &writer, MESSAGE_TYPE_READ);
+    metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_READ);
     message_write(&writer, &path_len, sizeof(path_len));
     message_write(&writer, path.ptr,  path.len);
     message_write(&writer, &offset,   sizeof(offset));
     message_write(&writer, &length,   sizeof(length));
-    if (metadata_server_request_end(mfs, &writer, opidx, tag) < 0)
+    if (metadata_server_request_end(tfs, &writer, opidx, tag) < 0)
         return -1;
     return 0;
 }
 
-int mousefs_submit_read(MouseFS *mfs, char *path, int path_len, int off, void *dst, int len)
+int toastyfs_submit_read(ToastyFS *tfs, char *path, int path_len, int off, void *dst, int len)
 {
     if (path_len < 0) path_len = strlen(path);
 
     OperationType type = OPERATION_TYPE_READ;
-    int opidx = alloc_operation(mfs, type, off, dst, len);
+    int opidx = alloc_operation(tfs, type, off, dst, len);
     if (opidx < 0) return -1;
 
-    if (send_read_message(mfs, opidx, TAG_RETRIEVE_METADATA_FOR_READ, (string) { path, path_len }, off, len) < 0) {
-        free_operation(mfs, opidx);
+    if (send_read_message(tfs, opidx, TAG_RETRIEVE_METADATA_FOR_READ, (string) { path, path_len }, off, len) < 0) {
+        free_operation(tfs, opidx);
         return -1;
     }
 
     return opidx;
 }
 
-int mousefs_submit_write(MouseFS *mfs, char *path, int path_len, int off, void *src, int len)
+int toastyfs_submit_write(ToastyFS *tfs, char *path, int path_len, int off, void *src, int len)
 {
     if (path_len < 0) path_len = strlen(path);
 
     OperationType type = OPERATION_TYPE_WRITE;
-    int opidx = alloc_operation(mfs, type, off, src, len);
+    int opidx = alloc_operation(tfs, type, off, src, len);
     if (opidx < 0) return -1;
 
-    mfs->operations[opidx].path = (string) { path, path_len }; // TODO: must be a copy
+    tfs->operations[opidx].path = (string) { path, path_len }; // TODO: must be a copy
 
-    if (send_read_message(mfs, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, (string) { path, path_len }, off, len) < 0) {
-        free_operation(mfs, opidx);
+    if (send_read_message(tfs, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, (string) { path, path_len }, off, len) < 0) {
+        free_operation(tfs, opidx);
         return -1;
     }
 
     return opidx;
 }
 
-void mousefs_result_free(MouseFS_Result *result)
+void toastyfs_result_free(ToastyFS_Result *result)
 {
-    if (result->type == MOUSEFS_RESULT_LIST_SUCCESS)
+    if (result->type == TOASTYFS_RESULT_LIST_SUCCESS)
         sys_free(result->entities);
 }
 
-static void process_event_for_create(MouseFS *mfs,
+static void process_event_for_create(ToastyFS *tfs,
     int opidx, int request_tag, ByteView msg)
 {
     (void) request_tag;
 
     if (msg.len == 0) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_CREATE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
         return;
     }
 
@@ -561,43 +561,43 @@ static void process_event_for_create(MouseFS *mfs,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_CREATE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_CREATE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_CREATE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_CREATE_SUCCESS) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_CREATE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_CREATE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
         return;
     }
 
-    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_CREATE_SUCCESS };
+    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_SUCCESS };
 }
 
-static void process_event_for_delete(MouseFS *mfs,
+static void process_event_for_delete(ToastyFS *tfs,
     int opidx, int request_tag, ByteView msg)
 {
     (void) request_tag;
 
     if (msg.len == 0) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_DELETE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
         return;
     }
 
@@ -605,43 +605,43 @@ static void process_event_for_delete(MouseFS *mfs,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_DELETE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_DELETE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_DELETE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_DELETE_SUCCESS) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_DELETE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_DELETE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
         return;
     }
 
-    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_DELETE_SUCCESS };
+    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_SUCCESS };
 }
 
-static void process_event_for_list(MouseFS *mfs,
+static void process_event_for_list(ToastyFS *tfs,
     int opidx, int request_tag, ByteView msg)
 {
     (void) request_tag;
 
     if (msg.len == 0) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         return;
     }
 
@@ -649,43 +649,43 @@ static void process_event_for_list(MouseFS *mfs,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_LIST_SUCCESS) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         return;
     }
 
     // Read and validate the list data
     uint32_t item_count;
     if (!binary_read(&reader, &item_count, sizeof(item_count))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         return;
     }
 
     uint8_t truncated;
     if (!binary_read(&reader, &truncated, sizeof(truncated))) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         return;
     }
 
-    MouseFS_Entity *entities = sys_malloc(item_count * sizeof(MouseFS_Entity));
+    ToastyFS_Entity *entities = sys_malloc(item_count * sizeof(ToastyFS_Entity));
     if (entities == NULL) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         return;
     }
 
@@ -693,21 +693,21 @@ static void process_event_for_list(MouseFS *mfs,
     for (uint32_t i = 0; i < item_count; i++) {
         uint8_t is_dir;
         if (!binary_read(&reader, &is_dir, sizeof(is_dir))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
             sys_free(entities);
             return;
         }
 
         uint16_t name_len;
         if (!binary_read(&reader, &name_len, sizeof(name_len))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
             sys_free(entities);
             return;
         }
 
         char *name = (char*) reader.src + reader.cur;
         if (!binary_read(&reader, NULL, name_len)) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
             sys_free(entities);
             return;
         }
@@ -715,7 +715,7 @@ static void process_event_for_list(MouseFS *mfs,
         entities[i].is_dir = is_dir;
 
         if (name_len > sizeof(entities[i].name)-1) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
             sys_free(entities);
             return;
         }
@@ -725,19 +725,19 @@ static void process_event_for_list(MouseFS *mfs,
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
         sys_free(entities);
         return;
     }
 
-    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_LIST_SUCCESS, item_count, entities };
+    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_SUCCESS, item_count, entities };
 }
 
-static void process_event_for_read(MouseFS *mfs,
+static void process_event_for_read(ToastyFS *tfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
         return;
     }
 
@@ -747,41 +747,41 @@ static void process_event_for_read(MouseFS *mfs,
 
         // Skip version
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         // Check message type
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         if (type != MESSAGE_TYPE_READ_SUCCESS) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         // Skip message length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         // Read chunk size
         uint32_t chunk_size;
         if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         // Calculate which chunks we need
-        int off = mfs->operations[opidx].off;
-        int len = mfs->operations[opidx].len;
+        int off = tfs->operations[opidx].off;
+        int len = tfs->operations[opidx].len;
 
         if (len == 0) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_SUCCESS };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_SUCCESS };
             return;
         }
 
@@ -794,18 +794,18 @@ static void process_event_for_read(MouseFS *mfs,
         // Read number of hashes
         uint32_t num_hashes;
         if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         // Allocate ranges
         Range *ranges = sys_malloc(num_chunks_needed * sizeof(Range));
         if (ranges == NULL) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
-        char *ptr = mfs->operations[opidx].ptr;
+        char *ptr = tfs->operations[opidx].ptr;
         int num_ranges_with_data = 0;
 
         // Parse each chunk's hash and server locations
@@ -815,7 +815,7 @@ static void process_event_for_read(MouseFS *mfs,
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
                 sys_free(ranges);
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                 return;
             }
 
@@ -823,7 +823,7 @@ static void process_event_for_read(MouseFS *mfs,
             uint32_t num_servers;
             if (!binary_read(&reader, &num_servers, sizeof(num_servers))) {
                 sys_free(ranges);
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                 return;
             }
 
@@ -831,7 +831,7 @@ static void process_event_for_read(MouseFS *mfs,
             uint32_t num_ipv4;
             if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
                 sys_free(ranges);
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                 return;
             }
 
@@ -845,7 +845,7 @@ static void process_event_for_read(MouseFS *mfs,
                 if (!binary_read(&reader, &ipv4, sizeof(ipv4)) ||
                     !binary_read(&reader, &port, sizeof(port))) {
                     sys_free(ranges);
-                    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                     return;
                 }
                 if (!found) {
@@ -860,21 +860,21 @@ static void process_event_for_read(MouseFS *mfs,
             uint32_t num_ipv6;
             if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
                 sys_free(ranges);
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                 return;
             }
             for (uint32_t j = 0; j < num_ipv6; j++) {
                 if (!binary_read(&reader, NULL, sizeof(IPv6)) ||
                     !binary_read(&reader, NULL, sizeof(uint16_t))) {
                     sys_free(ranges);
-                    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                     return;
                 }
             }
 
             if (!found) {
                 sys_free(ranges);
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                 return;
             }
 
@@ -908,35 +908,35 @@ static void process_event_for_read(MouseFS *mfs,
         }
 
         // Store range info
-        mfs->operations[opidx].ranges = ranges;
-        mfs->operations[opidx].ranges_head = 0;
-        mfs->operations[opidx].ranges_count = num_ranges_with_data;
-        mfs->operations[opidx].num_pending = 0;
+        tfs->operations[opidx].ranges = ranges;
+        tfs->operations[opidx].ranges_head = 0;
+        tfs->operations[opidx].ranges_count = num_ranges_with_data;
+        tfs->operations[opidx].num_pending = 0;
 
         // Start first download
         if (num_ranges_with_data > 0) {
             Range *r = &ranges[0];
-            int cs_idx = get_chunk_server(mfs, &r->server_addr, 1, NULL);
+            int cs_idx = get_chunk_server(tfs, &r->server_addr, 1, NULL);
             if (cs_idx < 0) {
                 sys_free(ranges);
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                 return;
             }
             r->chunk_server_idx = cs_idx;
 
-            if (send_download_chunk(mfs, cs_idx, r->hash, r->offset_within_chunk,
+            if (send_download_chunk(tfs, cs_idx, r->hash, r->offset_within_chunk,
                 r->length_within_chunk, opidx, 0) < 0) {
                 sys_free(ranges);
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
                 return;
             }
 
-            mfs->operations[opidx].num_pending = 1;
-            mfs->operations[opidx].ranges_head = 1;
+            tfs->operations[opidx].num_pending = 1;
+            tfs->operations[opidx].ranges_head = 1;
         } else {
             // No chunks to download
             sys_free(ranges);
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_SUCCESS };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_SUCCESS };
         }
 
     } else {
@@ -947,78 +947,78 @@ static void process_event_for_read(MouseFS *mfs,
 
         // Parse response
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         if (type != MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         uint32_t data_len;
         if (!binary_read(&reader, &data_len, sizeof(data_len))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         uint8_t *data = reader.src + reader.cur;
         if (!binary_read(&reader, NULL, data_len)) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         if (binary_read(&reader, NULL, 1)) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
             return;
         }
 
         // Copy data to destination
-        if (range_idx >= 0 && range_idx < mfs->operations[opidx].ranges_count) {
-            memcpy(mfs->operations[opidx].ranges[range_idx].dst, data, data_len);
+        if (range_idx >= 0 && range_idx < tfs->operations[opidx].ranges_count) {
+            memcpy(tfs->operations[opidx].ranges[range_idx].dst, data, data_len);
         }
 
-        mfs->operations[opidx].num_pending--;
+        tfs->operations[opidx].num_pending--;
 
         // Start next download (sequential)
-        int next_idx = mfs->operations[opidx].ranges_head;
-        if (next_idx < mfs->operations[opidx].ranges_count) {
-            Range *r = &mfs->operations[opidx].ranges[next_idx];
+        int next_idx = tfs->operations[opidx].ranges_head;
+        if (next_idx < tfs->operations[opidx].ranges_count) {
+            Range *r = &tfs->operations[opidx].ranges[next_idx];
 
-            int cs_idx = get_chunk_server(mfs, &r->server_addr, 1, NULL);
+            int cs_idx = get_chunk_server(tfs, &r->server_addr, 1, NULL);
             if (cs_idx >= 0) {
                 r->chunk_server_idx = cs_idx;
-                if (send_download_chunk(mfs, cs_idx, r->hash, r->offset_within_chunk,
+                if (send_download_chunk(tfs, cs_idx, r->hash, r->offset_within_chunk,
                     r->length_within_chunk, opidx, next_idx) == 0) {
-                    mfs->operations[opidx].num_pending++;
-                    mfs->operations[opidx].ranges_head++;
+                    tfs->operations[opidx].num_pending++;
+                    tfs->operations[opidx].ranges_head++;
                 }
             }
         }
 
         // Check if done
-        if (mfs->operations[opidx].num_pending == 0) {
-            sys_free(mfs->operations[opidx].ranges);
-            mfs->operations[opidx].ranges = NULL;
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_READ_SUCCESS };
+        if (tfs->operations[opidx].num_pending == 0) {
+            sys_free(tfs->operations[opidx].ranges);
+            tfs->operations[opidx].ranges = NULL;
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_SUCCESS };
         }
     }
 }
 
-static int start_upload(MouseFS *mfs, int opidx)
+static int start_upload(ToastyFS *tfs, int opidx)
 {
-    Operation *o = &mfs->operations[opidx];
+    Operation *o = &tfs->operations[opidx];
 
     int found = -1;
 
@@ -1060,13 +1060,13 @@ static int start_upload(MouseFS *mfs, int opidx)
     assert(tag <= TAG_UPLOAD_CHUNK_MAX);
 
     ByteQueue *output;
-    int chunk_server_idx = get_chunk_server(mfs, &o->uploads[found].address, 1, &output);
+    int chunk_server_idx = get_chunk_server(tfs, &o->uploads[found].address, 1, &output);
     if (chunk_server_idx < 0)
         return -1;
 
-    RequestQueue *reqs = &mfs->chunk_servers[chunk_server_idx].reqs;
+    RequestQueue *reqs = &tfs->chunk_servers[chunk_server_idx].reqs;
     if (request_queue_push(reqs, (Request) { tag, opidx }) < 0) {
-        close_chunk_server(mfs, chunk_server_idx);
+        close_chunk_server(tfs, chunk_server_idx);
         return -1;
     }
 
@@ -1084,7 +1084,7 @@ static int start_upload(MouseFS *mfs, int opidx)
         message_write(&writer, &target_len, sizeof(target_len));
         message_write(&writer, data_ptr, target_len);
         if (!message_writer_free(&writer)) {
-            close_chunk_server(mfs, chunk_server_idx);
+            close_chunk_server(tfs, chunk_server_idx);
             request_queue_pop(reqs, NULL);
             return -1;
         }
@@ -1103,7 +1103,7 @@ static int start_upload(MouseFS *mfs, int opidx)
         message_write(&writer, &target_len,  sizeof(target_len));
         message_write(&writer, data_ptr, target_len);
         if (!message_writer_free(&writer)) {
-            close_chunk_server(mfs, chunk_server_idx);
+            close_chunk_server(tfs, chunk_server_idx);
             request_queue_pop(reqs, NULL);
             return -1;
         }
@@ -1113,18 +1113,18 @@ static int start_upload(MouseFS *mfs, int opidx)
     return 0;
 }
 
-static int count_pending_uploads(MouseFS *mfs, int opidx)
+static int count_pending_uploads(ToastyFS *tfs, int opidx)
 {
     int n = 0;
-    for (int i = 0; i < mfs->operations[opidx].num_uploads; i++)
-        if (mfs->operations[opidx].uploads[i].status == UPLOAD_PENDING)
+    for (int i = 0; i < tfs->operations[opidx].num_uploads; i++)
+        if (tfs->operations[opidx].uploads[i].status == UPLOAD_PENDING)
             n++;
     return n;
 }
 
-static int schedule_upload(MouseFS *mfs, int opidx, UploadSchedule upload)
+static int schedule_upload(ToastyFS *tfs, int opidx, UploadSchedule upload)
 {
-    Operation *o = &mfs->operations[opidx];
+    Operation *o = &tfs->operations[opidx];
 
     if (o->num_uploads == o->cap_uploads) {
 
@@ -1155,11 +1155,11 @@ static int schedule_upload(MouseFS *mfs, int opidx, UploadSchedule upload)
     return 0;
 }
 
-static void process_event_for_write(MouseFS *mfs,
+static void process_event_for_write(ToastyFS *tfs,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
         return;
     }
 
@@ -1168,62 +1168,62 @@ static void process_event_for_write(MouseFS *mfs,
         BinaryReader reader = { msg.ptr, msg.len, 0 };
 
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
         if (type != MESSAGE_TYPE_READ_SUCCESS) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
         uint32_t chunk_size;
         if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
-        mfs->operations[opidx].chunk_size = chunk_size;
+        tfs->operations[opidx].chunk_size = chunk_size;
 
         uint32_t num_hashes;
         if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
-        uint32_t num_all_hasehs = (mfs->operations[opidx].len + chunk_size - 1) / chunk_size;
+        uint32_t num_all_hasehs = (tfs->operations[opidx].len + chunk_size - 1) / chunk_size;
         uint32_t num_new_hashes = num_all_hasehs - num_hashes;
         assert(num_all_hasehs >= num_hashes);
 
-        mfs->operations[opidx].num_chunks = num_all_hasehs;
-        mfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
-        mfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
-        if (mfs->operations[opidx].hashes == NULL) {
+        tfs->operations[opidx].num_chunks = num_all_hasehs;
+        tfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
+        tfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
+        if (tfs->operations[opidx].hashes == NULL) {
             assert(0); // TODO
         }
 
-        mfs->operations[opidx].uploads = NULL;
-        mfs->operations[opidx].num_uploads = 0;
-        mfs->operations[opidx].cap_uploads = 0;
+        tfs->operations[opidx].uploads = NULL;
+        tfs->operations[opidx].num_uploads = 0;
+        tfs->operations[opidx].cap_uploads = 0;
 
-        char *full_ptr = mfs->operations[opidx].ptr;
-        int   full_off = mfs->operations[opidx].off;
-        int   full_len = mfs->operations[opidx].len;
+        char *full_ptr = tfs->operations[opidx].ptr;
+        int   full_off = tfs->operations[opidx].off;
+        int   full_len = tfs->operations[opidx].len;
 
         int relative_off = 0;
 
         int next_server_lid = 0;
-        mfs->operations[opidx].num_uploads = 0;
+        tfs->operations[opidx].num_uploads = 0;
         for (uint32_t i = 0; i < num_hashes; i++) {
 
             char *src = full_ptr + relative_off;
@@ -1244,15 +1244,15 @@ static void process_event_for_write(MouseFS *mfs,
 
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                 return;
             }
 
-            mfs->operations[opidx].hashes[i] = hash;
+            tfs->operations[opidx].hashes[i] = hash;
 
             uint32_t num_holders;
             if (!binary_read(&reader, &num_holders, sizeof(num_holders))) {
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                 return;
             }
 
@@ -1263,7 +1263,7 @@ static void process_event_for_write(MouseFS *mfs,
 
                 uint32_t num_ipv4;
                 if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
-                    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                     return;
                 }
 
@@ -1271,13 +1271,13 @@ static void process_event_for_write(MouseFS *mfs,
 
                     IPv4 ipv4;
                     if (!binary_read(&reader, &ipv4, sizeof(ipv4))) {
-                        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                         return;
                     }
 
                     uint16_t port;
                     if (!binary_read(&reader, &port, sizeof(port))) {
-                        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                         return;
                     }
 
@@ -1291,15 +1291,15 @@ static void process_event_for_write(MouseFS *mfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    if (schedule_upload(mfs, opidx, upload) < 0) {
-                        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    if (schedule_upload(tfs, opidx, upload) < 0) {
+                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                         return;
                     }
                 }
 
                 uint32_t num_ipv6;
                 if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
-                    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                     return;
                 }
 
@@ -1307,13 +1307,13 @@ static void process_event_for_write(MouseFS *mfs,
 
                     IPv6 ipv6;
                     if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
-                        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                         return;
                     }
 
                     uint16_t port;
                     if (!binary_read(&reader, &port, sizeof(port))) {
-                        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                         return;
                     }
 
@@ -1327,8 +1327,8 @@ static void process_event_for_write(MouseFS *mfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    if (schedule_upload(mfs, opidx, upload) < 0) {
-                        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    if (schedule_upload(tfs, opidx, upload) < 0) {
+                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                         return;
                     }
                 }
@@ -1337,7 +1337,7 @@ static void process_event_for_write(MouseFS *mfs,
 
         uint32_t num_locations;
         if (!binary_read(&reader, &num_locations, sizeof(num_locations))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
@@ -1348,7 +1348,7 @@ static void process_event_for_write(MouseFS *mfs,
 
             uint32_t num_ipv4;
             if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                 return;
             }
 
@@ -1356,13 +1356,13 @@ static void process_event_for_write(MouseFS *mfs,
 
                 IPv4 ipv4;
                 if (!binary_read(&reader, &ipv4, sizeof(ipv4))) {
-                    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                     return;
                 }
 
                 uint16_t port;
                 if (!binary_read(&reader, &port, sizeof(port))) {
-                    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                     return;
                 }
 #if 0
@@ -1402,8 +1402,8 @@ static void process_event_for_write(MouseFS *mfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    if (schedule_upload(mfs, opidx, upload) < 0) {
-                        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    if (schedule_upload(tfs, opidx, upload) < 0) {
+                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                         return;
                     }
                 }
@@ -1413,7 +1413,7 @@ static void process_event_for_write(MouseFS *mfs,
 
             uint32_t num_ipv6;
             if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                 return;
             }
 
@@ -1423,13 +1423,13 @@ static void process_event_for_write(MouseFS *mfs,
 
                 IPv6 ipv6;
                 if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
-                    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                     return;
                 }
 
                 uint16_t port;
                 if (!binary_read(&reader, &port, sizeof(port))) {
-                    mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                     return;
                 }
 #if 0
@@ -1467,8 +1467,8 @@ static void process_event_for_write(MouseFS *mfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    if (schedule_upload(mfs, opidx, upload) < 0) {
-                        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                    if (schedule_upload(tfs, opidx, upload) < 0) {
+                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                         return;
                     }
                 }
@@ -1480,13 +1480,13 @@ static void process_event_for_write(MouseFS *mfs,
         // Now start the first batch of uploads
         int started = 0;
         for (int i = 0; i < PARALLEL_LIMIT; i++) {
-            if (start_upload(mfs, opidx) == 0)
+            if (start_upload(tfs, opidx) == 0)
                 started++;
         }
 
         if (started == 0) {
             // We already failed
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
@@ -1567,14 +1567,14 @@ static void process_event_for_write(MouseFS *mfs,
         }
 
         uint16_t expected_type;
-        if (mfs->operations[opidx].uploads[found].chunk_index >= mfs->operations[opidx].num_hashes) {
+        if (tfs->operations[opidx].uploads[found].chunk_index >= tfs->operations[opidx].num_hashes) {
             expected_type = MESSAGE_TYPE_CREATE_CHUNK_SUCCESS;
         } else {
             expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
         }
 
         if (type != expected_type)
-            mfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
+            tfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
         else {
 
             SHA256 hash;
@@ -1589,15 +1589,15 @@ static void process_event_for_write(MouseFS *mfs,
                 return;
             }
 
-            mfs->operations[opidx].uploads[found].status = UPLOAD_COMPLETED;
-            mfs->operations[opidx].uploads[found].final_hash = hash;
-            for (int i = 0; i < mfs->operations[opidx].num_uploads; i++) {
+            tfs->operations[opidx].uploads[found].status = UPLOAD_COMPLETED;
+            tfs->operations[opidx].uploads[found].final_hash = hash;
+            for (int i = 0; i < tfs->operations[opidx].num_uploads; i++) {
 
-                if (mfs->operations[opidx].uploads[i].status == UPLOAD_WAITING
-                    && mfs->operations[opidx].uploads[i].chunk_index == mfs->operations[opidx].uploads[found].chunk_index
-                    && (addr_eql(mfs->operations[opidx].uploads[i].address, mfs->operations[opidx].uploads[found].address)
-                    || mfs->operations[opidx].uploads[i].server_lid == mfs->operations[opidx].uploads[found].server_lid))
-                    mfs->operations[opidx].uploads[i].status = UPLOAD_IGNORED;
+                if (tfs->operations[opidx].uploads[i].status == UPLOAD_WAITING
+                    && tfs->operations[opidx].uploads[i].chunk_index == tfs->operations[opidx].uploads[found].chunk_index
+                    && (addr_eql(tfs->operations[opidx].uploads[i].address, tfs->operations[opidx].uploads[found].address)
+                    || tfs->operations[opidx].uploads[i].server_lid == tfs->operations[opidx].uploads[found].server_lid))
+                    tfs->operations[opidx].uploads[i].status = UPLOAD_IGNORED;
             }
 
             // TODO: the new chunk hash should be stored in
@@ -1607,9 +1607,9 @@ static void process_event_for_write(MouseFS *mfs,
         // Count the number of PENDING uploads and
         // start uploads until N are pending or an
         // error occurs
-        int num_pending = count_pending_uploads(mfs, opidx);
+        int num_pending = count_pending_uploads(tfs, opidx);
         while (num_pending < PARALLEL_LIMIT) {
-            if (start_upload(mfs, opidx) < 0)
+            if (start_upload(tfs, opidx) < 0)
                 break;
             num_pending++;
         }
@@ -1629,22 +1629,22 @@ static void process_event_for_write(MouseFS *mfs,
                 Address locations[REPLICATION_FACTOR];
             } ChunkUploadResult;
 
-            int num_upload_results = mfs->operations[opidx].num_chunks;
+            int num_upload_results = tfs->operations[opidx].num_chunks;
             ChunkUploadResult *upload_results = sys_malloc(num_upload_results * sizeof(ChunkUploadResult));
             if (upload_results == NULL) {
                 assert(0); // TODO
             }
 
             for (int i = 0; i < num_upload_results; i++) {
-                if (i < mfs->operations[opidx].num_hashes)
-                    upload_results[i].old_hash = mfs->operations[opidx].hashes[i];
+                if (i < tfs->operations[opidx].num_hashes)
+                    upload_results[i].old_hash = tfs->operations[opidx].hashes[i];
                 else
                     memset(&upload_results[i].old_hash, 0, sizeof(SHA256));
                 upload_results[i].num_locations = 0;
             }
 
-            for (int i = 0; i < mfs->operations[opidx].num_uploads; i++) {
-                UploadSchedule *u = &mfs->operations[opidx].uploads[i];
+            for (int i = 0; i < tfs->operations[opidx].num_uploads; i++) {
+                UploadSchedule *u = &tfs->operations[opidx].uploads[i];
                 if (u->status == UPLOAD_COMPLETED) {
                     int n = upload_results[u->chunk_index].num_locations++;
                     upload_results[u->chunk_index].locations[n] = u->address;
@@ -1664,17 +1664,17 @@ static void process_event_for_write(MouseFS *mfs,
             }
 
             if (!ok) {
-                mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
                 free(upload_results);
                 return;
             }
 
             MessageWriter writer;
-            metadata_server_request_start(mfs, &writer, MESSAGE_TYPE_WRITE);
+            metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_WRITE);
 
-            string   path   = mfs->operations[opidx].path;
-            uint32_t offset = mfs->operations[opidx].off;
-            uint32_t length = mfs->operations[opidx].len;
+            string   path   = tfs->operations[opidx].path;
+            uint32_t offset = tfs->operations[opidx].off;
+            uint32_t length = tfs->operations[opidx].len;
 
             if (path.len > UINT16_MAX) {
                 // TODO
@@ -1682,7 +1682,7 @@ static void process_event_for_write(MouseFS *mfs,
             uint16_t path_len = path.len;
 
             uint32_t num_chunks = num_upload_results;
-            uint32_t chunk_size = mfs->operations[opidx].chunk_size;
+            uint32_t chunk_size = tfs->operations[opidx].chunk_size;
 
             message_write(&writer, &path_len,   sizeof(path_len));
             message_write(&writer, path.ptr,    path.len);
@@ -1714,7 +1714,7 @@ static void process_event_for_write(MouseFS *mfs,
 
             free(upload_results);
 
-            if (metadata_server_request_end(mfs, &writer, opidx, TAG_COMMIT_WRITE) < 0) {
+            if (metadata_server_request_end(tfs, &writer, opidx, TAG_COMMIT_WRITE) < 0) {
                 assert(0); // TODO
             }
         }
@@ -1727,59 +1727,59 @@ static void process_event_for_write(MouseFS *mfs,
 
         // version
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(uint16_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
         // length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
         if (binary_read(&reader, NULL, 1)) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
         if (type != MESSAGE_TYPE_WRITE_SUCCESS) {
-            mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_ERROR };
+            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
             return;
         }
 
-        mfs->operations[opidx].result = (MouseFS_Result) { .type=MOUSEFS_RESULT_WRITE_SUCCESS };
+        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_SUCCESS };
     }
 }
 
-static void process_event(MouseFS *mfs,
+static void process_event(ToastyFS *tfs,
     int opidx, int request_tag, ByteView msg)
 {
-    switch (mfs->operations[opidx].type) {
+    switch (tfs->operations[opidx].type) {
 
         case OPERATION_TYPE_CREATE:
-        process_event_for_create(mfs, opidx, request_tag, msg);
+        process_event_for_create(tfs, opidx, request_tag, msg);
         break;
 
         case OPERATION_TYPE_DELETE:
-        process_event_for_delete(mfs, opidx, request_tag, msg);
+        process_event_for_delete(tfs, opidx, request_tag, msg);
         break;
 
         case OPERATION_TYPE_LIST:
-        process_event_for_list(mfs, opidx, request_tag, msg);
+        process_event_for_list(tfs, opidx, request_tag, msg);
         break;
 
         case OPERATION_TYPE_READ:
-        process_event_for_read(mfs, opidx, request_tag, msg);
+        process_event_for_read(tfs, opidx, request_tag, msg);
         break;
 
         case OPERATION_TYPE_WRITE:
-        process_event_for_write(mfs, opidx, request_tag, msg);
+        process_event_for_write(tfs, opidx, request_tag, msg);
         break;
 
         default:
@@ -1788,51 +1788,51 @@ static void process_event(MouseFS *mfs,
 }
 
 static bool
-translate_operation_into_result(MouseFS *mfs, int opidx, MouseFS_Result *result)
+translate_operation_into_result(ToastyFS *tfs, int opidx, ToastyFS_Result *result)
 {
-    if (mfs->operations[opidx].result.type == MOUSEFS_RESULT_EMPTY)
+    if (tfs->operations[opidx].result.type == TOASTYFS_RESULT_EMPTY)
         return false;
-    *result = mfs->operations[opidx].result;
-    mfs->operations[opidx].type = OPERATION_TYPE_FREE;
-    mfs->num_operations--;
+    *result = tfs->operations[opidx].result;
+    tfs->operations[opidx].type = OPERATION_TYPE_FREE;
+    tfs->num_operations--;
     return true;
 }
 
-bool mousefs_isdone(MouseFS *mfs, int opidx, MouseFS_Result *result)
+bool toastyfs_isdone(ToastyFS *tfs, int opidx, ToastyFS_Result *result)
 {
     if (opidx < 0) {
-        for (int i = 0, j = 0; j < mfs->num_operations; i++) {
+        for (int i = 0, j = 0; j < tfs->num_operations; i++) {
 
-            if (mfs->operations[i].type == OPERATION_TYPE_FREE)
+            if (tfs->operations[i].type == OPERATION_TYPE_FREE)
                 continue;
             j++;
 
-            if (translate_operation_into_result(mfs, i, result))
+            if (translate_operation_into_result(tfs, i, result))
                 return true;
         }
     } else {
-        if (translate_operation_into_result(mfs, opidx, result))
+        if (translate_operation_into_result(tfs, opidx, result))
             return true;
     }
 
     return false;
 }
 
-int mousefs_process_events(MouseFS *mfs, void **contexts, struct pollfd *polled, int num_polled)
+int toastyfs_process_events(ToastyFS *tfs, void **contexts, struct pollfd *polled, int num_polled)
 {
     int num_events;
     Event events[MAX_CONNS+1];
 
-    num_events = tcp_translate_events(&mfs->tcp, events, contexts, polled, num_polled);
+    num_events = tcp_translate_events(&tfs->tcp, events, contexts, polled, num_polled);
     for (int i = 0; i < num_events; i++) {
         int conn_idx = events[i].conn_idx;
         switch (events[i].type) {
 
             case EVENT_CONNECT:
             {
-                int tag = tcp_get_tag(&mfs->tcp, conn_idx);
+                int tag = tcp_get_tag(&tfs->tcp, conn_idx);
                 if (tag != TAG_METADATA_SERVER)
-                    mfs->chunk_servers[tag].connected = true;
+                    tfs->chunk_servers[tag].connected = true;
             }
             break;
 
@@ -1857,40 +1857,40 @@ int mousefs_process_events(MouseFS *mfs, void **contexts, struct pollfd *polled,
 
                 RequestQueue *reqs = NULL;
 
-                int tag = tcp_get_tag(&mfs->tcp, conn_idx);
+                int tag = tcp_get_tag(&tfs->tcp, conn_idx);
                 if (tag == TAG_METADATA_SERVER) {
-                    reqs = &mfs->metadata_server.reqs;
-                    mfs->metadata_server.used = false;
+                    reqs = &tfs->metadata_server.reqs;
+                    tfs->metadata_server.used = false;
                 } else {
                     assert(tag > -1);
 
-                    if (mfs->chunk_servers[tag].connected)
-                        reqs = &mfs->chunk_servers[tag].reqs;
+                    if (tfs->chunk_servers[tag].connected)
+                        reqs = &tfs->chunk_servers[tag].reqs;
                     else {
 
-                        mfs->chunk_servers[tag].current_addr_idx++;
+                        tfs->chunk_servers[tag].current_addr_idx++;
 
                         bool started = false;
-                        while (mfs->chunk_servers[tag].current_addr_idx < mfs->chunk_servers[tag].num_addrs) {
+                        while (tfs->chunk_servers[tag].current_addr_idx < tfs->chunk_servers[tag].num_addrs) {
 
-                            if (tcp_connect(&mfs->tcp, mfs->chunk_servers[tag].addrs[mfs->chunk_servers[tag].current_addr_idx], tag, NULL) == 0) {
+                            if (tcp_connect(&tfs->tcp, tfs->chunk_servers[tag].addrs[tfs->chunk_servers[tag].current_addr_idx], tag, NULL) == 0) {
                                 started = true;
                                 break;
                             }
 
-                            mfs->chunk_servers[tag].current_addr_idx++;
+                            tfs->chunk_servers[tag].current_addr_idx++;
                         }
 
                         if (!started) {
-                            reqs = &mfs->chunk_servers[tag].reqs;
-                            mfs->chunk_servers[tag].used = false;
+                            reqs = &tfs->chunk_servers[tag].reqs;
+                            tfs->chunk_servers[tag].used = false;
                         }
                     }
                 }
 
                 if (reqs) {
                     for (Request req; request_queue_pop(reqs, &req) == 0; )
-                        process_event(mfs, req.opidx, req.tag, (ByteView) { NULL, 0 });
+                        process_event(tfs, req.opidx, req.tag, (ByteView) { NULL, 0 });
                 }
             }
             break;
@@ -1901,41 +1901,41 @@ int mousefs_process_events(MouseFS *mfs, void **contexts, struct pollfd *polled,
 
                     ByteView msg;
                     uint16_t msg_type;
-                    int ret = tcp_next_message(&mfs->tcp, conn_idx, &msg, &msg_type);
+                    int ret = tcp_next_message(&tfs->tcp, conn_idx, &msg, &msg_type);
                     if (ret == 0)
                         break;
                     if (ret < 0) {
-                        tcp_close(&mfs->tcp, conn_idx);
+                        tcp_close(&tfs->tcp, conn_idx);
                         break;
                     }
 
                     RequestQueue *reqs;
 
-                    int tag = tcp_get_tag(&mfs->tcp, conn_idx);
+                    int tag = tcp_get_tag(&tfs->tcp, conn_idx);
                     if (tag == TAG_METADATA_SERVER)
-                        reqs = &mfs->metadata_server.reqs;
+                        reqs = &tfs->metadata_server.reqs;
                     else
-                        reqs = &mfs->chunk_servers[tag].reqs;
+                        reqs = &tfs->chunk_servers[tag].reqs;
 
                     Request req;
                     if (request_queue_pop(reqs, &req) < 0) {
                         // Unexpected message
-                        tcp_consume_message(&mfs->tcp, conn_idx);
+                        tcp_consume_message(&tfs->tcp, conn_idx);
                         continue;
                     }
-                    process_event(mfs, req.opidx, req.tag, msg);
+                    process_event(tfs, req.opidx, req.tag, msg);
 
-                    tcp_consume_message(&mfs->tcp, conn_idx);
+                    tcp_consume_message(&tfs->tcp, conn_idx);
                 }
             }
             break;
         }
     }
 
-    return tcp_register_events(&mfs->tcp, contexts, polled);
+    return tcp_register_events(&tfs->tcp, contexts, polled);
 }
 
-void mousefs_wait(MouseFS *mfs, int opidx, MouseFS_Result *result, int timeout)
+void toastyfs_wait(ToastyFS *tfs, int opidx, ToastyFS_Result *result, int timeout)
 {
     // TODO: use the timeout parameter
 
@@ -1943,10 +1943,10 @@ void mousefs_wait(MouseFS *mfs, int opidx, MouseFS_Result *result, int timeout)
     struct pollfd polled[MAX_CONNS+1];
     int num_polled;
 
-    num_polled = mousefs_process_events(mfs, contexts, polled, 0);
+    num_polled = toastyfs_process_events(tfs, contexts, polled, 0);
 
-    while (!mousefs_isdone(mfs, opidx, result)) {
+    while (!toastyfs_isdone(tfs, opidx, result)) {
         POLL(polled, num_polled, -1);
-        num_polled = mousefs_process_events(mfs, contexts, polled, num_polled);
+        num_polled = toastyfs_process_events(tfs, contexts, polled, num_polled);
     }
 }

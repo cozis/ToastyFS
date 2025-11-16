@@ -1,7 +1,7 @@
 - Implement proper operation handles that allow users to wait for specific events
 - Clean up the read operation for clients
 - Check that the corner case where read and writes go over the length of the file work correctly
-- Return the number of bytes read or written in the MouseFS_Result struct
+- Return the number of bytes read or written in the ToastyFS_Result struct
 - Make parallel uploads/downloads configurable
 - Recalculate next write locations whenever a write occurs, not at each read
 - avoid replay attacks

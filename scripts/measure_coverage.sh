@@ -29,7 +29,7 @@ SIMULATION_TIME=${1:-5}  # Default to 5 seconds if not specified
 echo "Running for ${SIMULATION_TIME} seconds..."
 
 # Run simulation in background and kill it after specified time
-timeout ${SIMULATION_TIME}s ./mousefs_random_test_coverage.out || true
+timeout ${SIMULATION_TIME}s ./toastyfs_random_test_coverage.out || true
 
 # Generate coverage reports
 echo
@@ -44,7 +44,7 @@ TAKEN_BRANCHES=0
 # Generate gcov reports from the coverage data files
 for gcda_file in $GCDA_FILES; do
     # Extract the source file name from the gcda filename
-    # Files are named like: mousefs_random_test_coverage.out-basic.gcda
+    # Files are named like: toastyfs_random_test_coverage.out-basic.gcda
     basename=$(basename "$gcda_file" .gcda)
     source_name=${basename#*-}  # Remove prefix up to and including '-'
 
