@@ -15,6 +15,7 @@
 #include "system.h"
 #include "config.h"
 #include "message.h"
+
 #include <ToastyFS.h>
 
 #define TAG_METADATA_SERVER -2
@@ -94,7 +95,12 @@ typedef struct {
 
     OperationType type;
 
-    string path; // Only set for writes
+    // Generation counter. Values 0 and 2^16-1 are
+    // skipped to make sure ToastyHandle values 0
+    // and -1 are always invalid.
+    uint16_t generation;
+
+    ToastyString path; // Only set for writes
     void *ptr;
     int   off;
     int   len;
@@ -173,11 +179,21 @@ ToastyFS *toasty_connect(ToastyString addr, uint16_t port)
         return NULL;
 
     Address addr2;
-    addr2.is_ipv4 = true;
-    addr2.port = port;
-    if (inet_pton(AF_INET, addr, &addr2.ipv4) != 1) {
-        sys_free(toasty);
-        return NULL;
+    {
+        char tmp[128];
+        if (addr.len >= (int) sizeof(tmp)) {
+            sys_free(toasty);
+            return NULL;
+        }
+        memcpy(tmp, addr.ptr, addr.len);
+        tmp[addr.len] = '\0';
+
+        addr2.is_ipv4 = true;
+        addr2.port = port;
+        if (inet_pton(AF_INET, tmp, &addr2.ipv4) != 1) {
+            sys_free(toasty);
+            return NULL;
+        }
     }
 
     tcp_context_init(&toasty->tcp);
@@ -190,8 +206,10 @@ ToastyFS *toasty_connect(ToastyString addr, uint16_t port)
 
     toasty->num_operations = 0;
 
-    for (int i = 0; i < MAX_OPERATIONS; i++)
+    for (int i = 0; i < MAX_OPERATIONS; i++) {
         toasty->operations[i].type = OPERATION_TYPE_FREE;
+        toasty->operations[i].generation = 1; // Important not to start from 0 !!!
+    }
 
     // Initialize metadata server (connected during init)
     toasty->metadata_server.used = true;
@@ -236,7 +254,42 @@ alloc_operation(ToastyFS *toasty, OperationType type, int off, void *ptr, int le
 static void free_operation(ToastyFS *toasty, int opidx)
 {
     toasty->operations[opidx].type = OPERATION_TYPE_FREE;
+    toasty->operations[opidx].generation++;
+    if (toasty->operations[opidx].generation == 0 ||
+        toasty->operations[opidx].generation == UINT16_MAX)
+        toasty->operations[opidx].generation = 1;
     toasty->num_operations--;
+}
+
+static ToastyHandle operation_to_handle(ToastyFS *toasty, int opidx)
+{
+    assert(opidx >= 0);
+    assert(opidx <= UINT16_MAX);
+
+    uint16_t generation = toasty->operations[opidx].generation;
+    assert(generation != 0);
+    assert(generation != UINT16_MAX);
+
+    return ((uint16_t) opidx << 16) | generation;
+}
+
+static int handle_to_operation(ToastyFS *toasty, ToastyHandle handle)
+{
+    if (handle == 0 || handle == UINT32_MAX)
+        return -1;
+
+    int opidx = handle >> 16;
+    assert(opidx >= 0);
+    assert(opidx <= UINT16_MAX);
+
+    if (opidx >= MAX_OPERATIONS)
+        return -1;
+
+    uint16_t expected_generation = handle & 0xFFFF;
+    if (toasty->operations[opidx].generation != expected_generation)
+        return -1;
+
+    return opidx;
 }
 
 static void
@@ -407,14 +460,14 @@ static ToastyHandle begin_create(ToastyFS *toasty,
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_CREATE);
 
-    if (path_len > UINT16_MAX) {
+    if (path.len > UINT16_MAX) {
         free_operation(toasty, opidx);
         return TOASTY_INVALID;
     }
-    uint16_t tmp = path_len;
+    uint16_t tmp = path.len;
     message_write(&writer, &tmp, sizeof(tmp));
 
-    message_write(&writer, path, path_len);
+    message_write(&writer, path.ptr, path.len);
 
     uint8_t tmp_u8 = is_dir;
     message_write(&writer, &tmp_u8, sizeof(tmp_u8));
@@ -454,16 +507,16 @@ ToastyHandle toastyfs_begin_delete(ToastyFS *toasty, ToastyString path)
     if (opidx < 0)
         return TOASTY_INVALID;
 
-    if (path_len > UINT16_MAX) {
+    if (path.len > UINT16_MAX) {
         free_operation(toasty, opidx);
         return TOASTY_INVALID;
     }
-    uint16_t tmp = path_len;
+    uint16_t tmp = path.len;
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_DELETE);
     message_write(&writer, &tmp, sizeof(tmp));
-    message_write(&writer, path, path_len);
+    message_write(&writer, path.ptr, path.len);
     if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
         free_operation(toasty, opidx);
         return TOASTY_INVALID;
@@ -479,17 +532,17 @@ ToastyHandle toastyfs_begin_list(ToastyFS *toasty, ToastyString path)
     if (opidx < 0)
         return TOASTY_INVALID;
 
-    if (path_len > UINT16_MAX) {
+    if (path.len > UINT16_MAX) {
         free_operation(toasty, opidx);
         return TOASTY_INVALID;
     }
-    uint16_t tmp = path_len;
+    uint16_t tmp = path.len;
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_LIST);
 
     message_write(&writer, &tmp, sizeof(tmp));
-    message_write(&writer, path, path_len);
+    message_write(&writer, path.ptr, path.len);
 
     if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
         free_operation(toasty, opidx);
@@ -499,7 +552,7 @@ ToastyHandle toastyfs_begin_list(ToastyFS *toasty, ToastyString path)
     return operation_to_handle(toasty, opidx);
 }
 
-static int send_read_message(ToastyFS *toasty, int opidx, int tag, string path, uint32_t offset, uint32_t length)
+static int send_read_message(ToastyFS *toasty, int opidx, int tag, ToastyString path, uint32_t offset, uint32_t length)
 {
     if (path.len > UINT16_MAX)
         return -1;
@@ -520,7 +573,8 @@ ToastyHandle toastyfs_begin_read(ToastyFS *toasty, ToastyString path, int off, v
 {
     OperationType type = OPERATION_TYPE_READ;
     int opidx = alloc_operation(toasty, type, off, dst, len);
-    if (opidx < 0) return TOASTY_INVALID;
+    if (opidx < 0)
+        return TOASTY_INVALID;
 
     if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_READ, path, off, len) < 0) {
         free_operation(toasty, opidx);
@@ -1805,8 +1859,17 @@ translate_operation_into_result(ToastyFS *toasty, int opidx, ToastyResult *resul
     return true;
 }
 
-bool toastyfs_isdone(ToastyFS *toasty, int opidx, ToastyResult *result)
+int toasty_get_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *result)
 {
+    int opidx;
+    if (handle == TOASTY_INVALID)
+        opidx = -1;
+    else {
+        opidx = handle_to_operation(toasty, handle);
+        if (opidx < 0)
+            return -1;
+    }
+
     if (opidx < 0) {
         for (int i = 0, j = 0; j < toasty->num_operations; i++) {
 
@@ -1815,14 +1878,14 @@ bool toastyfs_isdone(ToastyFS *toasty, int opidx, ToastyResult *result)
             j++;
 
             if (translate_operation_into_result(toasty, i, result))
-                return true;
+                return 0;
         }
     } else {
         if (translate_operation_into_result(toasty, opidx, result))
-            return true;
+            return 0;
     }
 
-    return false;
+    return 1;
 }
 
 int toastyfs_process_events(ToastyFS *toasty, void **contexts, struct pollfd *polled, int num_polled)
@@ -1942,7 +2005,7 @@ int toastyfs_process_events(ToastyFS *toasty, void **contexts, struct pollfd *po
     return tcp_register_events(&toasty->tcp, contexts, polled);
 }
 
-int toastyfs_wait(ToastyFS *toasty, int opidx, ToastyResult *result, int timeout)
+int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *result, int timeout)
 {
     Time start_time = INVALID_TIME;
     if (timeout > -1) {
@@ -1957,7 +2020,17 @@ int toastyfs_wait(ToastyFS *toasty, int opidx, ToastyResult *result, int timeout
 
     num_polled = toastyfs_process_events(toasty, contexts, polled, 0);
 
-    while (!toastyfs_isdone(toasty, opidx, result)) {
+    for (;;) {
+
+        int ret = toasty_get_result(toasty, handle, result);
+
+        if (ret == -1)
+            return -1; // Error
+
+        if (ret == 0)
+            break; // Completed
+
+        assert(ret == 1);
 
         int remaining_timeout = -1;
         if (timeout > -1) {
