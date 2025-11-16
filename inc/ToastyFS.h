@@ -18,7 +18,7 @@
 // TYPES & UTILITIES
 //////////////////////////////////////////////////////////////////////////////////
 
-typedef struct Toasty Toasty;
+typedef struct ToastyFS ToastyFS;
 
 // Helper type to avoid zero-terminated strings
 typedef struct {
@@ -67,10 +67,10 @@ typedef struct {
 // Instanciate a ToastyFS client object. The "addr" and "port"
 // arguments refer to the address and port of the cluster's
 // metadata server.
-Toasty *toasty_connect(ToastyString addr, uint16_t port);
+ToastyFS *toasty_connect(ToastyString addr, uint16_t port);
 
 // Release all resources associated to this client
-void toasty_disconnect(Toasty *tfs);
+void toasty_disconnect(ToastyFS *toasty);
 
 //////////////////////////////////////////////////////////////////////////////////
 // BLOCKING API
@@ -78,24 +78,24 @@ void toasty_disconnect(Toasty *tfs);
 
 // Creates a directory at the specified path.
 // Returns 0 on success, -1 on error.
-int toasty_create_dir(Toasty *tfs, ToastyString path);
+int toasty_create_dir(ToastyFS *toasty, ToastyString path);
 
 // Creates a file with the given chunk size at
 // the specified path. Returns 0 on success, -1
 // on error. The chunk size can't be 0.
-int toasty_create_file(Toasty *tfs, ToastyString path,
+int toasty_create_file(ToastyFS *toasty, ToastyString path,
     unsigned int chunk_size);
 
 // Deletes a file or directory at the specified path.
 // Returns 0 on success, -1 on error.
-int toasty_delete(Toasty *tfs, ToastyString path);
+int toasty_delete(ToastyFS *toasty, ToastyString path);
 
 // Lists all files and directories within the given
 // path. Returns 0 and fills up the listing argument
 // on success, returns -1 on error. The listing is
 // a dynamic array that needs to be freed using
 // "toasy_free_listing".
-int toasty_list(Toasty *tfs, ToastyString path,
+int toasty_list(ToastyFS *toasty, ToastyString path,
     ToastyListing *listing);
 
 // Frees a listing created by "toasty_list".
@@ -104,13 +104,13 @@ void toasty_free_listing(ToastyListing *listing);
 // Reads "len" bytes at offset "off" from the file at
 // the given path. Returns the number of bytes read on
 // success, or -1 on error.
-int toasty_read(Toasty *tfs, ToastyString path, int off,
+int toasty_read(ToastyFS *toasty, ToastyString path, int off,
     void *dst, int len);
 
 // Writes "len" bytes at offset "off" to the file at
 // the given path. Returns the number of bytes written
 // on success, or -1 on error.
-int toasty_write(Toasty *tfs, ToastyString path, int off,
+int toasty_write(ToastyFS *toasty, ToastyString path, int off,
     void *src, int len);
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -119,31 +119,31 @@ int toasty_write(Toasty *tfs, ToastyString path, int off,
 
 // Begins a directory creation operation and returns
 // a handle to it. On error, TOASTY_INVALID is returned.
-ToastyHandle toasty_begin_create_dir(Toasty *tfs, ToastyString path);
+ToastyHandle toasty_begin_create_dir(ToastyFS *toasty, ToastyString path);
 
 // Begins a file creation operation and returns a
 // handle to it. On error, TOASTY_INVALID is returned.
-ToastyHandle toasty_begin_create_file(Toasty *tfs, ToastyString path,
+ToastyHandle toasty_begin_create_file(ToastyFS *toasty, ToastyString path,
     unsigned int chunk_size);
 
 // Begins a file or directory deletion operation and
 // returns a handle to it. On error, TOASTY_INVALID is
 // returned.
-ToastyHandle toasty_begin_delete(Toasty *tfs, ToastyString path);
+ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path);
 
 // Begins a directory listing operation and returns
 // a handle to it. On error, TOASTY_INVALID is returned.
-ToastyHandle toasty_begin_list(Toasty *tfs, ToastyString path);
+ToastyHandle toasty_begin_list(ToastyFS *toasty, ToastyString path);
 
 // Begins a read operation and returns a handle to it.
 // On error, TOASTY_INVALID is returned.
-ToastyHandle toasty_begin_read(Toasty *tfs, ToastyString path,
+ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path,
     int off, void *dst, int len);
 
 // Begins a write operation and returns a handle to it.
 // On error, TOASTY_INVALID is returned. Note that the source
 // buffer must be valid until the operation completes.
-ToastyHandle toasty_begin_write(Toasty *tfs, ToastyString path,
+ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path,
     int off, void *src, int len);
 
 // If the operation specified by "handle" is complete,
@@ -155,7 +155,7 @@ ToastyHandle toasty_begin_write(Toasty *tfs, ToastyString path,
 // Note that if a result is returned, handles to that
 // operation are invalidated.
 // The "result" must be freed using "toasty_free_result".
-int toasty_get_result(Toasty *tfs, ToastyHandle handle,
+int toasty_get_result(ToastyFS *toasty, ToastyHandle handle,
     ToastyResult *result);
 
 // Blocks execution until an operation is complete. This works
@@ -163,7 +163,7 @@ int toasty_get_result(Toasty *tfs, ToastyHandle handle,
 // if the result isn't available. If "timeout" is -1, it waits
 // indefinitely.
 // The "result" must be freed using "toasty_free_result".
-int toasty_wait_result(Toasty *tfs, ToastyHandle handle,
+int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle,
     ToastyResult *result, int timeout);
 
 // Frees resources of a "ToastyResult" previously initialized
@@ -176,7 +176,7 @@ void toasty_free_result(ToastyResult *result);
 
 // This is a hook for the simulation testing framework.
 // You shouldn't need to use this.
-int toasty_process_events(Toasty *tfs, void **contexts,
+int toasty_process_events(ToastyFS *toasty, void **contexts,
     struct pollfd *polled, int num_polled);
 
 //////////////////////////////////////////////////////////////////////////////////

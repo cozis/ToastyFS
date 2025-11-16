@@ -34,7 +34,7 @@ typedef struct {
     uint32_t offset_within_chunk;
     uint32_t length_within_chunk;
     Address  server_addr;      // Chunk server address for this chunk
-    int      chunk_server_idx; // Index in tfs->chunk_servers array
+    int      chunk_server_idx; // Index in toasty->chunk_servers array
 } Range;
 
 typedef enum {
@@ -113,7 +113,7 @@ typedef struct {
     int num_uploads;
     int cap_uploads;
 
-    ToastyFS_Result result;
+    ToastyResult result;
 } Operation;
 
 typedef struct {
@@ -166,77 +166,77 @@ struct ToastyFS {
 
 static void request_queue_init(RequestQueue *reqs);
 
-ToastyFS *toastyfs_init(char *addr, uint16_t port)
+ToastyFS *toasty_connect(ToastyString addr, uint16_t port)
 {
-    ToastyFS *tfs = sys_malloc(sizeof(ToastyFS));
-    if (tfs == NULL)
+    ToastyFS *toasty = sys_malloc(sizeof(ToastyFS));
+    if (toasty == NULL)
         return NULL;
 
     Address addr2;
     addr2.is_ipv4 = true;
     addr2.port = port;
     if (inet_pton(AF_INET, addr, &addr2.ipv4) != 1) {
-        sys_free(tfs);
+        sys_free(toasty);
         return NULL;
     }
 
-    tcp_context_init(&tfs->tcp);
+    tcp_context_init(&toasty->tcp);
 
-    if (tcp_connect(&tfs->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
-        tcp_context_free(&tfs->tcp);
-        sys_free(tfs);
+    if (tcp_connect(&toasty->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
+        tcp_context_free(&toasty->tcp);
+        sys_free(toasty);
         return NULL;
     }
 
-    tfs->num_operations = 0;
+    toasty->num_operations = 0;
 
     for (int i = 0; i < MAX_OPERATIONS; i++)
-        tfs->operations[i].type = OPERATION_TYPE_FREE;
+        toasty->operations[i].type = OPERATION_TYPE_FREE;
 
     // Initialize metadata server (connected during init)
-    tfs->metadata_server.used = true;
-    tfs->metadata_server.addr = addr2;
-    request_queue_init(&tfs->metadata_server.reqs);
+    toasty->metadata_server.used = true;
+    toasty->metadata_server.addr = addr2;
+    request_queue_init(&toasty->metadata_server.reqs);
 
     // Initialize chunk servers array (connections created on demand)
-    tfs->num_chunk_servers = 0;
+    toasty->num_chunk_servers = 0;
     for (int i = 0; i < MAX_CHUNK_SERVERS; i++) {
-        tfs->chunk_servers[i].used = false;
+        toasty->chunk_servers[i].used = false;
     }
 
-    return tfs;
+    return toasty;
 }
 
-void toastyfs_free(ToastyFS *tfs)
+void toasty_disconnect(ToastyFS *toasty)
 {
-    tcp_context_free(&tfs->tcp);
-    sys_free(tfs);
+    tcp_context_free(&toasty->tcp);
+    sys_free(toasty);
 }
 
 static int
-alloc_operation(ToastyFS *tfs, OperationType type, int off, void *ptr, int len)
+alloc_operation(ToastyFS *toasty, OperationType type, int off, void *ptr, int len)
 {
-    if (tfs->num_operations == MAX_OPERATIONS)
+    if (toasty->num_operations == MAX_OPERATIONS)
         return -1;
-    Operation *o = tfs->operations;
+    Operation *o = toasty->operations;
     while (o->type != OPERATION_TYPE_FREE) {
         o++;
-        assert(o < tfs->operations + MAX_OPERATIONS);
+        assert(o < toasty->operations + MAX_OPERATIONS);
     }
     o->type = type;
     o->ptr  = ptr;
     o->off  = off;
     o->len  = len;
-    o->result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_EMPTY };
+    o->result = (ToastyResult) { .type=TOASTY_RESULT_EMPTY };
 
-    tfs->num_operations++;
-    return o - tfs->operations;
+    toasty->num_operations++;
+    return o - toasty->operations;
 }
 
-static void free_operation(ToastyFS *tfs, int opidx)
+static void free_operation(ToastyFS *toasty, int opidx)
 {
-    tfs->operations[opidx].type = OPERATION_TYPE_FREE;
-    tfs->num_operations--;
+    toasty->operations[opidx].type = OPERATION_TYPE_FREE;
+    toasty->num_operations--;
 }
 
 static void
@@ -279,24 +279,24 @@ have_insertection(Address *a, int a_num, Address *b, int b_num)
 }
 
 // Get or create connection to a chunk server
-static int get_chunk_server(ToastyFS *tfs, Address *addrs, int num_addrs, ByteQueue **output)
+static int get_chunk_server(ToastyFS *toasty, Address *addrs, int num_addrs, ByteQueue **output)
 {
     // Check if already connected
 
     int found = -1;
-    for (int i = 0; i < tfs->num_chunk_servers; i++) {
+    for (int i = 0; i < toasty->num_chunk_servers; i++) {
 
-        if (!tfs->chunk_servers[i].used)
+        if (!toasty->chunk_servers[i].used)
            continue;
 
-        if (!have_insertection(addrs, num_addrs, tfs->chunk_servers[i].addrs, tfs->chunk_servers[i].num_addrs))
+        if (!have_insertection(addrs, num_addrs, toasty->chunk_servers[i].addrs, toasty->chunk_servers[i].num_addrs))
             continue;
 
-        int conn_idx = tcp_index_from_tag(&tfs->tcp, i);
+        int conn_idx = tcp_index_from_tag(&toasty->tcp, i);
         assert(conn_idx > -1);
 
         if (output)
-            *output = tcp_output_buffer(&tfs->tcp, conn_idx);
+            *output = tcp_output_buffer(&toasty->tcp, conn_idx);
 
         found = i;
         break;
@@ -304,45 +304,45 @@ static int get_chunk_server(ToastyFS *tfs, Address *addrs, int num_addrs, ByteQu
 
     if (found == -1) {
 
-        if (tfs->num_chunk_servers == MAX_CHUNK_SERVERS)
+        if (toasty->num_chunk_servers == MAX_CHUNK_SERVERS)
             return -1;
 
         // Find free slot
         found = 0;
-        while (tfs->chunk_servers[found].used) {
+        while (toasty->chunk_servers[found].used) {
             found++;
             assert(found < MAX_CHUNK_SERVERS);
         }
 
-        if (tcp_connect(&tfs->tcp, addrs[0], found, output) < 0)
+        if (tcp_connect(&toasty->tcp, addrs[0], found, output) < 0)
             return -1;
 
         if (num_addrs > MAX_SERVER_ADDRS)
             num_addrs = MAX_SERVER_ADDRS;
-        tfs->chunk_servers[found].num_addrs = num_addrs;
-        memcpy(tfs->chunk_servers[found].addrs, addrs, num_addrs * sizeof(Address));
+        toasty->chunk_servers[found].num_addrs = num_addrs;
+        memcpy(toasty->chunk_servers[found].addrs, addrs, num_addrs * sizeof(Address));
 
-        tfs->chunk_servers[found].used = true;
-        tfs->chunk_servers[found].current_addr_idx = 0;
-        tfs->chunk_servers[found].connected = false;
+        toasty->chunk_servers[found].used = true;
+        toasty->chunk_servers[found].current_addr_idx = 0;
+        toasty->chunk_servers[found].connected = false;
 
-        request_queue_init(&tfs->chunk_servers[found].reqs);
+        request_queue_init(&toasty->chunk_servers[found].reqs);
 
-        tfs->num_chunk_servers++;
+        toasty->num_chunk_servers++;
     }
 
     return found;
 }
 
 // Send download request for a chunk
-static int send_download_chunk(ToastyFS *tfs, int chunk_server_idx,
+static int send_download_chunk(ToastyFS *toasty, int chunk_server_idx,
     SHA256 hash, uint32_t offset, uint32_t length, int opidx, int range_idx)
 {
-    int conn_idx = tcp_index_from_tag(&tfs->tcp, chunk_server_idx);
+    int conn_idx = tcp_index_from_tag(&toasty->tcp, chunk_server_idx);
     if (conn_idx < 0) return -1;
 
     MessageWriter writer;
-    ByteQueue *output = tcp_output_buffer(&tfs->tcp, conn_idx);
+    ByteQueue *output = tcp_output_buffer(&toasty->tcp, conn_idx);
     message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK);
 
     message_write(&writer, &hash,   sizeof(hash));
@@ -352,64 +352,64 @@ static int send_download_chunk(ToastyFS *tfs, int chunk_server_idx,
     if (!message_writer_free(&writer))
         return -1;
 
-    RequestQueue *reqs = &tfs->chunk_servers[chunk_server_idx].reqs;
+    RequestQueue *reqs = &toasty->chunk_servers[chunk_server_idx].reqs;
     return request_queue_push(reqs, (Request) { range_idx, opidx });
 }
 
-static void close_chunk_server(ToastyFS *tfs, int chunk_server_idx)
+// TODO: is this used somewhere?
+static void close_chunk_server(ToastyFS *toasty, int chunk_server_idx)
 {
-    int conn_idx = tcp_index_from_tag(&tfs->tcp, chunk_server_idx);
-    tcp_close(&tfs->tcp, conn_idx);
+    int conn_idx = tcp_index_from_tag(&toasty->tcp, chunk_server_idx);
+    tcp_close(&toasty->tcp, conn_idx);
 }
 
 static void
-metadata_server_request_start(ToastyFS *tfs, MessageWriter *writer, uint16_t type)
+metadata_server_request_start(ToastyFS *toasty, MessageWriter *writer, uint16_t type)
 {
     ByteQueue *output;
-    if (tfs->metadata_server.used) {
+    if (toasty->metadata_server.used) {
 
-        int conn_idx = tcp_index_from_tag(&tfs->tcp, TAG_METADATA_SERVER);
+        int conn_idx = tcp_index_from_tag(&toasty->tcp, TAG_METADATA_SERVER);
         assert(conn_idx > -1);
 
-        output = tcp_output_buffer(&tfs->tcp, conn_idx);
+        output = tcp_output_buffer(&toasty->tcp, conn_idx);
     } else {
-        if (tcp_connect(&tfs->tcp, tfs->metadata_server.addr, TAG_METADATA_SERVER, &output) < 0) {
+        if (tcp_connect(&toasty->tcp, toasty->metadata_server.addr, TAG_METADATA_SERVER, &output) < 0) {
             assert(0); // TODO
         }
-        tfs->metadata_server.used = true;
+        toasty->metadata_server.used = true;
     }
 
     message_writer_init(writer, output, type);
 }
 
 static int
-metadata_server_request_end(ToastyFS *tfs, MessageWriter *writer, int opidx, int tag)
+metadata_server_request_end(ToastyFS *toasty, MessageWriter *writer, int opidx, int tag)
 {
     if (!message_writer_free(writer))
         return -1;
 
-    RequestQueue *reqs = &tfs->metadata_server.reqs;
+    RequestQueue *reqs = &toasty->metadata_server.reqs;
     if (request_queue_push(reqs, (Request) { tag, opidx }) < 0)
         return -1;
 
     return 0;
 }
 
-int toastyfs_submit_create(ToastyFS *tfs, char *path, int path_len,
-    bool is_dir, uint32_t chunk_size)
+static ToastyHandle begin_create(ToastyFS *toasty,
+    ToastyString path, bool is_dir, uint32_t chunk_size)
 {
-    if (path_len < 0) path_len = strlen(path);
-
     OperationType type = OPERATION_TYPE_CREATE;
-    int opidx = alloc_operation(tfs, type, 0, NULL, 0);
-    if (opidx < 0) return -1;
+    int opidx = alloc_operation(toasty, type, 0, NULL, 0);
+    if (opidx < 0)
+        return TOASTY_INVALID;
 
     MessageWriter writer;
-    metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_CREATE);
+    metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_CREATE);
 
     if (path_len > UINT16_MAX) {
-        free_operation(tfs, opidx);
-        return -1;
+        free_operation(toasty, opidx);
+        return TOASTY_INVALID;
     }
     uint16_t tmp = path_len;
     message_write(&writer, &tmp, sizeof(tmp));
@@ -421,139 +421,146 @@ int toastyfs_submit_create(ToastyFS *tfs, char *path, int path_len,
 
     if (!is_dir) {
         if (chunk_size == 0 || chunk_size > UINT32_MAX) {
-            free_operation(tfs, opidx);
-            return -1;
+            free_operation(toasty, opidx);
+            return TOASTY_INVALID;
         }
         uint32_t tmp_u32 = chunk_size;
         message_write(&writer, &tmp_u32, sizeof(tmp_u32));
     }
 
-    if (metadata_server_request_end(tfs, &writer, opidx, 0) < 0) {
-        free_operation(tfs, opidx);
-        return -1;
+    if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
+        free_operation(toasty, opidx);
+        return TOASTY_INVALID;
     }
 
-    return opidx;
+    return operation_to_handle(toasty, opidx);
 }
 
-int toastyfs_submit_delete(ToastyFS *tfs, char *path, int path_len)
+ToastyHandle toasty_begin_create_dir(ToastyFS *toasty, ToastyString path)
 {
-    if (path_len < 0) path_len = strlen(path);
+    return begin_create(toasty, path, true, 0);
+}
 
+ToastyHandle toasty_begin_create_file(ToastyFS *toasty, ToastyString path,
+    unsigned int chunk_size)
+{
+    return begin_create(toasty, path, false, chunk_size);
+}
+
+ToastyHandle toastyfs_begin_delete(ToastyFS *toasty, ToastyString path)
+{
     OperationType type = OPERATION_TYPE_DELETE;
-    int opidx = alloc_operation(tfs, type, 0, NULL, 0);
-    if (opidx < 0) return -1;
+    int opidx = alloc_operation(toasty, type, 0, NULL, 0);
+    if (opidx < 0)
+        return TOASTY_INVALID;
 
     if (path_len > UINT16_MAX) {
-        free_operation(tfs, opidx);
-        return -1;
+        free_operation(toasty, opidx);
+        return TOASTY_INVALID;
     }
     uint16_t tmp = path_len;
 
     MessageWriter writer;
-    metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_DELETE);
+    metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_DELETE);
     message_write(&writer, &tmp, sizeof(tmp));
     message_write(&writer, path, path_len);
-    if (metadata_server_request_end(tfs, &writer, opidx, 0) < 0) {
-        free_operation(tfs, opidx);
-        return -1;
+    if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
+        free_operation(toasty, opidx);
+        return TOASTY_INVALID;
     }
 
-    return opidx;
+    return operation_to_handle(toasty, opidx);
 }
 
-int toastyfs_submit_list(ToastyFS *tfs, char *path, int path_len)
+ToastyHandle toastyfs_begin_list(ToastyFS *toasty, ToastyString path)
 {
-    if (path_len < 0) path_len = strlen(path);
-
     OperationType type = OPERATION_TYPE_LIST;
-    int opidx = alloc_operation(tfs, type, 0, NULL, 0);
-    if (opidx < 0) return -1;
+    int opidx = alloc_operation(toasty, type, 0, NULL, 0);
+    if (opidx < 0)
+        return TOASTY_INVALID;
 
     if (path_len > UINT16_MAX) {
-        free_operation(tfs, opidx);
-        return -1;
+        free_operation(toasty, opidx);
+        return TOASTY_INVALID;
     }
     uint16_t tmp = path_len;
 
     MessageWriter writer;
-    metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_LIST);
+    metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_LIST);
 
     message_write(&writer, &tmp, sizeof(tmp));
     message_write(&writer, path, path_len);
 
-    if (metadata_server_request_end(tfs, &writer, opidx, 0) < 0) {
-        free_operation(tfs, opidx);
-        return -1;
+    if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
+        free_operation(toasty, opidx);
+        return TOASTY_INVALID;
     }
 
-    return opidx;
+    return operation_to_handle(toasty, opidx);
 }
 
-static int send_read_message(ToastyFS *tfs, int opidx, int tag, string path, uint32_t offset, uint32_t length)
+static int send_read_message(ToastyFS *toasty, int opidx, int tag, string path, uint32_t offset, uint32_t length)
 {
     if (path.len > UINT16_MAX)
         return -1;
     uint16_t path_len = path.len;
 
     MessageWriter writer;
-    metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_READ);
+    metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_READ);
     message_write(&writer, &path_len, sizeof(path_len));
     message_write(&writer, path.ptr,  path.len);
     message_write(&writer, &offset,   sizeof(offset));
     message_write(&writer, &length,   sizeof(length));
-    if (metadata_server_request_end(tfs, &writer, opidx, tag) < 0)
+    if (metadata_server_request_end(toasty, &writer, opidx, tag) < 0)
         return -1;
     return 0;
 }
 
-int toastyfs_submit_read(ToastyFS *tfs, char *path, int path_len, int off, void *dst, int len)
+ToastyHandle toastyfs_begin_read(ToastyFS *toasty, ToastyString path, int off, void *dst, int len)
 {
-    if (path_len < 0) path_len = strlen(path);
-
     OperationType type = OPERATION_TYPE_READ;
-    int opidx = alloc_operation(tfs, type, off, dst, len);
-    if (opidx < 0) return -1;
+    int opidx = alloc_operation(toasty, type, off, dst, len);
+    if (opidx < 0) return TOASTY_INVALID;
 
-    if (send_read_message(tfs, opidx, TAG_RETRIEVE_METADATA_FOR_READ, (string) { path, path_len }, off, len) < 0) {
-        free_operation(tfs, opidx);
-        return -1;
+    if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_READ, path, off, len) < 0) {
+        free_operation(toasty, opidx);
+        return TOASTY_INVALID;
     }
 
-    return opidx;
+    return operation_to_handle(toasty, opidx);
 }
 
-int toastyfs_submit_write(ToastyFS *tfs, char *path, int path_len, int off, void *src, int len)
+ToastyHandle toastyfs_begin_write(ToastyFS *toasty, ToastyString path, int off, void *src, int len)
 {
-    if (path_len < 0) path_len = strlen(path);
-
     OperationType type = OPERATION_TYPE_WRITE;
-    int opidx = alloc_operation(tfs, type, off, src, len);
-    if (opidx < 0) return -1;
 
-    tfs->operations[opidx].path = (string) { path, path_len }; // TODO: must be a copy
+    int opidx = alloc_operation(toasty, type, off, src, len);
+    if (opidx < 0)
+        return TOASTY_INVALID;
 
-    if (send_read_message(tfs, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, (string) { path, path_len }, off, len) < 0) {
-        free_operation(tfs, opidx);
-        return -1;
+    toasty->operations[opidx].path = path; // TODO: must be a copy
+
+    if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, path, off, len) < 0) {
+        free_operation(toasty, opidx);
+        return TOASTY_INVALID;
     }
 
-    return opidx;
+    return operation_to_handle(toasty, opidx);
 }
 
-void toastyfs_result_free(ToastyFS_Result *result)
+void toastyfs_result_free(ToastyResult *result)
 {
-    if (result->type == TOASTYFS_RESULT_LIST_SUCCESS)
+    if (result->type == TOASTY_RESULT_LIST_SUCCESS)
         sys_free(result->entities);
 }
 
-static void process_event_for_create(ToastyFS *tfs,
+static void process_event_for_create(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
     (void) request_tag;
 
     if (msg.len == 0) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
         return;
     }
 
@@ -561,43 +568,43 @@ static void process_event_for_create(ToastyFS *tfs,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_CREATE_SUCCESS) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
         return;
     }
 
-    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_CREATE_SUCCESS };
+    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_SUCCESS };
 }
 
-static void process_event_for_delete(ToastyFS *tfs,
+static void process_event_for_delete(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
     (void) request_tag;
 
     if (msg.len == 0) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
         return;
     }
 
@@ -605,43 +612,43 @@ static void process_event_for_delete(ToastyFS *tfs,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_DELETE_SUCCESS) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
         return;
     }
 
-    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_DELETE_SUCCESS };
+    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_SUCCESS };
 }
 
-static void process_event_for_list(ToastyFS *tfs,
+static void process_event_for_list(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
     (void) request_tag;
 
     if (msg.len == 0) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         return;
     }
 
@@ -649,43 +656,43 @@ static void process_event_for_list(ToastyFS *tfs,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         return;
     }
 
     if (type != MESSAGE_TYPE_LIST_SUCCESS) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         return;
     }
 
     // Read and validate the list data
     uint32_t item_count;
     if (!binary_read(&reader, &item_count, sizeof(item_count))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         return;
     }
 
     uint8_t truncated;
     if (!binary_read(&reader, &truncated, sizeof(truncated))) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         return;
     }
 
-    ToastyFS_Entity *entities = sys_malloc(item_count * sizeof(ToastyFS_Entity));
+    ToastyListingEntry *entities = sys_malloc(item_count * sizeof(ToastyListingEntry));
     if (entities == NULL) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         return;
     }
 
@@ -693,21 +700,21 @@ static void process_event_for_list(ToastyFS *tfs,
     for (uint32_t i = 0; i < item_count; i++) {
         uint8_t is_dir;
         if (!binary_read(&reader, &is_dir, sizeof(is_dir))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
             sys_free(entities);
             return;
         }
 
         uint16_t name_len;
         if (!binary_read(&reader, &name_len, sizeof(name_len))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
             sys_free(entities);
             return;
         }
 
         char *name = (char*) reader.src + reader.cur;
         if (!binary_read(&reader, NULL, name_len)) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
             sys_free(entities);
             return;
         }
@@ -715,7 +722,7 @@ static void process_event_for_list(ToastyFS *tfs,
         entities[i].is_dir = is_dir;
 
         if (name_len > sizeof(entities[i].name)-1) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
             sys_free(entities);
             return;
         }
@@ -725,19 +732,19 @@ static void process_event_for_list(ToastyFS *tfs,
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
         sys_free(entities);
         return;
     }
 
-    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_LIST_SUCCESS, item_count, entities };
+    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_SUCCESS, item_count, entities };
 }
 
-static void process_event_for_read(ToastyFS *tfs,
+static void process_event_for_read(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
         return;
     }
 
@@ -747,41 +754,41 @@ static void process_event_for_read(ToastyFS *tfs,
 
         // Skip version
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         // Check message type
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         if (type != MESSAGE_TYPE_READ_SUCCESS) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         // Skip message length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         // Read chunk size
         uint32_t chunk_size;
         if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         // Calculate which chunks we need
-        int off = tfs->operations[opidx].off;
-        int len = tfs->operations[opidx].len;
+        int off = toasty->operations[opidx].off;
+        int len = toasty->operations[opidx].len;
 
         if (len == 0) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_SUCCESS };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS };
             return;
         }
 
@@ -794,18 +801,18 @@ static void process_event_for_read(ToastyFS *tfs,
         // Read number of hashes
         uint32_t num_hashes;
         if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         // Allocate ranges
         Range *ranges = sys_malloc(num_chunks_needed * sizeof(Range));
         if (ranges == NULL) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
-        char *ptr = tfs->operations[opidx].ptr;
+        char *ptr = toasty->operations[opidx].ptr;
         int num_ranges_with_data = 0;
 
         // Parse each chunk's hash and server locations
@@ -815,7 +822,7 @@ static void process_event_for_read(ToastyFS *tfs,
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
                 sys_free(ranges);
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                 return;
             }
 
@@ -823,7 +830,7 @@ static void process_event_for_read(ToastyFS *tfs,
             uint32_t num_servers;
             if (!binary_read(&reader, &num_servers, sizeof(num_servers))) {
                 sys_free(ranges);
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                 return;
             }
 
@@ -831,7 +838,7 @@ static void process_event_for_read(ToastyFS *tfs,
             uint32_t num_ipv4;
             if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
                 sys_free(ranges);
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                 return;
             }
 
@@ -845,7 +852,7 @@ static void process_event_for_read(ToastyFS *tfs,
                 if (!binary_read(&reader, &ipv4, sizeof(ipv4)) ||
                     !binary_read(&reader, &port, sizeof(port))) {
                     sys_free(ranges);
-                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                     return;
                 }
                 if (!found) {
@@ -860,21 +867,21 @@ static void process_event_for_read(ToastyFS *tfs,
             uint32_t num_ipv6;
             if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
                 sys_free(ranges);
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                 return;
             }
             for (uint32_t j = 0; j < num_ipv6; j++) {
                 if (!binary_read(&reader, NULL, sizeof(IPv6)) ||
                     !binary_read(&reader, NULL, sizeof(uint16_t))) {
                     sys_free(ranges);
-                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                     return;
                 }
             }
 
             if (!found) {
                 sys_free(ranges);
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                 return;
             }
 
@@ -908,35 +915,35 @@ static void process_event_for_read(ToastyFS *tfs,
         }
 
         // Store range info
-        tfs->operations[opidx].ranges = ranges;
-        tfs->operations[opidx].ranges_head = 0;
-        tfs->operations[opidx].ranges_count = num_ranges_with_data;
-        tfs->operations[opidx].num_pending = 0;
+        toasty->operations[opidx].ranges = ranges;
+        toasty->operations[opidx].ranges_head = 0;
+        toasty->operations[opidx].ranges_count = num_ranges_with_data;
+        toasty->operations[opidx].num_pending = 0;
 
         // Start first download
         if (num_ranges_with_data > 0) {
             Range *r = &ranges[0];
-            int cs_idx = get_chunk_server(tfs, &r->server_addr, 1, NULL);
+            int cs_idx = get_chunk_server(toasty, &r->server_addr, 1, NULL);
             if (cs_idx < 0) {
                 sys_free(ranges);
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                 return;
             }
             r->chunk_server_idx = cs_idx;
 
-            if (send_download_chunk(tfs, cs_idx, r->hash, r->offset_within_chunk,
+            if (send_download_chunk(toasty, cs_idx, r->hash, r->offset_within_chunk,
                 r->length_within_chunk, opidx, 0) < 0) {
                 sys_free(ranges);
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
                 return;
             }
 
-            tfs->operations[opidx].num_pending = 1;
-            tfs->operations[opidx].ranges_head = 1;
+            toasty->operations[opidx].num_pending = 1;
+            toasty->operations[opidx].ranges_head = 1;
         } else {
             // No chunks to download
             sys_free(ranges);
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_SUCCESS };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS };
         }
 
     } else {
@@ -947,78 +954,78 @@ static void process_event_for_read(ToastyFS *tfs,
 
         // Parse response
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         if (type != MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         uint32_t data_len;
         if (!binary_read(&reader, &data_len, sizeof(data_len))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         uint8_t *data = reader.src + reader.cur;
         if (!binary_read(&reader, NULL, data_len)) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         if (binary_read(&reader, NULL, 1)) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
             return;
         }
 
         // Copy data to destination
-        if (range_idx >= 0 && range_idx < tfs->operations[opidx].ranges_count) {
-            memcpy(tfs->operations[opidx].ranges[range_idx].dst, data, data_len);
+        if (range_idx >= 0 && range_idx < toasty->operations[opidx].ranges_count) {
+            memcpy(toasty->operations[opidx].ranges[range_idx].dst, data, data_len);
         }
 
-        tfs->operations[opidx].num_pending--;
+        toasty->operations[opidx].num_pending--;
 
         // Start next download (sequential)
-        int next_idx = tfs->operations[opidx].ranges_head;
-        if (next_idx < tfs->operations[opidx].ranges_count) {
-            Range *r = &tfs->operations[opidx].ranges[next_idx];
+        int next_idx = toasty->operations[opidx].ranges_head;
+        if (next_idx < toasty->operations[opidx].ranges_count) {
+            Range *r = &toasty->operations[opidx].ranges[next_idx];
 
-            int cs_idx = get_chunk_server(tfs, &r->server_addr, 1, NULL);
+            int cs_idx = get_chunk_server(toasty, &r->server_addr, 1, NULL);
             if (cs_idx >= 0) {
                 r->chunk_server_idx = cs_idx;
-                if (send_download_chunk(tfs, cs_idx, r->hash, r->offset_within_chunk,
+                if (send_download_chunk(toasty, cs_idx, r->hash, r->offset_within_chunk,
                     r->length_within_chunk, opidx, next_idx) == 0) {
-                    tfs->operations[opidx].num_pending++;
-                    tfs->operations[opidx].ranges_head++;
+                    toasty->operations[opidx].num_pending++;
+                    toasty->operations[opidx].ranges_head++;
                 }
             }
         }
 
         // Check if done
-        if (tfs->operations[opidx].num_pending == 0) {
-            sys_free(tfs->operations[opidx].ranges);
-            tfs->operations[opidx].ranges = NULL;
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_READ_SUCCESS };
+        if (toasty->operations[opidx].num_pending == 0) {
+            sys_free(toasty->operations[opidx].ranges);
+            toasty->operations[opidx].ranges = NULL;
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS };
         }
     }
 }
 
-static int start_upload(ToastyFS *tfs, int opidx)
+static int start_upload(ToastyFS *toasty, int opidx)
 {
-    Operation *o = &tfs->operations[opidx];
+    Operation *o = &toasty->operations[opidx];
 
     int found = -1;
 
@@ -1060,13 +1067,13 @@ static int start_upload(ToastyFS *tfs, int opidx)
     assert(tag <= TAG_UPLOAD_CHUNK_MAX);
 
     ByteQueue *output;
-    int chunk_server_idx = get_chunk_server(tfs, &o->uploads[found].address, 1, &output);
+    int chunk_server_idx = get_chunk_server(toasty, &o->uploads[found].address, 1, &output);
     if (chunk_server_idx < 0)
         return -1;
 
-    RequestQueue *reqs = &tfs->chunk_servers[chunk_server_idx].reqs;
+    RequestQueue *reqs = &toasty->chunk_servers[chunk_server_idx].reqs;
     if (request_queue_push(reqs, (Request) { tag, opidx }) < 0) {
-        close_chunk_server(tfs, chunk_server_idx);
+        close_chunk_server(toasty, chunk_server_idx);
         return -1;
     }
 
@@ -1084,7 +1091,7 @@ static int start_upload(ToastyFS *tfs, int opidx)
         message_write(&writer, &target_len, sizeof(target_len));
         message_write(&writer, data_ptr, target_len);
         if (!message_writer_free(&writer)) {
-            close_chunk_server(tfs, chunk_server_idx);
+            close_chunk_server(toasty, chunk_server_idx);
             request_queue_pop(reqs, NULL);
             return -1;
         }
@@ -1103,7 +1110,7 @@ static int start_upload(ToastyFS *tfs, int opidx)
         message_write(&writer, &target_len,  sizeof(target_len));
         message_write(&writer, data_ptr, target_len);
         if (!message_writer_free(&writer)) {
-            close_chunk_server(tfs, chunk_server_idx);
+            close_chunk_server(toasty, chunk_server_idx);
             request_queue_pop(reqs, NULL);
             return -1;
         }
@@ -1113,18 +1120,18 @@ static int start_upload(ToastyFS *tfs, int opidx)
     return 0;
 }
 
-static int count_pending_uploads(ToastyFS *tfs, int opidx)
+static int count_pending_uploads(ToastyFS *toasty, int opidx)
 {
     int n = 0;
-    for (int i = 0; i < tfs->operations[opidx].num_uploads; i++)
-        if (tfs->operations[opidx].uploads[i].status == UPLOAD_PENDING)
+    for (int i = 0; i < toasty->operations[opidx].num_uploads; i++)
+        if (toasty->operations[opidx].uploads[i].status == UPLOAD_PENDING)
             n++;
     return n;
 }
 
-static int schedule_upload(ToastyFS *tfs, int opidx, UploadSchedule upload)
+static int schedule_upload(ToastyFS *toasty, int opidx, UploadSchedule upload)
 {
-    Operation *o = &tfs->operations[opidx];
+    Operation *o = &toasty->operations[opidx];
 
     if (o->num_uploads == o->cap_uploads) {
 
@@ -1155,11 +1162,11 @@ static int schedule_upload(ToastyFS *tfs, int opidx, UploadSchedule upload)
     return 0;
 }
 
-static void process_event_for_write(ToastyFS *tfs,
+static void process_event_for_write(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
         return;
     }
 
@@ -1168,62 +1175,62 @@ static void process_event_for_write(ToastyFS *tfs,
         BinaryReader reader = { msg.ptr, msg.len, 0 };
 
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
         if (type != MESSAGE_TYPE_READ_SUCCESS) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
         uint32_t chunk_size;
         if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
-        tfs->operations[opidx].chunk_size = chunk_size;
+        toasty->operations[opidx].chunk_size = chunk_size;
 
         uint32_t num_hashes;
         if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
-        uint32_t num_all_hasehs = (tfs->operations[opidx].len + chunk_size - 1) / chunk_size;
+        uint32_t num_all_hasehs = (toasty->operations[opidx].len + chunk_size - 1) / chunk_size;
         uint32_t num_new_hashes = num_all_hasehs - num_hashes;
         assert(num_all_hasehs >= num_hashes);
 
-        tfs->operations[opidx].num_chunks = num_all_hasehs;
-        tfs->operations[opidx].num_hashes = num_hashes; // TODO: overflow
-        tfs->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
-        if (tfs->operations[opidx].hashes == NULL) {
+        toasty->operations[opidx].num_chunks = num_all_hasehs;
+        toasty->operations[opidx].num_hashes = num_hashes; // TODO: overflow
+        toasty->operations[opidx].hashes = sys_malloc(num_hashes * sizeof(SHA256));
+        if (toasty->operations[opidx].hashes == NULL) {
             assert(0); // TODO
         }
 
-        tfs->operations[opidx].uploads = NULL;
-        tfs->operations[opidx].num_uploads = 0;
-        tfs->operations[opidx].cap_uploads = 0;
+        toasty->operations[opidx].uploads = NULL;
+        toasty->operations[opidx].num_uploads = 0;
+        toasty->operations[opidx].cap_uploads = 0;
 
-        char *full_ptr = tfs->operations[opidx].ptr;
-        int   full_off = tfs->operations[opidx].off;
-        int   full_len = tfs->operations[opidx].len;
+        char *full_ptr = toasty->operations[opidx].ptr;
+        int   full_off = toasty->operations[opidx].off;
+        int   full_len = toasty->operations[opidx].len;
 
         int relative_off = 0;
 
         int next_server_lid = 0;
-        tfs->operations[opidx].num_uploads = 0;
+        toasty->operations[opidx].num_uploads = 0;
         for (uint32_t i = 0; i < num_hashes; i++) {
 
             char *src = full_ptr + relative_off;
@@ -1244,15 +1251,15 @@ static void process_event_for_write(ToastyFS *tfs,
 
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                 return;
             }
 
-            tfs->operations[opidx].hashes[i] = hash;
+            toasty->operations[opidx].hashes[i] = hash;
 
             uint32_t num_holders;
             if (!binary_read(&reader, &num_holders, sizeof(num_holders))) {
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                 return;
             }
 
@@ -1263,7 +1270,7 @@ static void process_event_for_write(ToastyFS *tfs,
 
                 uint32_t num_ipv4;
                 if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
-                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                     return;
                 }
 
@@ -1271,13 +1278,13 @@ static void process_event_for_write(ToastyFS *tfs,
 
                     IPv4 ipv4;
                     if (!binary_read(&reader, &ipv4, sizeof(ipv4))) {
-                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                         return;
                     }
 
                     uint16_t port;
                     if (!binary_read(&reader, &port, sizeof(port))) {
-                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                         return;
                     }
 
@@ -1291,15 +1298,15 @@ static void process_event_for_write(ToastyFS *tfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    if (schedule_upload(tfs, opidx, upload) < 0) {
-                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    if (schedule_upload(toasty, opidx, upload) < 0) {
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                         return;
                     }
                 }
 
                 uint32_t num_ipv6;
                 if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
-                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                     return;
                 }
 
@@ -1307,13 +1314,13 @@ static void process_event_for_write(ToastyFS *tfs,
 
                     IPv6 ipv6;
                     if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
-                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                         return;
                     }
 
                     uint16_t port;
                     if (!binary_read(&reader, &port, sizeof(port))) {
-                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                         return;
                     }
 
@@ -1327,8 +1334,8 @@ static void process_event_for_write(ToastyFS *tfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    if (schedule_upload(tfs, opidx, upload) < 0) {
-                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    if (schedule_upload(toasty, opidx, upload) < 0) {
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                         return;
                     }
                 }
@@ -1337,7 +1344,7 @@ static void process_event_for_write(ToastyFS *tfs,
 
         uint32_t num_locations;
         if (!binary_read(&reader, &num_locations, sizeof(num_locations))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
@@ -1348,7 +1355,7 @@ static void process_event_for_write(ToastyFS *tfs,
 
             uint32_t num_ipv4;
             if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                 return;
             }
 
@@ -1356,13 +1363,13 @@ static void process_event_for_write(ToastyFS *tfs,
 
                 IPv4 ipv4;
                 if (!binary_read(&reader, &ipv4, sizeof(ipv4))) {
-                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                     return;
                 }
 
                 uint16_t port;
                 if (!binary_read(&reader, &port, sizeof(port))) {
-                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                     return;
                 }
 #if 0
@@ -1402,8 +1409,8 @@ static void process_event_for_write(ToastyFS *tfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    if (schedule_upload(tfs, opidx, upload) < 0) {
-                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    if (schedule_upload(toasty, opidx, upload) < 0) {
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                         return;
                     }
                 }
@@ -1413,7 +1420,7 @@ static void process_event_for_write(ToastyFS *tfs,
 
             uint32_t num_ipv6;
             if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                 return;
             }
 
@@ -1423,13 +1430,13 @@ static void process_event_for_write(ToastyFS *tfs,
 
                 IPv6 ipv6;
                 if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
-                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                     return;
                 }
 
                 uint16_t port;
                 if (!binary_read(&reader, &port, sizeof(port))) {
-                    tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                     return;
                 }
 #if 0
@@ -1467,8 +1474,8 @@ static void process_event_for_write(ToastyFS *tfs,
                     upload.src = src;
                     upload.off = off;
                     upload.len = len;
-                    if (schedule_upload(tfs, opidx, upload) < 0) {
-                        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                    if (schedule_upload(toasty, opidx, upload) < 0) {
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                         return;
                     }
                 }
@@ -1480,13 +1487,13 @@ static void process_event_for_write(ToastyFS *tfs,
         // Now start the first batch of uploads
         int started = 0;
         for (int i = 0; i < PARALLEL_LIMIT; i++) {
-            if (start_upload(tfs, opidx) == 0)
+            if (start_upload(toasty, opidx) == 0)
                 started++;
         }
 
         if (started == 0) {
             // We already failed
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
@@ -1567,14 +1574,14 @@ static void process_event_for_write(ToastyFS *tfs,
         }
 
         uint16_t expected_type;
-        if (tfs->operations[opidx].uploads[found].chunk_index >= tfs->operations[opidx].num_hashes) {
+        if (toasty->operations[opidx].uploads[found].chunk_index >= toasty->operations[opidx].num_hashes) {
             expected_type = MESSAGE_TYPE_CREATE_CHUNK_SUCCESS;
         } else {
             expected_type = MESSAGE_TYPE_UPLOAD_CHUNK_SUCCESS;
         }
 
         if (type != expected_type)
-            tfs->operations[opidx].uploads[found].status = UPLOAD_FAILED;
+            toasty->operations[opidx].uploads[found].status = UPLOAD_FAILED;
         else {
 
             SHA256 hash;
@@ -1589,15 +1596,15 @@ static void process_event_for_write(ToastyFS *tfs,
                 return;
             }
 
-            tfs->operations[opidx].uploads[found].status = UPLOAD_COMPLETED;
-            tfs->operations[opidx].uploads[found].final_hash = hash;
-            for (int i = 0; i < tfs->operations[opidx].num_uploads; i++) {
+            toasty->operations[opidx].uploads[found].status = UPLOAD_COMPLETED;
+            toasty->operations[opidx].uploads[found].final_hash = hash;
+            for (int i = 0; i < toasty->operations[opidx].num_uploads; i++) {
 
-                if (tfs->operations[opidx].uploads[i].status == UPLOAD_WAITING
-                    && tfs->operations[opidx].uploads[i].chunk_index == tfs->operations[opidx].uploads[found].chunk_index
-                    && (addr_eql(tfs->operations[opidx].uploads[i].address, tfs->operations[opidx].uploads[found].address)
-                    || tfs->operations[opidx].uploads[i].server_lid == tfs->operations[opidx].uploads[found].server_lid))
-                    tfs->operations[opidx].uploads[i].status = UPLOAD_IGNORED;
+                if (toasty->operations[opidx].uploads[i].status == UPLOAD_WAITING
+                    && toasty->operations[opidx].uploads[i].chunk_index == toasty->operations[opidx].uploads[found].chunk_index
+                    && (addr_eql(toasty->operations[opidx].uploads[i].address, toasty->operations[opidx].uploads[found].address)
+                    || toasty->operations[opidx].uploads[i].server_lid == toasty->operations[opidx].uploads[found].server_lid))
+                    toasty->operations[opidx].uploads[i].status = UPLOAD_IGNORED;
             }
 
             // TODO: the new chunk hash should be stored in
@@ -1607,9 +1614,9 @@ static void process_event_for_write(ToastyFS *tfs,
         // Count the number of PENDING uploads and
         // start uploads until N are pending or an
         // error occurs
-        int num_pending = count_pending_uploads(tfs, opidx);
+        int num_pending = count_pending_uploads(toasty, opidx);
         while (num_pending < PARALLEL_LIMIT) {
-            if (start_upload(tfs, opidx) < 0)
+            if (start_upload(toasty, opidx) < 0)
                 break;
             num_pending++;
         }
@@ -1629,22 +1636,22 @@ static void process_event_for_write(ToastyFS *tfs,
                 Address locations[REPLICATION_FACTOR];
             } ChunkUploadResult;
 
-            int num_upload_results = tfs->operations[opidx].num_chunks;
+            int num_upload_results = toasty->operations[opidx].num_chunks;
             ChunkUploadResult *upload_results = sys_malloc(num_upload_results * sizeof(ChunkUploadResult));
             if (upload_results == NULL) {
                 assert(0); // TODO
             }
 
             for (int i = 0; i < num_upload_results; i++) {
-                if (i < tfs->operations[opidx].num_hashes)
-                    upload_results[i].old_hash = tfs->operations[opidx].hashes[i];
+                if (i < toasty->operations[opidx].num_hashes)
+                    upload_results[i].old_hash = toasty->operations[opidx].hashes[i];
                 else
                     memset(&upload_results[i].old_hash, 0, sizeof(SHA256));
                 upload_results[i].num_locations = 0;
             }
 
-            for (int i = 0; i < tfs->operations[opidx].num_uploads; i++) {
-                UploadSchedule *u = &tfs->operations[opidx].uploads[i];
+            for (int i = 0; i < toasty->operations[opidx].num_uploads; i++) {
+                UploadSchedule *u = &toasty->operations[opidx].uploads[i];
                 if (u->status == UPLOAD_COMPLETED) {
                     int n = upload_results[u->chunk_index].num_locations++;
                     upload_results[u->chunk_index].locations[n] = u->address;
@@ -1664,17 +1671,17 @@ static void process_event_for_write(ToastyFS *tfs,
             }
 
             if (!ok) {
-                tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
                 free(upload_results);
                 return;
             }
 
             MessageWriter writer;
-            metadata_server_request_start(tfs, &writer, MESSAGE_TYPE_WRITE);
+            metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_WRITE);
 
-            string   path   = tfs->operations[opidx].path;
-            uint32_t offset = tfs->operations[opidx].off;
-            uint32_t length = tfs->operations[opidx].len;
+            string   path   = toasty->operations[opidx].path;
+            uint32_t offset = toasty->operations[opidx].off;
+            uint32_t length = toasty->operations[opidx].len;
 
             if (path.len > UINT16_MAX) {
                 // TODO
@@ -1682,7 +1689,7 @@ static void process_event_for_write(ToastyFS *tfs,
             uint16_t path_len = path.len;
 
             uint32_t num_chunks = num_upload_results;
-            uint32_t chunk_size = tfs->operations[opidx].chunk_size;
+            uint32_t chunk_size = toasty->operations[opidx].chunk_size;
 
             message_write(&writer, &path_len,   sizeof(path_len));
             message_write(&writer, path.ptr,    path.len);
@@ -1714,7 +1721,7 @@ static void process_event_for_write(ToastyFS *tfs,
 
             free(upload_results);
 
-            if (metadata_server_request_end(tfs, &writer, opidx, TAG_COMMIT_WRITE) < 0) {
+            if (metadata_server_request_end(toasty, &writer, opidx, TAG_COMMIT_WRITE) < 0) {
                 assert(0); // TODO
             }
         }
@@ -1727,59 +1734,59 @@ static void process_event_for_write(ToastyFS *tfs,
 
         // version
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(uint16_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
         // length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
         if (binary_read(&reader, NULL, 1)) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
         if (type != MESSAGE_TYPE_WRITE_SUCCESS) {
-            tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
             return;
         }
 
-        tfs->operations[opidx].result = (ToastyFS_Result) { .type=TOASTYFS_RESULT_WRITE_SUCCESS };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_SUCCESS };
     }
 }
 
-static void process_event(ToastyFS *tfs,
+static void process_event(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
-    switch (tfs->operations[opidx].type) {
+    switch (toasty->operations[opidx].type) {
 
         case OPERATION_TYPE_CREATE:
-        process_event_for_create(tfs, opidx, request_tag, msg);
+        process_event_for_create(toasty, opidx, request_tag, msg);
         break;
 
         case OPERATION_TYPE_DELETE:
-        process_event_for_delete(tfs, opidx, request_tag, msg);
+        process_event_for_delete(toasty, opidx, request_tag, msg);
         break;
 
         case OPERATION_TYPE_LIST:
-        process_event_for_list(tfs, opidx, request_tag, msg);
+        process_event_for_list(toasty, opidx, request_tag, msg);
         break;
 
         case OPERATION_TYPE_READ:
-        process_event_for_read(tfs, opidx, request_tag, msg);
+        process_event_for_read(toasty, opidx, request_tag, msg);
         break;
 
         case OPERATION_TYPE_WRITE:
-        process_event_for_write(tfs, opidx, request_tag, msg);
+        process_event_for_write(toasty, opidx, request_tag, msg);
         break;
 
         default:
@@ -1788,51 +1795,51 @@ static void process_event(ToastyFS *tfs,
 }
 
 static bool
-translate_operation_into_result(ToastyFS *tfs, int opidx, ToastyFS_Result *result)
+translate_operation_into_result(ToastyFS *toasty, int opidx, ToastyResult *result)
 {
-    if (tfs->operations[opidx].result.type == TOASTYFS_RESULT_EMPTY)
+    if (toasty->operations[opidx].result.type == TOASTY_RESULT_EMPTY)
         return false;
-    *result = tfs->operations[opidx].result;
-    tfs->operations[opidx].type = OPERATION_TYPE_FREE;
-    tfs->num_operations--;
+    *result = toasty->operations[opidx].result;
+    toasty->operations[opidx].type = OPERATION_TYPE_FREE;
+    toasty->num_operations--;
     return true;
 }
 
-bool toastyfs_isdone(ToastyFS *tfs, int opidx, ToastyFS_Result *result)
+bool toastyfs_isdone(ToastyFS *toasty, int opidx, ToastyResult *result)
 {
     if (opidx < 0) {
-        for (int i = 0, j = 0; j < tfs->num_operations; i++) {
+        for (int i = 0, j = 0; j < toasty->num_operations; i++) {
 
-            if (tfs->operations[i].type == OPERATION_TYPE_FREE)
+            if (toasty->operations[i].type == OPERATION_TYPE_FREE)
                 continue;
             j++;
 
-            if (translate_operation_into_result(tfs, i, result))
+            if (translate_operation_into_result(toasty, i, result))
                 return true;
         }
     } else {
-        if (translate_operation_into_result(tfs, opidx, result))
+        if (translate_operation_into_result(toasty, opidx, result))
             return true;
     }
 
     return false;
 }
 
-int toastyfs_process_events(ToastyFS *tfs, void **contexts, struct pollfd *polled, int num_polled)
+int toastyfs_process_events(ToastyFS *toasty, void **contexts, struct pollfd *polled, int num_polled)
 {
     int num_events;
     Event events[MAX_CONNS+1];
 
-    num_events = tcp_translate_events(&tfs->tcp, events, contexts, polled, num_polled);
+    num_events = tcp_translate_events(&toasty->tcp, events, contexts, polled, num_polled);
     for (int i = 0; i < num_events; i++) {
         int conn_idx = events[i].conn_idx;
         switch (events[i].type) {
 
             case EVENT_CONNECT:
             {
-                int tag = tcp_get_tag(&tfs->tcp, conn_idx);
+                int tag = tcp_get_tag(&toasty->tcp, conn_idx);
                 if (tag != TAG_METADATA_SERVER)
-                    tfs->chunk_servers[tag].connected = true;
+                    toasty->chunk_servers[tag].connected = true;
             }
             break;
 
@@ -1857,40 +1864,40 @@ int toastyfs_process_events(ToastyFS *tfs, void **contexts, struct pollfd *polle
 
                 RequestQueue *reqs = NULL;
 
-                int tag = tcp_get_tag(&tfs->tcp, conn_idx);
+                int tag = tcp_get_tag(&toasty->tcp, conn_idx);
                 if (tag == TAG_METADATA_SERVER) {
-                    reqs = &tfs->metadata_server.reqs;
-                    tfs->metadata_server.used = false;
+                    reqs = &toasty->metadata_server.reqs;
+                    toasty->metadata_server.used = false;
                 } else {
                     assert(tag > -1);
 
-                    if (tfs->chunk_servers[tag].connected)
-                        reqs = &tfs->chunk_servers[tag].reqs;
+                    if (toasty->chunk_servers[tag].connected)
+                        reqs = &toasty->chunk_servers[tag].reqs;
                     else {
 
-                        tfs->chunk_servers[tag].current_addr_idx++;
+                        toasty->chunk_servers[tag].current_addr_idx++;
 
                         bool started = false;
-                        while (tfs->chunk_servers[tag].current_addr_idx < tfs->chunk_servers[tag].num_addrs) {
+                        while (toasty->chunk_servers[tag].current_addr_idx < toasty->chunk_servers[tag].num_addrs) {
 
-                            if (tcp_connect(&tfs->tcp, tfs->chunk_servers[tag].addrs[tfs->chunk_servers[tag].current_addr_idx], tag, NULL) == 0) {
+                            if (tcp_connect(&toasty->tcp, toasty->chunk_servers[tag].addrs[toasty->chunk_servers[tag].current_addr_idx], tag, NULL) == 0) {
                                 started = true;
                                 break;
                             }
 
-                            tfs->chunk_servers[tag].current_addr_idx++;
+                            toasty->chunk_servers[tag].current_addr_idx++;
                         }
 
                         if (!started) {
-                            reqs = &tfs->chunk_servers[tag].reqs;
-                            tfs->chunk_servers[tag].used = false;
+                            reqs = &toasty->chunk_servers[tag].reqs;
+                            toasty->chunk_servers[tag].used = false;
                         }
                     }
                 }
 
                 if (reqs) {
                     for (Request req; request_queue_pop(reqs, &req) == 0; )
-                        process_event(tfs, req.opidx, req.tag, (ByteView) { NULL, 0 });
+                        process_event(toasty, req.opidx, req.tag, (ByteView) { NULL, 0 });
                 }
             }
             break;
@@ -1901,41 +1908,41 @@ int toastyfs_process_events(ToastyFS *tfs, void **contexts, struct pollfd *polle
 
                     ByteView msg;
                     uint16_t msg_type;
-                    int ret = tcp_next_message(&tfs->tcp, conn_idx, &msg, &msg_type);
+                    int ret = tcp_next_message(&toasty->tcp, conn_idx, &msg, &msg_type);
                     if (ret == 0)
                         break;
                     if (ret < 0) {
-                        tcp_close(&tfs->tcp, conn_idx);
+                        tcp_close(&toasty->tcp, conn_idx);
                         break;
                     }
 
                     RequestQueue *reqs;
 
-                    int tag = tcp_get_tag(&tfs->tcp, conn_idx);
+                    int tag = tcp_get_tag(&toasty->tcp, conn_idx);
                     if (tag == TAG_METADATA_SERVER)
-                        reqs = &tfs->metadata_server.reqs;
+                        reqs = &toasty->metadata_server.reqs;
                     else
-                        reqs = &tfs->chunk_servers[tag].reqs;
+                        reqs = &toasty->chunk_servers[tag].reqs;
 
                     Request req;
                     if (request_queue_pop(reqs, &req) < 0) {
                         // Unexpected message
-                        tcp_consume_message(&tfs->tcp, conn_idx);
+                        tcp_consume_message(&toasty->tcp, conn_idx);
                         continue;
                     }
-                    process_event(tfs, req.opidx, req.tag, msg);
+                    process_event(toasty, req.opidx, req.tag, msg);
 
-                    tcp_consume_message(&tfs->tcp, conn_idx);
+                    tcp_consume_message(&toasty->tcp, conn_idx);
                 }
             }
             break;
         }
     }
 
-    return tcp_register_events(&tfs->tcp, contexts, polled);
+    return tcp_register_events(&toasty->tcp, contexts, polled);
 }
 
-int toastyfs_wait(ToastyFS *tfs, int opidx, ToastyFS_Result *result, int timeout)
+int toastyfs_wait(ToastyFS *toasty, int opidx, ToastyResult *result, int timeout)
 {
     Time start_time = INVALID_TIME;
     if (timeout > -1) {
@@ -1948,9 +1955,9 @@ int toastyfs_wait(ToastyFS *tfs, int opidx, ToastyFS_Result *result, int timeout
     struct pollfd polled[MAX_CONNS+1];
     int num_polled;
 
-    num_polled = toastyfs_process_events(tfs, contexts, polled, 0);
+    num_polled = toastyfs_process_events(toasty, contexts, polled, 0);
 
-    while (!toastyfs_isdone(tfs, opidx, result)) {
+    while (!toastyfs_isdone(toasty, opidx, result)) {
 
         int remaining_timeout = -1;
         if (timeout > -1) {
@@ -1970,7 +1977,7 @@ int toastyfs_wait(ToastyFS *tfs, int opidx, ToastyFS_Result *result, int timeout
         if (ret < 0)
             return -1;
 
-        num_polled = toastyfs_process_events(tfs, contexts, polled, num_polled);
+        num_polled = toastyfs_process_events(toasty, contexts, polled, num_polled);
         if (num_polled < 0)
             return -1;
     }
