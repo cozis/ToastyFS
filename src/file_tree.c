@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
@@ -105,6 +106,7 @@ static void dir_free(Dir *d)
 
 static void dir_remove(Dir *d, int idx)
 {
+    // TODO: pretty sure this leaks memory
     d->children[idx] = d->children[--d->num_children];
 }
 
@@ -373,28 +375,34 @@ int file_tree_write(FileTree *ft, string path,
     for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++)
         f->chunks[i] = hashes[i - first_chunk_index];
 
-    // Now check which old hashes are no longer used anywhere in the tree
-    *num_removed = 0;
-    for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++) {
-        SHA256 old_hash = prev_hashes[i - first_chunk_index];
+    // Now check which old hashes are no longer used
+    // anywhere in the tree
+    //
+    // NOTE: If removed_hashes is NULL, the caller isn't
+    //       interested in which hashes are no longer reachable.
+    if (removed_hashes != NULL) {
+        *num_removed = 0;
+        for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++) {
+            SHA256 old_hash = prev_hashes[i - first_chunk_index];
 
-        // Skip zero hashes
-        bool is_zero = true;
-        for (int j = 0; j < (int) sizeof(SHA256); j++) {
-            if (old_hash.data[j] != 0) {
-                is_zero = false;
-                break;
+            // Skip zero hashes
+            bool is_zero = true;
+            for (int j = 0; j < (int) sizeof(SHA256); j++) {
+                if (old_hash.data[j] != 0) {
+                    is_zero = false;
+                    break;
+                }
             }
-        }
-        if (is_zero)
-            continue;
+            if (is_zero)
+                continue;
 
-        // Check if this hash is still used anywhere in the tree
-        if (!entity_uses_hash(&ft->root, old_hash)) {
-            // Not used - add to removed list
-            if (removed_hashes)
-                removed_hashes[*num_removed] = old_hash;
-            (*num_removed)++;
+            // Check if this hash is still used anywhere in the tree
+            if (!entity_uses_hash(&ft->root, old_hash)) {
+                // Not used - add to removed list
+                if (removed_hashes)
+                    removed_hashes[*num_removed] = old_hash;
+                (*num_removed)++;
+            }
         }
     }
 
@@ -465,4 +473,222 @@ string file_tree_strerror(int code)
         default:break;
     }
     return S("Unknown error");
+}
+
+typedef struct {
+    int (*write_fn)(char*,int,void*);
+    void *write_data;
+    char *buffer;
+    int   buffer_size;
+    int   buffer_used;
+    bool  error;
+} SerializeContext;
+
+static void sc_flush(SerializeContext *sc)
+{
+    if (sc->error)
+        return;
+
+    int ret = sc->write_fn(sc->buffer, sc->buffer_used, sc->write_data);
+    if (ret < 0) {
+        sc->error = true;
+        return;
+    }
+
+    sc->buffer_used = 0;
+}
+
+static void sc_write_mem(SerializeContext *sc, char *src, int len)
+{
+    if (sc->error)
+        return;
+
+    if (sc->buffer_size - sc->buffer_used < len) {
+
+        if (len > sc->buffer_size) {
+            sc->error = true;
+            return;
+        }
+
+        sc_flush(sc);
+        if (sc->error)
+            return;
+    }
+
+    memcpy(sc->buffer + sc->buffer_used, src, len);
+    sc->buffer_used += len;
+}
+static void sc_write_u8  (SerializeContext *sc, uint8_t  value) { sc_write_mem(sc, (char*) &value, (int) sizeof(value)); }
+static void sc_write_u16 (SerializeContext *sc, uint16_t value) { sc_write_mem(sc, (char*) &value, (int) sizeof(value)); }
+static void sc_write_u64 (SerializeContext *sc, uint64_t value) { sc_write_mem(sc, (char*) &value, (int) sizeof(value)); }
+static void sc_write_hash(SerializeContext *sc, SHA256   value) { sc_write_mem(sc, (char*) &value, (int) sizeof(value)); }
+
+static void file_serialize(SerializeContext *sc, File *f)
+{
+    sc_write_u64(sc, f->chunk_size);
+    sc_write_u64(sc, f->num_chunks);
+    for (uint64_t i = 0; i < f->num_chunks; i++)
+        sc_write_hash(sc, f->chunks[i]);
+}
+
+static void entity_serialize(SerializeContext *sc, Entity *e);
+
+static void dir_serialize(SerializeContext *sc, Dir *d)
+{
+    sc_write_u64(sc, d->num_children);
+    for (uint64_t i = 0; i < d->num_children; i++)
+        entity_serialize(sc, &d->children[i]);
+}
+
+static void entity_serialize(SerializeContext *sc, Entity *e)
+{
+    sc_write_u16(sc, e->name_len);
+    sc_write_mem(sc, e->name, e->name_len);
+    sc_write_u8(sc, e->is_dir);
+    if (e->is_dir)
+        dir_serialize(sc, &e->d);
+    else
+        file_serialize(sc, &e->f);
+}
+
+int file_tree_serialize(FileTree *ft, int (*write_fn)(char*,int,void*), void *write_data)
+{
+    SerializeContext sc;
+    sc.write_fn = write_fn;
+    sc.write_data = write_data;
+    sc.buffer_used = 0;
+    sc.buffer_size = 1<<10;
+    sc.buffer = sys_malloc(sc.buffer_size);
+    sc.error = false;
+    if (sc.buffer == NULL)
+        sc.error = true;
+    entity_serialize(&sc, &ft->root);
+    sc_flush(&sc);
+    sys_free(sc.buffer);
+    if (sc.error)
+        return -1;
+    return 0;
+}
+
+typedef struct {
+    int (*read_fn)(char*,int,void*);
+    void *read_data;
+    char *buffer;
+    int   buffer_size;
+    int   buffer_used;
+    int   buffer_head;
+    bool  error;
+    uint64_t total_read;
+} DeserializeContext;
+
+static void dc_read_mem(DeserializeContext *dc, void *dst, int len)
+{
+    if (dc->error)
+        return;
+
+    if (dc->buffer_used < len) {
+
+        if (dc->buffer_size < len) {
+            dc->error = true;
+            return;
+        }
+
+        memmove(dc->buffer, dc->buffer + dc->buffer_head, dc->buffer_used);
+        dc->buffer_head = 0;
+
+        int ret = dc->read_fn(
+            dc->buffer      + dc->buffer_used,
+            dc->buffer_size - dc->buffer_used,
+            dc->read_data);
+        if (ret < 0) {
+            dc->error = true;
+            return;
+        }
+        dc->buffer_used += ret;
+
+        if (dc->buffer_used < len) {
+            dc->error = true;
+            return;
+        }
+    }
+
+    memcpy(dst, dc->buffer + dc->buffer_head, len);
+    dc->buffer_head += len;
+    dc->buffer_used -= len;
+    dc->total_read  += len;
+}
+static void dc_read_u8 (DeserializeContext *dc,  uint8_t  *dst) { dc_read_mem(dc, dst, sizeof(*dst)); }
+static void dc_read_u16(DeserializeContext *dc,  uint16_t *dst) { dc_read_mem(dc, dst, sizeof(*dst)); }
+static void dc_read_u64(DeserializeContext *dc,  uint64_t *dst) { dc_read_mem(dc, dst, sizeof(*dst)); }
+static void dc_read_hash(DeserializeContext *dc, SHA256   *dst) { dc_read_mem(dc, dst, sizeof(*dst)); }
+
+static void file_deserialize(DeserializeContext *dc, File *f)
+{
+    dc_read_u64(dc, &f->chunk_size);
+    dc_read_u64(dc, &f->num_chunks);
+
+    f->chunks = sys_malloc(f->num_chunks * sizeof(SHA256));
+    if (f->chunks == NULL) {
+        assert(0); // TODO
+    }
+
+    for (uint64_t i = 0; i < f->num_chunks; i++)
+        dc_read_hash(dc, &f->chunks[i]);
+}
+
+static void entity_deserialize(DeserializeContext *dc, Entity *e);
+
+static void dir_deserialize(DeserializeContext *dc, Dir *d)
+{
+    dc_read_u64(dc, &d->num_children);
+
+    d->max_children = d->num_children;
+    d->children = sys_malloc(d->num_children * sizeof(Entity));
+    if (d->children == NULL) {
+        assert(0); // TODO
+    }
+
+    // TODO: not checking for errors is not okay as
+    //       the code will branch based on garbage
+    //       values.
+    for (uint64_t i = 0; i < d->num_children; i++)
+        entity_deserialize(dc, &d->children[i]);
+}
+
+static void entity_deserialize(DeserializeContext *dc, Entity *e)
+{
+    dc_read_u16(dc, &e->name_len); // TODO: make sure this doesn't go over the static buffer
+    dc_read_mem(dc, e->name, e->name_len);
+
+    uint8_t is_dir;
+    dc_read_u8 (dc, &is_dir);
+    e->is_dir = (is_dir != 0);
+
+    if (e->is_dir)
+        dir_deserialize(dc, &e->d);
+    else
+        file_deserialize(dc, &e->f);
+}
+
+int file_tree_deserialize(FileTree *ft, int (*read_fn)(char*,int,void*), void *read_data)
+{
+    DeserializeContext dc;
+    dc.read_fn = read_fn;
+    dc.read_data = read_data;
+    dc.buffer_head = 0;
+    dc.buffer_used = 0;
+    dc.buffer_size = 1<<10;
+    dc.buffer = sys_malloc(dc.buffer_size);
+    dc.error = false;
+    if (dc.buffer == NULL)
+        dc.error = true;
+    dc.total_read = 0;
+    entity_deserialize(&dc, &ft->root);
+    sys_free(dc.buffer);
+    if (dc.error)
+        return -1;
+    if (dc.total_read > INT_MAX) {
+        assert(0); // TODO
+    }
+    return dc.total_read;
 }

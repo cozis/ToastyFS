@@ -2,6 +2,7 @@
 #define METADATA_SERVER_INCLUDED
 
 #include "tcp.h"
+#include "wal.h"
 #include "file_tree.h"
 #include "config.h"
 #include "basic.h"
@@ -39,6 +40,7 @@ typedef struct {
 typedef struct {
 
     TCP tcp;
+    WAL wal;
 
     FileTree file_tree;
 

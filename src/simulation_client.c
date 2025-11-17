@@ -61,7 +61,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
     for (int i = 0; i < client->num_pending; i++) {
 
         ToastyResult result;
-        if (!toasty_get_result(client->toasty, client->pending[i].handle, &result))
+        if (toasty_get_result(client->toasty, client->pending[i].handle, &result) != 0)
             continue;
 
         PendingOperation pending = client->pending[i];
