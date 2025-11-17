@@ -35,9 +35,9 @@ int main(void)
 
 - Cross-platform (runs on Windows and Linux)
 - Automatic Replication & Self-Healing
-- Automatic content deduplication: File contents are de-duplicated automatically with content-addressing.
-- Configurable chunk sizes: Each file can have different chunk size optimized for its use case
-- Zero dependencies: Pure C implementation with no external libraries
+- Automatic content deduplication via internal content-addressing
+- Configurable file chunk sizes
+- Small and understandable
 
 But ToastyFS is still in early development, so here are the missing features:
 
