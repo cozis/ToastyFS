@@ -1,19 +1,14 @@
-- Implement proper operation handles that allow users to wait for specific events
-- Clean up the read operation for clients
-- Check that the corner case where read and writes go over the length of the file work correctly
-- Return the number of bytes read or written in the ToastyFS_Result struct
-- Make parallel uploads/downloads configurable
-- Recalculate next write locations whenever a write occurs, not at each read
-- avoid replay attacks
-- find a way to remove over-replicated chunks and formalize the chunk management policy
-- add logging of:
-    - when chunk servers connect and disconnect to the metadata server
-- Should list scenarios that need testing, like those where chunks would be dropped
-- Update DESIGN.txt and the code to remove the chunk list message. The information of chunks
-  held by chunk servers is now transmitted to the metadata server during state updates
-- clean up the replication factor business
-
-Roadmap:
-    [ ] Complete all endpoints
-    [ ] Add fault injections to the simulation
-    [ ] Implement WAL
+[X] Implement proper operation handles that allow users to wait for specific events
+[ ] Clean up the read operation for clients
+[ ] Check that the corner case where read and writes go over the length of the file work correctly
+[ ] Return the number of bytes read or written in the ToastyFS_Result struct
+[ ] Make parallel uploads/downloads configurable
+[ ] Recalculate next write locations whenever a write occurs, not at each read
+[ ] avoid replay attacks
+[ ] add logging (when chunk servers connect and disconnect to the metadata server)
+[ ] Should list scenarios that need testing, like those where chunks would be dropped
+[ ] Update DESIGN.txt and the code to remove the chunk list message. The information of chunks held by chunk servers is now transmitted to the metadata server during state updates
+[ ] clean up the replication factor business
+[ ] Implement metadata server WAL
+[ ] Add failt injections to the simulation
+[ ] Add authentication
