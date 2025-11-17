@@ -159,24 +159,48 @@ static int swap_file(WAL *wal)
     file_unlock(wal->handle);
     file_close(wal->handle);
 
-    // On Unix, rename() atomically replaces the destination file.
-    // On Windows, rename() doesn't overwrite, so we need to delete first.
+    // Atomically rename the temporary file to replace the old file
+    // On Unix: rename() atomically replaces the destination
+    // On Windows: we use MoveFileEx with MOVEFILE_REPLACE_EXISTING for atomicity
 #ifdef _WIN32
-    // Remove the old file before renaming on Windows
-    if (remove_file_or_dir(wal->file_path) < 0) {
+    // On Windows, use MoveFileEx for atomic replace
+    char old_path_zt[1<<10];
+    if (wal->file_path.len >= (int) sizeof(old_path_zt)) {
+        file_unlock(temp_handle);
+        file_close(temp_handle);
+        remove_file_or_dir(temp_path);
+        return -1;
+    }
+    memcpy(old_path_zt, wal->file_path.ptr, wal->file_path.len);
+    old_path_zt[wal->file_path.len] = '\0';
+
+    WCHAR old_path_w[MAX_PATH];
+    WCHAR temp_path_w[MAX_PATH];
+
+    if (!MultiByteToWideChar(CP_UTF8, 0, old_path_zt, -1, old_path_w, MAX_PATH) ||
+        !MultiByteToWideChar(CP_UTF8, 0, temp_path_buf, -1, temp_path_w, MAX_PATH)) {
+        file_unlock(temp_handle);
+        file_close(temp_handle);
+        remove_file_or_dir(temp_path);
+        return -1;
+    }
+
+    // MOVEFILE_REPLACE_EXISTING allows atomic overwrite
+    if (!MoveFileExW(temp_path_w, old_path_w, MOVEFILE_REPLACE_EXISTING)) {
+        file_unlock(temp_handle);
+        file_close(temp_handle);
+        remove_file_or_dir(temp_path);
+        return -1;
+    }
+#else
+    // On Unix/Linux, rename() atomically replaces the destination
+    if (rename_file_or_dir(temp_path, wal->file_path) < 0) {
         file_unlock(temp_handle);
         file_close(temp_handle);
         remove_file_or_dir(temp_path);
         return -1;
     }
 #endif
-
-    // Rename the temporary file to replace the old file
-    if (rename_file_or_dir(temp_path, wal->file_path) < 0) {
-        file_unlock(temp_handle);
-        file_close(temp_handle);
-        return -1;
-    }
 
     // Update the WAL to use the new file handle
     wal->handle = temp_handle;
