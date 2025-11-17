@@ -11,6 +11,7 @@
 - Should list scenarios that need testing, like those where chunks would be dropped
 - Update DESIGN.txt and the code to remove the chunk list message. The information of chunks
   held by chunk servers is now transmitted to the metadata server during state updates
+- clean up the replication factor business
 
 Roadmap:
     [ ] Complete all endpoints
