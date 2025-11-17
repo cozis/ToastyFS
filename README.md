@@ -1,13 +1,5 @@
 # ToastyFS
-ToastyFS is a distributed file system designed for self-hosting, so it aims to be pragmatic, understandable, and robust.
-
-You can use ToastyFS to store your files reliably over multiple machines knowing they will be automatically replicated and healed in case of hardware failure.
-
-⚠️ Note that ToastyFS is still in early development ⚠️
-
-🎵 Now let's get toasty 🎵
-
-ToastyFS works by running nodes on multiple machines. Clients using the ToastyFS C library can then send file operations to the cluster. Here's a quick example:
+ToastyFS is a distributed file system designed for self-hosting, so it aims to be pragmatic, understandable, and robust. You can use ToastyFS to store your files reliably over multiple machines knowing they will be automatically replicated and healed in case of hardware failure. ToastyFS works by running nodes on multiple machines. Clients using the ToastyFS C library can then send file operations to the cluster. Here's a quick example:
 
 ```c
 #include <ToastyFS.h>
@@ -34,6 +26,10 @@ int main(void)
     return 0;
 }
 ```
+
+⚠️ Note that ToastyFS is still in early development ⚠️
+
+🎵 Now let's get toasty 🎵
 
 ## Features
 
