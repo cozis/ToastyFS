@@ -587,7 +587,7 @@ static int setup_poll_array(void **contexts, struct pollfd *polled)
         switch (desc->type) {
 
             case DESC_FILE:
-            assert(0); // TODO: error
+            // Ignore
             break;
 
             case DESC_SOCKET:

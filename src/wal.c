@@ -87,8 +87,10 @@ deserialize_callback(char *dst, int num, void *data)
     int copied = 0;
     while (copied < num) {
         int ret = file_read(rsc->handle, dst + copied, num - copied);
-        if (ret <= 0)
+        if (ret < 0)
             return -1;
+        if (ret == 0)
+            break;
         copied += ret;
     }
     return copied;
