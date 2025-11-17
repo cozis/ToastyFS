@@ -407,9 +407,10 @@ void tcp_set_tag(TCP *tcp, int conn_idx, int tag, bool unique)
 {
     assert(tag != -1);
 
-    if (unique)
+    if (unique) {
         for (int i = 0; i < tcp->num_conns; i++)
             assert(tcp->conns[i].tag != tag);
+    }
 
     tcp->conns[conn_idx].tag = tag;
 }

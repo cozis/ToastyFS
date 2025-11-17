@@ -49,18 +49,13 @@ libtoastyfs.a: $(OFILES)
 	ar rcs $@ $^
 
 clean:
-	rm -f                                \
-		toastyfs.exe                      \
-		toastyfs.out                      \
-		toastyfs_random_test.exe          \
-		toastyfs_random_test.out          \
-		toastyfs_random_test_coverage.exe \
-		toastyfs_random_test_coverage.out \
-		example_client.exe               \
-		example_client.out               \
-		libtoastyfs.a                     \
-		src/*.o                          \
-		src/*.gcda                       \
-		src/*.gcno                       \
-		*.gcda                           \
+	rm -f          \
+		*.exe      \
+		*.out      \
+		*.a        \
+		*.gcov     \
+		src/*.o    \
+		src/*.gcda \
+		src/*.gcno \
+		*.gcda     \
 		*.gcno
