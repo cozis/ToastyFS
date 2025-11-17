@@ -6,6 +6,8 @@
 
 typedef struct {
     Handle handle;
+    FileTree *file_tree;
+    string file_path;
     int entry_count;
     int entry_limit;
 } WAL;
