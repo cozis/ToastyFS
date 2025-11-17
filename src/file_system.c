@@ -59,12 +59,40 @@ void file_close(Handle fd)
 
 int file_set_offset(Handle fd, int off)
 {
-    assert(0); // TODO
+#ifdef __linux__
+    off_t ret = lseek((int) fd.data, off, SEEK_SET);
+    if (ret < 0)
+        return -1;
+    return 0;
+#endif
+
+#ifdef _WIN32
+    LARGE_INTEGER distance;
+    distance.QuadPart = off;
+    if (!SetFilePointer((HANDLE) fd.data, distance.LowPart, &distance.HighPart, FILE_BEGIN))
+        if (GetLastError() != NO_ERROR)
+            return -1;
+    return 0;
+#endif
 }
 
 int file_get_offset(Handle fd, int *off)
 {
-    assert(0); // TODO
+#ifdef __linux__
+    off_t ret = lseek((int) fd.data, 0, SEEK_CUR);
+    if (ret < 0)
+        return -1;
+    *off = (int) ret;
+    return 0;
+#endif
+
+#ifdef _WIN32
+    DWORD pos = SetFilePointer((HANDLE) fd.data, 0, NULL, FILE_CURRENT);
+    if (pos == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR)
+        return -1;
+    *off = (int) pos;
+    return 0;
+#endif
 }
 
 int file_lock(Handle fd)
