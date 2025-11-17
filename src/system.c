@@ -1648,6 +1648,12 @@ BOOL mock_FindClose(HANDLE hFindFile)
     return TRUE;
 }
 
+BOOL mock_MoveFileExW(WCHAR *lpExistingFileName, WCHAR *lpNewFileName, DWORD dwFlags)
+{
+    // Forward to real MoveFileExW, last error is set by the real call
+    return MoveFileExW(lpExistingFileName, lpNewFileName, dwFlags);
+}
+
 #else
 
 int mock_clock_gettime(clockid_t clockid, struct timespec *tp)
