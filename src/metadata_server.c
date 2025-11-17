@@ -179,6 +179,10 @@ process_client_create(MetadataServer *state, int conn_idx, ByteView msg)
     if (binary_read(&reader, NULL, 1))
         return -1;
 
+    if (wal_append_create(&state->wal, path, is_dir, chunk_size) < 0) {
+        assert(0); // TODO
+    }
+
     int ret = file_tree_create_entity(&state->file_tree, path, is_dir, chunk_size);
 
     if (ret < 0) {
@@ -237,6 +241,10 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
     // Check that there are no more bytes to read
     if (binary_read(&reader, NULL, 1))
         return -1;
+
+    if (wal_append_delete(&state->wal, path) < 0) {
+        assert(0); // TODO
+    }
 
     // TODO: return unused hashes and add them to the ms_rem_list of holder chunk servers
     int ret = file_tree_delete_entity(&state->file_tree, path);
@@ -595,6 +603,10 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     for (uint32_t i = 0; i < num_chunks; i++) {
         old_hashes[i] = results[i].old_hash;
         new_hashes[i] = results[i].new_hash;
+    }
+
+    if (wal_append_write(&state->wal, path, offset, length, num_chunks, chunk_size, old_hashes, new_hashes) < 0) {
+        assert(0); // TODO
     }
 
     int ret = file_tree_write(&state->file_tree, path, offset, length,
@@ -968,11 +980,16 @@ static bool is_chunk_server_message_type(uint16_t type)
 
 int metadata_server_init(MetadataServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
 {
-    string addr  = getargs(argc, argv, "--addr", "127.0.0.1");
-    int    port  = getargi(argc, argv, "--port", 8080);
-    bool   trace = getargb(argc, argv, "--trace");
+    string addr      = getargs(argc, argv, "--addr", "127.0.0.1");
+    int    port      = getargi(argc, argv, "--port", 8080);
+    bool   trace     = getargb(argc, argv, "--trace");
+    string wal_file  = getargs(argc, argv, "--wal-file", "metadata.wal");
+    int    wal_limit = getargi(argc, argv, "--wal-limit", 1000); // TODO: Choose a good default limit
 
     if (port <= 0 || port >= 1<<16)
+        return -1;
+
+    if (wal_limit < 0)
         return -1;
 
     state->trace = trace;
@@ -998,6 +1015,10 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
         return -1;
     }
 
+    if (wal_open(&state->wal, &state->file_tree, wal_file, wal_limit) < 0) {
+        assert(0); // TODO
+    }
+
     printf("Metadata server set up (local=%.*s:%d)\n",
         addr.len,
         addr.ptr,
@@ -1010,6 +1031,7 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
 
 int metadata_server_free(MetadataServer *state)
 {
+    wal_close(&state->wal);
     file_tree_free(&state->file_tree);
     tcp_context_free(&state->tcp);
     return 0;

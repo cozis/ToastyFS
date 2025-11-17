@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
@@ -374,28 +375,34 @@ int file_tree_write(FileTree *ft, string path,
     for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++)
         f->chunks[i] = hashes[i - first_chunk_index];
 
-    // Now check which old hashes are no longer used anywhere in the tree
-    *num_removed = 0;
-    for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++) {
-        SHA256 old_hash = prev_hashes[i - first_chunk_index];
+    // Now check which old hashes are no longer used
+    // anywhere in the tree
+    //
+    // NOTE: If removed_hashes is NULL, the caller isn't
+    //       interested in which hashes are no longer reachable.
+    if (removed_hashes != NULL) {
+        *num_removed = 0;
+        for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++) {
+            SHA256 old_hash = prev_hashes[i - first_chunk_index];
 
-        // Skip zero hashes
-        bool is_zero = true;
-        for (int j = 0; j < (int) sizeof(SHA256); j++) {
-            if (old_hash.data[j] != 0) {
-                is_zero = false;
-                break;
+            // Skip zero hashes
+            bool is_zero = true;
+            for (int j = 0; j < (int) sizeof(SHA256); j++) {
+                if (old_hash.data[j] != 0) {
+                    is_zero = false;
+                    break;
+                }
             }
-        }
-        if (is_zero)
-            continue;
+            if (is_zero)
+                continue;
 
-        // Check if this hash is still used anywhere in the tree
-        if (!entity_uses_hash(&ft->root, old_hash)) {
-            // Not used - add to removed list
-            if (removed_hashes)
-                removed_hashes[*num_removed] = old_hash;
-            (*num_removed)++;
+            // Check if this hash is still used anywhere in the tree
+            if (!entity_uses_hash(&ft->root, old_hash)) {
+                // Not used - add to removed list
+                if (removed_hashes)
+                    removed_hashes[*num_removed] = old_hash;
+                (*num_removed)++;
+            }
         }
     }
 

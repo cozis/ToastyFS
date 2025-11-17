@@ -28,6 +28,8 @@ typedef struct {
 
 int  file_open(string path, Handle *fd);
 void file_close(Handle fd);
+int  file_set_offset(Handle fd, int off);
+int  file_get_offset(Handle fd, int *off);
 int  file_lock(Handle fd);
 int  file_unlock(Handle fd);
 int  file_sync(Handle fd);

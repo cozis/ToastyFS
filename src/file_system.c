@@ -57,6 +57,16 @@ void file_close(Handle fd)
 #endif
 }
 
+int file_set_offset(Handle fd, int off)
+{
+    assert(0); // TODO
+}
+
+int file_get_offset(Handle fd, int *off)
+{
+    assert(0); // TODO
+}
+
 int file_lock(Handle fd)
 {
 #ifdef __linux__
