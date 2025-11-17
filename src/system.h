@@ -65,6 +65,7 @@ BOOL     mock_UnlockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffset
 BOOL     mock_FlushFileBuffers(HANDLE handle);
 BOOL     mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov);
 BOOL     mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov);
+DWORD    mock_SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceToMoveHigh, DWORD dwMoveMethod);
 BOOL     mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf);
 BOOL     mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
 BOOL     mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
@@ -82,6 +83,7 @@ int     mock_flock(int fd, int op);
 int     mock_fsync(int fd);
 int     mock_read(int fd, char *dst, int len);
 int     mock_write(int fd, char *src, int len);
+off_t   mock_lseek(int fd, off_t offset, int whence);
 int     mock_fstat(int fd, struct stat *buf);
 int     mock_mkstemp(char *path);
 char*   mock_realpath(char *path, char *dst);
@@ -118,6 +120,7 @@ int     mock_closedir(DIR *dirp);
 #define sys_FlushFileBuffers mock_FlushFileBuffers
 #define sys_ReadFile         mock_ReadFile
 #define sys_WriteFile        mock_WriteFile
+#define sys_SetFilePointer   mock_SetFilePointer
 #define sys_GetFileSizeEx    mock_GetFileSizeEx
 #define sys__fullpath        mock__fullpath
 #define sys_QueryPerformanceCounter   mock_QueryPerformanceCounter
@@ -135,6 +138,7 @@ int     mock_closedir(DIR *dirp);
 #define sys_fsync            mock_fsync
 #define sys_read             mock_read
 #define sys_write            mock_write
+#define sys_lseek            mock_lseek
 #define sys_fstat            mock_fstat
 #define sys_mkstemp          mock_mkstemp
 #define sys_realpath         mock_realpath
@@ -173,6 +177,7 @@ int     mock_closedir(DIR *dirp);
 #define sys_FlushFileBuffers FlushFileBuffers
 #define sys_ReadFile         ReadFile
 #define sys_WriteFile        WriteFile
+#define sys_SetFilePointer   SetFilePointer
 #define sys_GetFileSizeEx    GetFileSizeEx
 #define sys__fullpath        _fullpath
 #define sys_QueryPerformanceCounter   QueryPerformanceCounter
@@ -190,6 +195,7 @@ int     mock_closedir(DIR *dirp);
 #define sys_fsync            fsync
 #define sys_read             read
 #define sys_write            write
+#define sys_lseek            lseek
 #define sys_fstat            fstat
 #define sys_mkstemp          mkstemp
 #define sys_realpath         realpath
