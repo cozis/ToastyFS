@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+#include "basic.h"
 #include "byte_queue.h"
 
 enum {
@@ -74,9 +75,16 @@ typedef struct {
 
 bool binary_read(BinaryReader *reader, void *dst, int len);
 
+bool binary_read_addr_ipv4(BinaryReader *reader, Address *addr);
+bool binary_read_addr_ipv6(BinaryReader *reader, Address *addr);
+int  binary_read_addr_list(BinaryReader *reader, Address *addrs, int max_addr);
+
 void message_writer_init(MessageWriter *writer, ByteQueue *output, uint16_t type);
 bool message_writer_free(MessageWriter *writer);
 void message_write(MessageWriter *writer, void *mem, int len);
+void message_write_u8(MessageWriter *writer, uint8_t value);
+void message_write_u32(MessageWriter *writer, uint32_t value);
+void message_write_hash(MessageWriter *writer, SHA256 value);
 
 int  message_peek(ByteView msg, uint16_t *type, uint32_t *len);
 void message_dump(FILE *stream, ByteView msg);

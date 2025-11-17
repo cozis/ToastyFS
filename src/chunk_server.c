@@ -3,15 +3,122 @@
 #include <stdlib.h>
 #include <assert.h>
 
-#include "tcp.h"
-#include "basic.h"
-#include "byte_queue.h"
 #include "config.h"
-#include "hash_set.h"
+#include "metadata_server.h"
 #include "sha256.h"
 #include "message.h"
 #include "file_system.h"
+#include "tcp.h"
 #include "chunk_server.h"
+
+static string hash2path(ChunkServer *state, SHA256 hash, char *out)
+{
+    strcpy(out, state->path);
+    strcat(out, "/");
+
+    size_t tmp = strlen(out);
+
+    append_hex_as_str(out + tmp, hash);
+
+    out[tmp + 64] = '\0';
+
+    return (string) { out, strlen(out) };
+}
+
+// TODO: return an error when bitrot
+static int load_chunk(ChunkServer *state, SHA256 hash, string *data)
+{
+    char buf[PATH_MAX];
+    string path = hash2path(state, hash, buf);
+
+    int ret = file_read_all(path, data);
+    if (ret < 0)
+        return -1;
+
+    SHA256 fresh_hash;
+    sha256(data->ptr, data->len, (uint8_t*) &fresh_hash.data);
+
+    if (memcmp(&hash, &fresh_hash, sizeof(SHA256))) {
+        free(data->ptr);
+        return -1;
+    }
+
+    return 0;
+}
+
+static int store_chunk(ChunkServer *state, string data, SHA256 *hash)
+{
+    sha256(data.ptr, data.len, (uint8_t*) hash->data);
+
+    char buf[PATH_MAX];
+    string path = hash2path(state, *hash, buf);
+
+    // Note that this write is not atomic. If we crash
+    // while writing, we'll get an inconsistent file.
+    // This is okay as long as we check that the hash
+    // is correct while reading back the data.
+    Handle fd;
+    if (file_open(path, &fd) < 0) // TODO: open in overwrite mode
+        return -1;
+    int copied = 0;
+    while (copied < data.len) {
+        int ret = file_write(fd,
+            data.ptr + copied,
+            data.len - copied);
+        if (ret < 0) {
+            file_close(fd);
+            return -1;
+        }
+        copied += ret;
+    }
+    file_close(fd);
+    return 0;
+}
+
+static bool chunk_exists(ChunkServer *state, SHA256 hash)
+{
+    char buf[PATH_MAX];
+    string path = hash2path(state, hash, buf);
+
+    // Try to open the file to check if it exists
+    // TODO: this isn't right. There should be something like file_exists
+    Handle fd;
+    if (file_open(path, &fd) == 0) {
+        file_close(fd);
+        return true;
+    }
+    return false;
+}
+
+static int patch_chunk(ChunkServer *state, SHA256 target_chunk,
+	uint64_t patch_off, string patch, SHA256 *new_hash)
+{
+    string data;
+    int ret = load_chunk(state, target_chunk, &data);
+    if (ret < 0)
+        return -1;
+
+    if (patch_off > SIZE_MAX - patch.len) {
+        sys_free(data.ptr);
+        return -1;
+    }
+
+    if (patch_off + (size_t) patch.len > (size_t) data.len) {
+        sys_free(data.ptr);
+        return -1;
+    }
+
+    memcpy(data.ptr + patch_off, patch.ptr, patch.len);
+
+    ret = store_chunk(state, data, new_hash);
+    if (ret < 0) {
+        sys_free(data.ptr);
+        return -1;
+    }
+
+    sys_free(data.ptr);
+    return 0;
+}
 
 static void download_targets_init(DownloadTargets *targets)
 {
@@ -97,151 +204,6 @@ static bool download_targets_pop(DownloadTargets *targets,
     return true;
 }
 
-static int chunk_store_init(ChunkStore *store, string path)
-{
-    if (create_dir(path) && errno != EEXIST)
-        return -1;
-
-    if (get_full_path(path, store->path) < 0)
-        return -1;
-
-    return 0;
-}
-
-static void chunk_store_free(ChunkStore *store)
-{
-    (void) store;
-}
-
-static string hash2path(ChunkStore *store, SHA256 hash, char *out)
-{
-    strcpy(out, store->path);
-    strcat(out, "/");
-
-    size_t tmp = strlen(out);
-
-    append_hex_as_str(out + tmp, hash);
-
-    out[tmp + 64] = '\0';
-
-    return (string) { out, strlen(out) };
-}
-
-// TODO: return an error when bitrot
-static int load_chunk(ChunkStore *store, SHA256 hash, string *data)
-{
-    char buf[PATH_MAX];
-    string path = hash2path(store, hash, buf);
-
-    int ret = file_read_all(path, data);
-    if (ret < 0)
-        return -1;
-
-    SHA256 fresh_hash;
-    sha256(data->ptr, data->len, (uint8_t*) &fresh_hash.data);
-
-    if (memcmp(&hash, &fresh_hash, sizeof(SHA256))) {
-        free(data->ptr);
-        return -1;
-    }
-
-    return 0;
-}
-
-static int store_chunk(ChunkStore *store, string data, SHA256 *hash)
-{
-    sha256(data.ptr, data.len, (uint8_t*) hash->data);
-    char buf[PATH_MAX];
-    string path = hash2path(store, *hash, buf);
-
-    // Note that this write is not atomic. If we crash
-    // while writing, we'll get an inconsistent file.
-    // This is okay as long as we check that the hash
-    // is correct while reading back the data.
-    Handle fd;
-    if (file_open(path, &fd) < 0) // TODO: open in overwrite mode
-        return -1;
-    int copied = 0;
-    while (copied < data.len) {
-        int ret = file_write(fd,
-            data.ptr + copied,
-            data.len - copied);
-        if (ret < 0) {
-            file_close(fd);
-            return -1;
-        }
-        copied += ret;
-    }
-    file_close(fd);
-    return 0;
-}
-
-static int chunk_store_get(ChunkStore *store, SHA256 hash, string *data)
-{
-    return load_chunk(store, hash, data);
-}
-
-static int chunk_store_add(ChunkStore *store, string data)
-{
-    SHA256 dummy;
-    return store_chunk(store, data, &dummy);
-}
-
-static int chunk_store_remove(ChunkStore *store, SHA256 hash)
-{
-    char buf[PATH_MAX];
-    string path = hash2path(store, hash, buf);
-
-    if (remove_file_or_dir(path) < 0)
-        return -1;
-    return 0;
-}
-
-static bool chunk_store_exists(ChunkStore *store, SHA256 hash)
-{
-    char buf[PATH_MAX];
-    string path = hash2path(store, hash, buf);
-
-    // Try to open the file to check if it exists
-    // TODO: this isn't right. There should be something like file_exists
-    Handle fd;
-    if (file_open(path, &fd) == 0) {
-        file_close(fd);
-        return true;
-    }
-    return false;
-}
-
-static int chunk_store_patch(ChunkStore *store, SHA256 target_chunk,
-	uint64_t patch_off, string patch, SHA256 *new_hash)
-{
-    string data;
-    int ret = load_chunk(store, target_chunk, &data);
-    if (ret < 0)
-        return -1;
-
-    if (patch_off > SIZE_MAX - patch.len) {
-        sys_free(data.ptr);
-        return -1;
-    }
-
-    if (patch_off + (size_t) patch.len > (size_t) data.len) {
-        sys_free(data.ptr);
-        return -1;
-    }
-
-    memcpy(data.ptr + patch_off, patch.ptr, patch.len);
-
-    ret = store_chunk(store, data, new_hash);
-    if (ret < 0) {
-        sys_free(data.ptr);
-        return -1;
-    }
-
-    sys_free(data.ptr);
-    return 0;
-}
-
 static int send_error(TCP *tcp, int conn_idx,
     bool close, uint16_t type, string msg)
 {
@@ -275,15 +237,8 @@ static void start_download(ChunkServer *state)
 
     MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK);
-
-    message_write(&writer, &target.hash, sizeof(target.hash));
-
-    uint32_t offset = 0;
-    message_write(&writer, &offset, sizeof(offset));
-
-    uint32_t length = 64 * 1024 * 1024; // TODO: there should be a special value for this
-    message_write(&writer, &length, sizeof(length));
-
+    message_write_hash(&writer, target.hash);
+    message_write_u8(&writer, 1);
     if (!message_writer_free(&writer))
         return;
 
@@ -319,7 +274,7 @@ static int process_metadata_server_sync_2(ChunkServer *state,
         // Elements in ms_add_list that are not held by the
         // chunk server are added to a temporary list tmp_list
 
-        if (!chunk_store_exists(&state->store, hash)) {
+        if (!chunk_exists(state, hash)) {
             if (hash_set_insert(&tmp_list, hash) < 0) {
                 hash_set_free(&tmp_list);
                 return -1;
@@ -375,17 +330,13 @@ static int process_metadata_server_sync_2(ChunkServer *state,
         hash_set_free(&tmp_list);
         return -1;
     }
-    uint32_t count = tmp_list.count + state->cs_lst_list.count;
-    message_write(&writer, &count, sizeof(count));
+    message_write_u32(&writer, tmp_list.count + state->cs_lst_list.count);
 
-    for (int i = 0; i < tmp_list.count; i++) {
-        SHA256 hash = tmp_list.items[i];
-        message_write(&writer, &hash, sizeof(hash));
-    }
+    for (int i = 0; i < tmp_list.count; i++)
+        message_write_hash(&writer, tmp_list.items[i]);
 
     for (int i = 0; i < state->cs_lst_list.count; i++) {
-        SHA256 hash = state->cs_lst_list.items[i];
-        message_write(&writer, &hash, sizeof(hash));
+        message_write_hash(&writer, state->cs_lst_list.items[i]);
     }
 
     hash_set_free(&tmp_list);
@@ -404,28 +355,8 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
     // The metadata server wants us to download chunks from other chunk servers
 
     BinaryReader reader = { msg.ptr, msg.len, 0 };
-
-    // Read header
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
-
-    // The message layout is this:
-    //
-    //   struct ServerAddresses {
-    //     uint32_t num_ipv4;
-    //     uint32_t num_ipv6;
-    //     IPv4Pair ipv4[num_ipv4];
-    //     IPv6Pair ipv6[num_ipv6];
-    //   }
-    //
-    //   struct Message {
-    //     uint32_t num_missing;
-    //     struct {
-    //       uint32_t num_holders;
-    //       ServerAddresses holders[num_holders];
-    //       SHA256 hash;
-    //     } entries[num_missing];
-    //   }
 
     uint32_t num_missing;
     if (!binary_read(&reader, &num_missing, sizeof(num_missing)))
@@ -438,45 +369,15 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
             return -1;
 
         // Temporary storage for all addresses from all holders
-        IPv4     ipv4[256];
-        IPv6     ipv6[256];
-        uint16_t ipv4_port[256];
-        uint16_t ipv6_port[256];
-        uint32_t total_ipv4 = 0;
-        uint32_t total_ipv6 = 0;
+        Address addrs[REPLICATION_FACTOR];
+        int num_addrs = 0;
 
         // Read addresses from each holder
         for (uint32_t j = 0; j < num_holders; j++) {
-
-            uint32_t num_ipv4;
-            if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4)))
+            int num = binary_read_addr_list(&reader, addrs + num_addrs, REPLICATION_FACTOR - num_addrs);
+            if (num < 0)
                 return -1;
-
-            uint32_t num_ipv6;
-            if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6)))
-                return -1;
-
-            // Read IPv4 addresses
-            for (uint32_t k = 0; k < num_ipv4; k++) {
-                if (total_ipv4 >= 256)
-                    return -1;
-                if (!binary_read(&reader, &ipv4[total_ipv4], sizeof(ipv4[0])))
-                    return -1;
-                if (!binary_read(&reader, &ipv4_port[total_ipv4], sizeof(ipv4_port[0])))
-                    return -1;
-                total_ipv4++;
-            }
-
-            // Read IPv6 addresses
-            for (uint32_t k = 0; k < num_ipv6; k++) {
-                if (total_ipv6 >= 256)
-                    return -1;
-                if (!binary_read(&reader, &ipv6[total_ipv6], sizeof(ipv6[0])))
-                    return -1;
-                if (!binary_read(&reader, &ipv6_port[total_ipv6], sizeof(ipv6_port[0])))
-                    return -1;
-                total_ipv6++;
-            }
+            num_addrs += num;
         }
 
         // Read the hash
@@ -484,20 +385,8 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
         if (!binary_read(&reader, &hash, sizeof(hash)))
             return -1;
 
-        // Add to pending download list
-        for (uint32_t k = 0; k < total_ipv4; k++)
-            download_targets_push(
-                &state->download_targets,
-                (Address) { .is_ipv4=true, .ipv4=ipv4[k], .port=ipv4_port[k] },
-                hash
-            );
-
-        for (uint32_t k = 0; k < total_ipv6; k++)
-            download_targets_push(
-                &state->download_targets,
-                (Address) { .is_ipv4=false, .ipv6=ipv6[k], .port=ipv6_port[k] },
-                hash
-            );
+        for (int j = 0; j < num_addrs; j++)
+            download_targets_push(&state->download_targets, addrs[i], hash);
     }
 
     if (binary_read(&reader, NULL, 1))
@@ -512,6 +401,8 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
 static int
 process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView msg)
 {
+    (void) conn_idx;
+
     BinaryReader reader = { msg.ptr, msg.len, 0 };
 
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
@@ -528,7 +419,7 @@ process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView
     if (avoid_full_scan)
         return 0;
 
-    string path = { state->store.path, strlen(state->store.path) };
+    string path = { state->path, strlen(state->path) };
 
     DirectoryScanner scanner;
     if (directory_scanner_init(&scanner, path) < 0) {
@@ -586,17 +477,6 @@ process_metadata_server_auth_response(ChunkServer *state, int conn_idx, ByteView
 }
 
 static int
-process_metadata_server_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView msg)
-{
-    switch (type) {
-        case MESSAGE_TYPE_AUTH_RESPONSE: return process_metadata_server_auth_response(state, conn_idx, msg);
-        case MESSAGE_TYPE_SYNC_2: return process_metadata_server_sync_2(state, conn_idx, msg);
-        case MESSAGE_TYPE_SYNC_4: return process_metadata_server_sync_4(state, conn_idx, msg);
-    }
-    return -1;
-}
-
-static int
 process_chunk_server_download_error(ChunkServer *state, int conn_idx, ByteView msg)
 {
     (void) msg;
@@ -633,7 +513,8 @@ process_chunk_server_download_success(ChunkServer *state, int conn_idx, ByteView
         return -1;
 
     // Store the downloaded chunk
-    if (chunk_store_add(&state->store, data) < 0)
+    SHA256 dummy;
+    if (store_chunk(state, data, &dummy) < 0)
         return -1;
 
     // The download succeded!
@@ -651,21 +532,6 @@ process_chunk_server_download_success(ChunkServer *state, int conn_idx, ByteView
 
     start_download(state);
     return 0;
-}
-
-static int
-process_chunk_server_message(ChunkServer *state, int conn_idx, uint16_t msg_type, ByteView msg)
-{
-    switch (msg_type) {
-
-        case MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR:
-        return process_chunk_server_download_error(state, conn_idx, msg);
-
-        case MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS:
-        return process_chunk_server_download_success(state, conn_idx, msg);
-    }
-
-    return -1;
 }
 
 static int
@@ -710,7 +576,8 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     SHA256 new_hash;
     sha256(mem, chunk_size, (uint8_t*) new_hash.data);
 
-    int ret = chunk_store_add(&state->store, (string) { mem, chunk_size });
+    SHA256 dummy;
+    int ret = store_chunk(state, (string) { mem, chunk_size }, &dummy);
 
     sys_free(mem);
 
@@ -764,7 +631,7 @@ process_client_upload_chunk(ChunkServer *state, int conn_idx, ByteView msg)
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_UPLOAD_CHUNK_ERROR, S("Invalid message"));
 
     SHA256 new_hash;
-    int ret = chunk_store_patch(&state->store, target_hash, target_off, data, &new_hash);
+    int ret = patch_chunk(state, target_hash, target_off, data, &new_hash);
 
     if (ret < 0) {
         // TODO: if the chunk is missing add it to the missing list
@@ -799,62 +666,89 @@ process_client_download_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, &target_hash, sizeof(target_hash)))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid message"));
 
-    uint32_t target_off;
-    if (!binary_read(&reader, &target_off, sizeof(target_off)))
+    uint8_t full;
+    if (!binary_read(&reader, &full, sizeof(full)))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid message"));
 
+    uint32_t target_off;
     uint32_t target_len;
-    if (!binary_read(&reader, &target_len, sizeof(target_len)))
-        return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid message"));
+    if (full == 0) {
+        if (!binary_read(&reader, &target_off, sizeof(target_off)))
+            return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid message"));
+        if (!binary_read(&reader, &target_len, sizeof(target_len)))
+            return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid message"));
+    }
 
     // Check that there are no more bytes to read
     if (binary_read(&reader, NULL, 1))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid message"));
 
     string data;
-    int ret = chunk_store_get(&state->store, target_hash, &data);
+    int ret = load_chunk(state, target_hash, &data);
 
     if (ret < 0) {
         // TODO: if the chunk is missing add it to the missing list
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("I/O error"));
     }
 
-    if (target_off >= (size_t) data.len || target_len > (size_t) data.len - target_off) {
-        sys_free(data.ptr);
-        return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid range"));
+    string slice;
+    if (full == 0) {
+        if (target_off >= (size_t) data.len || target_len > (size_t) data.len - target_off) {
+            sys_free(data.ptr);
+            return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid range"));
+        }
+        slice = (string) { data.ptr + target_off, target_len };
+    } else {
+        slice = data;
     }
-    string slice = { data.ptr + target_off, target_len };
-
-    MessageWriter writer;
 
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
+    assert(output);
+
+    MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS);
-
     message_write(&writer, &target_len, sizeof(target_len));
-
     message_write(&writer, slice.ptr, slice.len);
+    if (!message_writer_free(&writer)) {
+        sys_free(data.ptr);
+        return -1;
+    }
 
     sys_free(data.ptr);
-
-    if (!message_writer_free(&writer))
-        return -1;
     return 0;
 }
 
 static int
-process_client_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView msg)
+process_message(ChunkServer *state, int conn_idx, uint16_t type, ByteView msg)
 {
-    switch (type) {
+    switch (tcp_get_tag(&state->tcp, conn_idx)) {
+    case TAG_METADATA_SERVER:
+        switch (type) {
+        case MESSAGE_TYPE_AUTH_RESPONSE:
+            return process_metadata_server_auth_response(state, conn_idx, msg);
+        case MESSAGE_TYPE_SYNC_2:
+            return process_metadata_server_sync_2(state, conn_idx, msg);
+        case MESSAGE_TYPE_SYNC_4:
+            return process_metadata_server_sync_4(state, conn_idx, msg);
+        }
+        break;
+    case TAG_CHUNK_SERVER:
+        switch (type) {
+        case MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR:
+            return process_chunk_server_download_error(state, conn_idx, msg);
+        case MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS:
+            return process_chunk_server_download_success(state, conn_idx, msg);
+        }
+        break;
+    default:
+        switch (type) {
         case MESSAGE_TYPE_CREATE_CHUNK:
-        return process_client_create_chunk(state, conn_idx, msg);
-
+            return process_client_create_chunk(state, conn_idx, msg);
         case MESSAGE_TYPE_UPLOAD_CHUNK:
-        return process_client_upload_chunk(state, conn_idx, msg);
-
+            return process_client_upload_chunk(state, conn_idx, msg);
         case MESSAGE_TYPE_DOWNLOAD_CHUNK:
-        return process_client_download_chunk(state, conn_idx, msg);
-
-        default:
+            return process_client_download_chunk(state, conn_idx, msg);
+        }
         break;
     }
     return -1;
@@ -938,7 +832,6 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
         return -1;
 
     state->trace = trace;
-
     state->reconnect_delay = 1; // 1 second
 
     tcp_context_init(&state->tcp);
@@ -949,8 +842,12 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
         return -1;
     }
 
-    ret = chunk_store_init(&state->store, path);
-    if (ret < 0) {
+    if (create_dir(path) && errno != EEXIST) {
+        tcp_context_free(&state->tcp);
+        return -1;
+    }
+
+    if (get_full_path(path, state->path) < 0) {
         tcp_context_free(&state->tcp);
         return -1;
     }
@@ -971,7 +868,6 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     state->local_addr.is_ipv4 = true;
     if (inet_pton(AF_INET, tmp, &state->local_addr.ipv4) != 1) {
         tcp_context_free(&state->tcp);
-        chunk_store_free(&state->store);
         return -1;
     }
     state->local_addr.port = port;
@@ -987,7 +883,6 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     state->remote_addr.is_ipv4 = true;
     if (inet_pton(AF_INET, tmp, &state->remote_addr.ipv4) != 1) {
         tcp_context_free(&state->tcp);
-        chunk_store_free(&state->store);
         return -1;
     }
     state->remote_addr.port = remote_port;
@@ -1017,7 +912,6 @@ int chunk_server_free(ChunkServer *state)
     timed_hash_set_free(&state->cs_rem_list);
     hash_set_free(&state->cs_lst_list);
     hash_set_free(&state->cs_add_list);
-    chunk_store_free(&state->store);
     tcp_context_free(&state->tcp);
     return 0;
 }
@@ -1050,13 +944,7 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
                 break;
 
                 case TAG_CHUNK_SERVER:
-                // Connection to chunk server disconnected during download
-                if (state->downloading) {
-                    // Mark as not downloading and retry
-                    state->downloading = false;
-                    // The current download item will be retried on next call
-                    // to start_download_if_necessary
-                }
+                state->downloading = false;
                 break;
             }
             break;
@@ -1078,20 +966,7 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
                     if (state->trace)
                         message_dump(stdout, msg);
 
-                    switch (tcp_get_tag(&state->tcp, conn_idx)) {
-                        case TAG_METADATA_SERVER:
-                        ret = process_metadata_server_message(state, conn_idx, msg_type, msg);
-                        break;
-
-                        case TAG_CHUNK_SERVER:
-                        ret = process_chunk_server_message(state, conn_idx, msg_type, msg);
-                        break;
-
-                        default:
-                        ret = process_client_message(state, conn_idx, msg_type, msg);
-                        break;
-                    }
-
+                    ret = process_message(state, conn_idx, msg_type, msg);
                     if (ret < 0) {
                         tcp_close(&state->tcp, conn_idx);
                         break;
@@ -1104,10 +979,7 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         }
     }
 
-    {
-        int conn_idx = tcp_index_from_tag(&state->tcp, TAG_METADATA_SERVER);
-        assert((conn_idx < 0) == (state->disconnect_time != INVALID_TIME));
-    }
+    assert((tcp_index_from_tag(&state->tcp, TAG_METADATA_SERVER) < 0) == (state->disconnect_time != INVALID_TIME));
 
     Time deadline = INVALID_TIME;
 
@@ -1116,7 +988,9 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
         TimedHash *removal = &state->cs_rem_list.items[i];
         Time removal_time = removal->time + (Time) DELETION_TIMEOUT * 1000000000;
         if (removal_time < current_time) {
-            if (chunk_store_remove(&state->store, removal->hash) == 0)
+            char buf[PATH_MAX];
+            string path = hash2path(state, removal->hash, buf);
+            if (remove_file_or_dir(path) == 0)
                 *removal = state->cs_rem_list.items[--state->cs_rem_list.count];
         } else {
             nearest_deadline(&deadline, removal_time);

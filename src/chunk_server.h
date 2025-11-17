@@ -11,10 +11,6 @@
 #define TAG_CHUNK_SERVER    2
 
 typedef struct {
-    char path[PATH_MAX];
-} ChunkStore;
-
-typedef struct {
     Address addr;
     SHA256  hash;
 } DownloadTarget;
@@ -27,19 +23,20 @@ typedef struct {
 
 typedef struct {
 
+    char path[PATH_MAX];
+
     bool trace;
 
     Address local_addr;
-
     Address remote_addr;
 
     Time disconnect_time;
     Time last_sync_time;
     int reconnect_delay; // In seconds
 
-    TCP tcp;
+    // --- Subsystems ---
 
-    ChunkStore store;
+    TCP tcp;
 
     // --- Download Management ---
 

@@ -24,12 +24,12 @@ typedef enum {
 
 typedef struct {
     PendingOperationType type;
-    int opidx;
+    ToastyHandle handle;
     void *ptr;
 } PendingOperation;
 
 typedef struct {
-    ToastyFS *tfs;
+    ToastyFS *toasty;
     int num_pending;
     PendingOperation pending[MAX_PENDING_OPERATION];
 } SimulationClient;

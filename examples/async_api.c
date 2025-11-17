@@ -1,12 +1,12 @@
-#include <stddef.h>
-#include <Toasty.h>
+#include <stdio.h>
+#include <ToastyFS.h>
 
 int main(void)
 {
     ToastyString remote_addr = TOASTY_STR("127.0.0.1");
     uint16_t     remote_port = 8080;
 
-    Toasty *toasty = toasty_connect(remote_addr, remote_port);
+    ToastyFS *toasty = toasty_connect(remote_addr, remote_port);
     if (toasty == NULL) {
         printf("Couldn't connect to metadata server");
         return -1;
@@ -14,9 +14,6 @@ int main(void)
 
     ToastyString path_1 = TOASTY_STR("/first_file");
     ToastyString path_2 = TOASTY_STR("/second_file");
-
-    char msg_1[] = "This is file 1";
-    char msg_2[] = "This is file 2";
 
     // Begin creation operation. This does not block.
     ToastyHandle create_handle_1 = toasty_begin_create_file(toasty, path_1, 1024);
@@ -58,6 +55,6 @@ int main(void)
 
     printf("All files were created!\n");
 
-    toastyfs_disconnect(tfs);
+    toasty_disconnect(toasty);
     return 0;
 }

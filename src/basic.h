@@ -17,6 +17,15 @@ typedef struct {
 } IPv6;
 
 typedef struct {
+    union {
+        IPv4 ipv4;
+        IPv6 ipv6;
+    };
+    bool is_ipv4;
+    uint16_t port;
+} Address;
+
+typedef struct {
     char *ptr;
     int   len;
 } string;

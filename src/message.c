@@ -18,6 +18,48 @@ bool binary_read(BinaryReader *reader, void *dst, int len)
     return true;
 }
 
+bool binary_read_addr_ipv4(BinaryReader *reader, Address *addr)
+{
+    if (!binary_read(reader, &addr->ipv4, sizeof(IPv4)))     return false;
+    if (!binary_read(reader, &addr->port, sizeof(uint16_t))) return false;
+    addr->is_ipv4 = true;
+    return true;
+}
+
+bool binary_read_addr_ipv6(BinaryReader *reader, Address *addr)
+{
+    if (!binary_read(reader, &addr->ipv6, sizeof(IPv6)))     return false;
+    if (!binary_read(reader, &addr->port, sizeof(uint16_t))) return false;
+    addr->is_ipv4 = false;
+    return true;
+}
+
+int binary_read_addr_list(BinaryReader *reader, Address *addrs, int max_addrs)
+{
+    uint32_t num_ipv4;
+    uint32_t num_ipv6;
+    if (!binary_read(reader, &num_ipv4, sizeof(num_ipv4)))
+        return -1;
+    if (!binary_read(reader, &num_ipv6, sizeof(num_ipv6)))
+        return -1;
+    int num = 0;
+    for (uint32_t i = 0; i < num_ipv4; i++) {
+        Address tmp;
+        if (!binary_read_addr_ipv4(reader, &tmp))
+            return -1;
+        if (num < max_addrs)
+            addrs[num++] = tmp;
+    }
+    for (uint32_t i = 0; i < num_ipv6; i++) {
+        Address tmp;
+        if (!binary_read_addr_ipv6(reader, &tmp))
+            return -1;
+        if (num < max_addrs)
+            addrs[num++] = tmp;
+    }
+    return num;
+}
+
 void message_writer_init(MessageWriter *writer, ByteQueue *output, uint16_t type)
 {
     uint16_t version = MESSAGE_VERSION;
@@ -42,6 +84,21 @@ bool message_writer_free(MessageWriter *writer)
 void message_write(MessageWriter *writer, void *mem, int len)
 {
     byte_queue_write(writer->output, mem, len);
+}
+
+void message_write_u8(MessageWriter *writer, uint8_t value)
+{
+    message_write(writer, &value, (int) sizeof(value));
+}
+
+void message_write_u32(MessageWriter *writer, uint32_t value)
+{
+    message_write(writer, &value, (int) sizeof(value));
+}
+
+void message_write_hash(MessageWriter *writer, SHA256 value)
+{
+    message_write(writer, &value, (int) sizeof(value));
 }
 
 int message_peek(ByteView msg, uint16_t *type, uint32_t *len)

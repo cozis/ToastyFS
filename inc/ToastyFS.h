@@ -155,6 +155,11 @@ ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path,
 // Note that if a result is returned, handles to that
 // operation are invalidated.
 // The "result" must be freed using "toasty_free_result".
+//
+// Note:
+//   If you call this function in a loop, the state of the
+//   operation will not progress. You can't wait for completion
+//   by calling this in a loop. You need to use "toasty_wait_result"
 int toasty_get_result(ToastyFS *toasty, ToastyHandle handle,
     ToastyResult *result);
 

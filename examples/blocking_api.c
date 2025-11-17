@@ -1,12 +1,12 @@
-#include <stddef.h>
-#include <Toasty.h>
+#include <stdio.h>
+#include <ToastyFS.h>
 
 int main(void)
 {
     ToastyString remote_addr = TOASTY_STR("127.0.0.1");
     uint16_t     remote_port = 8080;
 
-    Toasty *toasty = toasty_connect(remote_addr, remote_port);
+    ToastyFS *toasty = toasty_connect(remote_addr, remote_port);
     if (toasty == NULL) {
         printf("Couldn't connect to metadata server");
         return -1;
@@ -29,6 +29,6 @@ int main(void)
         return -1;
     }
 
-    toastyfs_disconnect(tfs);
+    toasty_disconnect(toasty);
     return 0;
 }

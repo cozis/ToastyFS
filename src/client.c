@@ -170,65 +170,30 @@ struct ToastyFS {
     Operation operations[MAX_OPERATIONS];
 };
 
-static void request_queue_init(RequestQueue *reqs);
-
-ToastyFS *toasty_connect(ToastyString addr, uint16_t port)
+static void request_queue_init(RequestQueue *reqs)
 {
-    ToastyFS *toasty = sys_malloc(sizeof(ToastyFS));
-    if (toasty == NULL)
-        return NULL;
-
-    Address addr2;
-    {
-        char tmp[128];
-        if (addr.len >= (int) sizeof(tmp)) {
-            sys_free(toasty);
-            return NULL;
-        }
-        memcpy(tmp, addr.ptr, addr.len);
-        tmp[addr.len] = '\0';
-
-        addr2.is_ipv4 = true;
-        addr2.port = port;
-        if (inet_pton(AF_INET, tmp, &addr2.ipv4) != 1) {
-            sys_free(toasty);
-            return NULL;
-        }
-    }
-
-    tcp_context_init(&toasty->tcp);
-
-    if (tcp_connect(&toasty->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
-        tcp_context_free(&toasty->tcp);
-        sys_free(toasty);
-        return NULL;
-    }
-
-    toasty->num_operations = 0;
-
-    for (int i = 0; i < MAX_OPERATIONS; i++) {
-        toasty->operations[i].type = OPERATION_TYPE_FREE;
-        toasty->operations[i].generation = 1; // Important not to start from 0 !!!
-    }
-
-    // Initialize metadata server (connected during init)
-    toasty->metadata_server.used = true;
-    toasty->metadata_server.addr = addr2;
-    request_queue_init(&toasty->metadata_server.reqs);
-
-    // Initialize chunk servers array (connections created on demand)
-    toasty->num_chunk_servers = 0;
-    for (int i = 0; i < MAX_CHUNK_SERVERS; i++) {
-        toasty->chunk_servers[i].used = false;
-    }
-
-    return toasty;
+    reqs->head = 0;
+    reqs->count = 0;
 }
 
-void toasty_disconnect(ToastyFS *toasty)
+static int request_queue_push(RequestQueue *reqs, Request req)
 {
-    tcp_context_free(&toasty->tcp);
-    sys_free(toasty);
+    if (reqs->count == MAX_REQUESTS_PER_QUEUE)
+        return -1;
+    int tail = (reqs->head + reqs->count) % MAX_REQUESTS_PER_QUEUE;
+    reqs->items[tail] = req;
+    reqs->count++;
+    return 0;
+}
+
+static int request_queue_pop(RequestQueue *reqs, Request *req)
+{
+    if (reqs->count == 0)
+        return -1;
+    if (req) *req = reqs->items[reqs->head];
+    reqs->head = (reqs->head + 1) % MAX_REQUESTS_PER_QUEUE;
+    reqs->count--;
+    return 0;
 }
 
 static int
@@ -292,33 +257,96 @@ static int handle_to_operation(ToastyFS *toasty, ToastyHandle handle)
     return opidx;
 }
 
+ToastyFS *toasty_connect(ToastyString addr, uint16_t port)
+{
+    ToastyFS *toasty = sys_malloc(sizeof(ToastyFS));
+    if (toasty == NULL)
+        return NULL;
+
+    Address addr2;
+    {
+        char tmp[128];
+        if (addr.len >= (int) sizeof(tmp)) {
+            sys_free(toasty);
+            return NULL;
+        }
+        memcpy(tmp, addr.ptr, addr.len);
+        tmp[addr.len] = '\0';
+
+        addr2.is_ipv4 = true;
+        addr2.port = port;
+        if (inet_pton(AF_INET, tmp, &addr2.ipv4) != 1) {
+            sys_free(toasty);
+            return NULL;
+        }
+    }
+
+    tcp_context_init(&toasty->tcp);
+
+    if (tcp_connect(&toasty->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
+        tcp_context_free(&toasty->tcp);
+        sys_free(toasty);
+        return NULL;
+    }
+
+    toasty->num_operations = 0;
+
+    for (int i = 0; i < MAX_OPERATIONS; i++) {
+        toasty->operations[i].type = OPERATION_TYPE_FREE;
+        toasty->operations[i].generation = 1; // Important not to start from 0 !!!
+    }
+
+    // Initialize metadata server (connected during init)
+    toasty->metadata_server.used = true;
+    toasty->metadata_server.addr = addr2;
+    request_queue_init(&toasty->metadata_server.reqs);
+
+    // Initialize chunk servers array (connections created on demand)
+    toasty->num_chunk_servers = 0;
+    for (int i = 0; i < MAX_CHUNK_SERVERS; i++) {
+        toasty->chunk_servers[i].used = false;
+    }
+
+    return toasty;
+}
+
 static void
-request_queue_init(RequestQueue *reqs)
+metadata_server_request_start(ToastyFS *toasty, MessageWriter *writer, uint16_t type)
 {
-    reqs->head = 0;
-    reqs->count = 0;
+    ByteQueue *output;
+    if (toasty->metadata_server.used) {
+
+        int conn_idx = tcp_index_from_tag(&toasty->tcp, TAG_METADATA_SERVER);
+        assert(conn_idx > -1);
+
+        output = tcp_output_buffer(&toasty->tcp, conn_idx);
+    } else {
+        if (tcp_connect(&toasty->tcp, toasty->metadata_server.addr, TAG_METADATA_SERVER, &output) < 0) {
+            assert(0); // TODO
+        }
+        toasty->metadata_server.used = true;
+    }
+
+    message_writer_init(writer, output, type);
 }
 
 static int
-request_queue_push(RequestQueue *reqs, Request req)
+metadata_server_request_end(ToastyFS *toasty, MessageWriter *writer, int opidx, int tag)
 {
-    if (reqs->count == MAX_REQUESTS_PER_QUEUE)
+    if (!message_writer_free(writer))
         return -1;
-    int tail = (reqs->head + reqs->count) % MAX_REQUESTS_PER_QUEUE;
-    reqs->items[tail] = req;
-    reqs->count++;
+
+    RequestQueue *reqs = &toasty->metadata_server.reqs;
+    if (request_queue_push(reqs, (Request) { tag, opidx }) < 0)
+        return -1;
+
     return 0;
 }
 
-static int
-request_queue_pop(RequestQueue *reqs, Request *req)
+void toasty_disconnect(ToastyFS *toasty)
 {
-    if (reqs->count == 0)
-        return -1;
-    if (req) *req = reqs->items[reqs->head];
-    reqs->head = (reqs->head + 1) % MAX_REQUESTS_PER_QUEUE;
-    reqs->count--;
-    return 0;
+    tcp_context_free(&toasty->tcp);
+    sys_free(toasty);
 }
 
 static bool
@@ -387,21 +415,30 @@ static int get_chunk_server(ToastyFS *toasty, Address *addrs, int num_addrs, Byt
     return found;
 }
 
+// TODO: is this used anywhere?
+static void close_chunk_server(ToastyFS *toasty, int chunk_server_idx)
+{
+    int conn_idx = tcp_index_from_tag(&toasty->tcp, chunk_server_idx);
+    tcp_close(&toasty->tcp, conn_idx);
+}
+
 // Send download request for a chunk
 static int send_download_chunk(ToastyFS *toasty, int chunk_server_idx,
     SHA256 hash, uint32_t offset, uint32_t length, int opidx, int range_idx)
 {
     int conn_idx = tcp_index_from_tag(&toasty->tcp, chunk_server_idx);
-    if (conn_idx < 0) return -1;
+    if (conn_idx < 0)
+        return -1;
+
+    ByteQueue *output = tcp_output_buffer(&toasty->tcp, conn_idx);
+    assert(output);
 
     MessageWriter writer;
-    ByteQueue *output = tcp_output_buffer(&toasty->tcp, conn_idx);
     message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK);
-
-    message_write(&writer, &hash,   sizeof(hash));
-    message_write(&writer, &offset, sizeof(offset));
-    message_write(&writer, &length, sizeof(length));
-
+    message_write_hash(&writer, hash);
+    message_write_u8  (&writer, 0);
+    message_write_u32 (&writer, offset);
+    message_write_u32 (&writer, length);
     if (!message_writer_free(&writer))
         return -1;
 
@@ -409,50 +446,11 @@ static int send_download_chunk(ToastyFS *toasty, int chunk_server_idx,
     return request_queue_push(reqs, (Request) { range_idx, opidx });
 }
 
-// TODO: is this used somewhere?
-static void close_chunk_server(ToastyFS *toasty, int chunk_server_idx)
-{
-    int conn_idx = tcp_index_from_tag(&toasty->tcp, chunk_server_idx);
-    tcp_close(&toasty->tcp, conn_idx);
-}
-
-static void
-metadata_server_request_start(ToastyFS *toasty, MessageWriter *writer, uint16_t type)
-{
-    ByteQueue *output;
-    if (toasty->metadata_server.used) {
-
-        int conn_idx = tcp_index_from_tag(&toasty->tcp, TAG_METADATA_SERVER);
-        assert(conn_idx > -1);
-
-        output = tcp_output_buffer(&toasty->tcp, conn_idx);
-    } else {
-        if (tcp_connect(&toasty->tcp, toasty->metadata_server.addr, TAG_METADATA_SERVER, &output) < 0) {
-            assert(0); // TODO
-        }
-        toasty->metadata_server.used = true;
-    }
-
-    message_writer_init(writer, output, type);
-}
-
-static int
-metadata_server_request_end(ToastyFS *toasty, MessageWriter *writer, int opidx, int tag)
-{
-    if (!message_writer_free(writer))
-        return -1;
-
-    RequestQueue *reqs = &toasty->metadata_server.reqs;
-    if (request_queue_push(reqs, (Request) { tag, opidx }) < 0)
-        return -1;
-
-    return 0;
-}
-
 static ToastyHandle begin_create(ToastyFS *toasty,
     ToastyString path, bool is_dir, uint32_t chunk_size)
 {
     OperationType type = OPERATION_TYPE_CREATE;
+
     int opidx = alloc_operation(toasty, type, 0, NULL, 0);
     if (opidx < 0)
         return TOASTY_INVALID;
@@ -500,9 +498,10 @@ ToastyHandle toasty_begin_create_file(ToastyFS *toasty, ToastyString path,
     return begin_create(toasty, path, false, chunk_size);
 }
 
-ToastyHandle toastyfs_begin_delete(ToastyFS *toasty, ToastyString path)
+ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path)
 {
     OperationType type = OPERATION_TYPE_DELETE;
+
     int opidx = alloc_operation(toasty, type, 0, NULL, 0);
     if (opidx < 0)
         return TOASTY_INVALID;
@@ -525,9 +524,10 @@ ToastyHandle toastyfs_begin_delete(ToastyFS *toasty, ToastyString path)
     return operation_to_handle(toasty, opidx);
 }
 
-ToastyHandle toastyfs_begin_list(ToastyFS *toasty, ToastyString path)
+ToastyHandle toasty_begin_list(ToastyFS *toasty, ToastyString path)
 {
     OperationType type = OPERATION_TYPE_LIST;
+
     int opidx = alloc_operation(toasty, type, 0, NULL, 0);
     if (opidx < 0)
         return TOASTY_INVALID;
@@ -569,9 +569,10 @@ static int send_read_message(ToastyFS *toasty, int opidx, int tag, ToastyString 
     return 0;
 }
 
-ToastyHandle toastyfs_begin_read(ToastyFS *toasty, ToastyString path, int off, void *dst, int len)
+ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path, int off, void *dst, int len)
 {
     OperationType type = OPERATION_TYPE_READ;
+
     int opidx = alloc_operation(toasty, type, off, dst, len);
     if (opidx < 0)
         return TOASTY_INVALID;
@@ -584,7 +585,7 @@ ToastyHandle toastyfs_begin_read(ToastyFS *toasty, ToastyString path, int off, v
     return operation_to_handle(toasty, opidx);
 }
 
-ToastyHandle toastyfs_begin_write(ToastyFS *toasty, ToastyString path, int off, void *src, int len)
+ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path, int off, void *src, int len)
 {
     OperationType type = OPERATION_TYPE_WRITE;
 
@@ -602,10 +603,10 @@ ToastyHandle toastyfs_begin_write(ToastyFS *toasty, ToastyString path, int off, 
     return operation_to_handle(toasty, opidx);
 }
 
-void toastyfs_result_free(ToastyResult *result)
+void toasty_free_result(ToastyResult *result)
 {
     if (result->type == TOASTY_RESULT_LIST_SUCCESS)
-        sys_free(result->entities);
+        toasty_free_listing(&result->listing);
 }
 
 static void process_event_for_create(ToastyFS *toasty,
@@ -791,7 +792,7 @@ static void process_event_for_list(ToastyFS *toasty,
         return;
     }
 
-    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_SUCCESS, item_count, entities };
+    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_SUCCESS, .listing=(ToastyListing) { item_count, entities } };
 }
 
 static void process_event_for_read(ToastyFS *toasty,
@@ -1738,7 +1739,7 @@ static void process_event_for_write(ToastyFS *toasty,
             uint32_t     length = toasty->operations[opidx].len;
 
             if (path.len > UINT16_MAX) {
-                // TODO
+                assert(0); // TODO
             }
             uint16_t path_len = path.len;
 
@@ -1888,7 +1889,7 @@ int toasty_get_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *resul
     return 1;
 }
 
-int toastyfs_process_events(ToastyFS *toasty, void **contexts, struct pollfd *polled, int num_polled)
+int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *polled, int num_polled)
 {
     int num_events;
     Event events[MAX_CONNS+1];
@@ -2018,7 +2019,7 @@ int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *resu
     struct pollfd polled[MAX_CONNS+1];
     int num_polled;
 
-    num_polled = toastyfs_process_events(toasty, contexts, polled, 0);
+    num_polled = toasty_process_events(toasty, contexts, polled, 0);
 
     for (;;) {
 
@@ -2050,10 +2051,135 @@ int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *resu
         if (ret < 0)
             return -1;
 
-        num_polled = toastyfs_process_events(toasty, contexts, polled, num_polled);
+        num_polled = toasty_process_events(toasty, contexts, polled, num_polled);
         if (num_polled < 0)
             return -1;
     }
 
     return 0;
+}
+
+int toasty_create_dir(ToastyFS *toasty, ToastyString path)
+{
+    ToastyHandle handle = toasty_begin_create_dir(toasty, path);
+    if (handle == TOASTY_INVALID)
+        return -1;
+
+    ToastyResult result;
+    if (toasty_wait_result(toasty, handle, &result, -1) < 0)
+        return -1;
+
+    if (result.type != TOASTY_RESULT_CREATE_SUCCESS) {
+        toasty_free_result(&result);
+        return -1;
+    }
+
+    toasty_free_result(&result);
+    return 0;
+}
+
+int toasty_create_file(ToastyFS *toasty, ToastyString path,
+    unsigned int chunk_size)
+{
+    ToastyHandle handle = toasty_begin_create_file(toasty, path, chunk_size);
+    if (handle == TOASTY_INVALID)
+        return -1;
+
+    ToastyResult result;
+    if (toasty_wait_result(toasty, handle, &result, -1) < 0)
+        return -1;
+
+    if (result.type != TOASTY_RESULT_CREATE_SUCCESS) {
+        toasty_free_result(&result);
+        return -1;
+    }
+
+    toasty_free_result(&result);
+    return 0;
+}
+
+int toasty_delete(ToastyFS *toasty, ToastyString path)
+{
+    ToastyHandle handle = toasty_begin_delete(toasty, path);
+    if (handle == TOASTY_INVALID)
+        return -1;
+
+    ToastyResult result;
+    if (toasty_wait_result(toasty, handle, &result, -1) < 0)
+        return -1;
+
+    if (result.type != TOASTY_RESULT_DELETE_SUCCESS) {
+        toasty_free_result(&result);
+        return -1;
+    }
+
+    toasty_free_result(&result);
+    return 0;
+}
+
+int toasty_list(ToastyFS *toasty, ToastyString path, ToastyListing *listing)
+{
+    ToastyHandle handle = toasty_begin_list(toasty, path);
+    if (handle == TOASTY_INVALID)
+        return -1;
+
+    ToastyResult result;
+    if (toasty_wait_result(toasty, handle, &result, -1) < 0)
+        return -1;
+
+    if (result.type != TOASTY_RESULT_LIST_SUCCESS) {
+        toasty_free_result(&result);
+        return -1;
+    }
+
+    if (listing)
+        *listing = result.listing;
+    else
+        toasty_free_result(&result);
+    return 0;
+}
+
+void toasty_free_listing(ToastyListing *listing)
+{
+    sys_free(listing->items);
+}
+
+int toasty_read(ToastyFS *toasty, ToastyString path,
+    int off, void *dst, int len)
+{
+    ToastyHandle handle = toasty_begin_read(toasty, path, off, dst, len);
+    if (handle == TOASTY_INVALID)
+        return -1;
+
+    ToastyResult result;
+    if (toasty_wait_result(toasty, handle, &result, -1) < 0)
+        return -1;
+
+    if (result.type != TOASTY_RESULT_READ_SUCCESS) {
+        toasty_free_result(&result);
+        return -1;
+    }
+
+    toasty_free_result(&result);
+    return 0; // TODO: return the number of bytes read?
+}
+
+int toasty_write(ToastyFS *toasty, ToastyString path,
+    int off, void *src, int len)
+{
+    ToastyHandle handle = toasty_begin_write(toasty, path, off, src, len);
+    if (handle == TOASTY_INVALID)
+        return -1;
+
+    ToastyResult result;
+    if (toasty_wait_result(toasty, handle, &result, -1) < 0)
+        return -1;
+
+    if (result.type != TOASTY_RESULT_WRITE_SUCCESS) {
+        toasty_free_result(&result);
+        return -1;
+    }
+
+    toasty_free_result(&result);
+    return 0; // TODO: return the number of bytes written?
 }
