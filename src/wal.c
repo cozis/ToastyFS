@@ -186,7 +186,7 @@ static int swap_file(WAL *wal)
     }
 
     // MOVEFILE_REPLACE_EXISTING allows atomic overwrite
-    if (!MoveFileExW(temp_path_w, old_path_w, MOVEFILE_REPLACE_EXISTING)) {
+    if (!sys_MoveFileExW(temp_path_w, old_path_w, MOVEFILE_REPLACE_EXISTING)) {
         file_unlock(temp_handle);
         file_close(temp_handle);
         remove_file_or_dir(temp_path);
