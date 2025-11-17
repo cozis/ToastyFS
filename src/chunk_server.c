@@ -386,7 +386,7 @@ process_metadata_server_sync_4(ChunkServer *state, int conn_idx, ByteView msg)
             return -1;
 
         for (int j = 0; j < num_addrs; j++)
-            download_targets_push(&state->download_targets, addrs[i], hash);
+            download_targets_push(&state->download_targets, addrs[j], hash);
     }
 
     if (binary_read(&reader, NULL, 1))
