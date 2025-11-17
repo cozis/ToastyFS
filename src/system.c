@@ -1493,6 +1493,24 @@ BOOL mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED 
     return WriteFile(desc->real_fd, src, len, num, ov);
 }
 
+DWORD mock_SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceToMoveHigh, DWORD dwMoveMethod)
+{
+    if (hFile == INVALID_HANDLE_VALUE || (int)hFile < 0 || (int)hFile >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return INVALID_SET_FILE_POINTER;
+    }
+    int idx = (int) hFile;
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_FILE) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return INVALID_SET_FILE_POINTER;
+    }
+
+    // Forward to real SetFilePointer, last error is set by the real call
+    return SetFilePointer(desc->real_fd, lDistanceToMove, lpDistanceToMoveHigh, dwMoveMethod);
+}
+
 BOOL mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf)
 {
     if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
@@ -1783,6 +1801,24 @@ int mock_write(int fd, char *src, int len)
         // Socket write
         return mock_send(fd, src, len, 0);
     }
+}
+
+off_t mock_lseek(int fd, off_t offset, int whence)
+{
+    if (fd < 0 || fd >= MAX_DESCRIPTORS) {
+        errno = EBADF;  // Bad file descriptor
+        return -1;
+    }
+    int idx = fd;
+
+    Descriptor *desc = &current_process->desc[idx];
+    if (desc->type != DESC_FILE) {
+        errno = EBADF;  // Not a file descriptor
+        return -1;
+    }
+
+    // Forward to real lseek, errno is set by the real call
+    return lseek(desc->real_fd, offset, whence);
 }
 
 int mock_fstat(int fd, struct stat *buf)
