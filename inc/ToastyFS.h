@@ -29,40 +29,9 @@ typedef struct {
 // Macro to convert string literals to ToastyStrings
 #define TOASTY_STR(X) ((ToastyString) { (X), (int) sizeof(X)-1 })
 
-// Handle representing a pending operation
-typedef uint32_t ToastyHandle;
-
-// Invalid value for a ToastyHandle
-#define TOASTY_INVALID ((ToastyHandle) 0)
-
-typedef struct {
-    char name[128]; // TODO: Implement a proper name length
-    bool is_dir;
-} ToastyListingEntry;
-
-typedef struct {
-    int count;
-    ToastyListingEntry *items;
-} ToastyListing;
-
-typedef enum {
-    TOASTY_RESULT_EMPTY,
-    TOASTY_RESULT_CREATE_ERROR,
-    TOASTY_RESULT_CREATE_SUCCESS,
-    TOASTY_RESULT_DELETE_ERROR,
-    TOASTY_RESULT_DELETE_SUCCESS,
-    TOASTY_RESULT_LIST_ERROR,
-    TOASTY_RESULT_LIST_SUCCESS,
-    TOASTY_RESULT_READ_ERROR,
-    TOASTY_RESULT_READ_SUCCESS,
-    TOASTY_RESULT_WRITE_ERROR,
-    TOASTY_RESULT_WRITE_SUCCESS,
-} ToastyResultType;
-
-typedef struct {
-    ToastyResultType type;
-    ToastyListing    listing;
-} ToastyResult;
+//////////////////////////////////////////////////////////////////////////////////
+// PRIMARY
+//////////////////////////////////////////////////////////////////////////////////
 
 // Instanciate a ToastyFS client object. The "addr" and "port"
 // arguments refer to the address and port of the cluster's
@@ -90,6 +59,16 @@ int toasty_create_file(ToastyFS *toasty, ToastyString path,
 // Returns 0 on success, -1 on error.
 int toasty_delete(ToastyFS *toasty, ToastyString path);
 
+typedef struct {
+    char name[128]; // TODO: Implement a proper name length
+    bool is_dir;
+} ToastyListingEntry;
+
+typedef struct {
+    int count;
+    ToastyListingEntry *items;
+} ToastyListing;
+
 // Lists all files and directories within the given
 // path. Returns 0 and fills up the listing argument
 // on success, returns -1 on error. The listing is
@@ -116,6 +95,12 @@ int toasty_write(ToastyFS *toasty, ToastyString path, int off,
 //////////////////////////////////////////////////////////////////////////////////
 // ASYNCHRONOUS API
 //////////////////////////////////////////////////////////////////////////////////
+
+// Handle representing a pending operation
+typedef uint32_t ToastyHandle;
+
+// Invalid value for a ToastyHandle
+#define TOASTY_INVALID ((ToastyHandle) 0)
 
 // Begins a directory creation operation and returns
 // a handle to it. On error, TOASTY_INVALID is returned.
@@ -145,6 +130,25 @@ ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path,
 // buffer must be valid until the operation completes.
 ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path,
     int off, void *src, int len);
+
+typedef enum {
+    TOASTY_RESULT_EMPTY,
+    TOASTY_RESULT_CREATE_ERROR,
+    TOASTY_RESULT_CREATE_SUCCESS,
+    TOASTY_RESULT_DELETE_ERROR,
+    TOASTY_RESULT_DELETE_SUCCESS,
+    TOASTY_RESULT_LIST_ERROR,
+    TOASTY_RESULT_LIST_SUCCESS,
+    TOASTY_RESULT_READ_ERROR,
+    TOASTY_RESULT_READ_SUCCESS,
+    TOASTY_RESULT_WRITE_ERROR,
+    TOASTY_RESULT_WRITE_SUCCESS,
+} ToastyResultType;
+
+typedef struct {
+    ToastyResultType type;
+    ToastyListing    listing;
+} ToastyResult;
 
 // If the operation specified by "handle" is complete,
 // its result is stored in "result" and 0 is returned.
