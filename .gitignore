@@ -8,3 +8,5 @@ coverage_report/
 *.gcov
 *.gcda
 *.gcno
+*.wal
+*.tmp
