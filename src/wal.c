@@ -6,6 +6,7 @@
 #include "wal.h"
 #include "file_system.h"
 #include "file_tree.h"
+#include "system.h"
 
 #define WAL_MAGIC   0xcafebebe
 #define WAL_VERSION 1
@@ -158,6 +159,18 @@ static int swap_file(WAL *wal)
     file_unlock(wal->handle);
     file_close(wal->handle);
 
+    // On Unix, rename() atomically replaces the destination file.
+    // On Windows, rename() doesn't overwrite, so we need to delete first.
+#ifdef _WIN32
+    // Remove the old file before renaming on Windows
+    if (remove_file_or_dir(wal->file_path) < 0) {
+        file_unlock(temp_handle);
+        file_close(temp_handle);
+        remove_file_or_dir(temp_path);
+        return -1;
+    }
+#endif
+
     // Rename the temporary file to replace the old file
     if (rename_file_or_dir(temp_path, wal->file_path) < 0) {
         file_unlock(temp_handle);
@@ -208,9 +221,10 @@ static int read_u64(Handle handle, uint64_t *value)
 
 static int next_entry(Handle handle, WALEntry *entry)
 {
-    static char path_buffer[1<<10];
-    static SHA256 prev_hashes_buffer[1<<10];
-    static SHA256 next_hashes_buffer[1<<10];
+    // Initialize pointers to NULL for cleanup on error
+    entry->path.ptr = NULL;
+    entry->prev_hashes = NULL;
+    entry->next_hashes = NULL;
 
     uint8_t type;
     int ret = read_u8(handle, &type);
@@ -225,11 +239,15 @@ static int next_entry(Handle handle, WALEntry *entry)
     if (read_u16(handle, &path_len) <= 0)
         return -1;
 
-    if (path_len > sizeof(path_buffer))
+    // Dynamically allocate path buffer
+    char *path_buffer = sys_malloc(path_len);
+    if (!path_buffer)
         return -1;
 
-    if (read_exact(handle, path_buffer, path_len) <= 0)
+    if (read_exact(handle, path_buffer, path_len) <= 0) {
+        sys_free(path_buffer);
         return -1;
+    }
 
     entry->path.ptr = path_buffer;
     entry->path.len = path_len;
@@ -239,12 +257,12 @@ static int next_entry(Handle handle, WALEntry *entry)
         {
             uint8_t is_dir;
             if (read_u8(handle, &is_dir) <= 0)
-                return -1;
+                goto cleanup_error;
             entry->is_dir = is_dir;
 
             if (!is_dir) {
                 if (read_u64(handle, &entry->chunk_size) <= 0)
-                    return -1;
+                    goto cleanup_error;
             } else {
                 entry->chunk_size = 0;
             }
@@ -258,21 +276,36 @@ static int next_entry(Handle handle, WALEntry *entry)
     case WAL_ENTRY_WRITE:
         {
             if (read_u64(handle, &entry->offset) <= 0)
-                return -1;
+                goto cleanup_error;
             if (read_u64(handle, &entry->length) <= 0)
-                return -1;
+                goto cleanup_error;
             if (read_u32(handle, &entry->num_chunks) <= 0)
-                return -1;
+                goto cleanup_error;
             if (read_u32(handle, (uint32_t*) &entry->chunk_size) <= 0)
-                return -1;
+                goto cleanup_error;
 
-            if (entry->num_chunks > sizeof(prev_hashes_buffer) / sizeof(SHA256))
-                return -1;
+            // Dynamically allocate hash buffers
+            SHA256 *prev_hashes_buffer = sys_malloc(entry->num_chunks * sizeof(SHA256));
+            SHA256 *next_hashes_buffer = sys_malloc(entry->num_chunks * sizeof(SHA256));
 
-            if (read_exact(handle, (char*) prev_hashes_buffer, entry->num_chunks * sizeof(SHA256)) <= 0)
-                return -1;
-            if (read_exact(handle, (char*) next_hashes_buffer, entry->num_chunks * sizeof(SHA256)) <= 0)
-                return -1;
+            if (!prev_hashes_buffer || !next_hashes_buffer) {
+                if (prev_hashes_buffer)
+                    sys_free(prev_hashes_buffer);
+                if (next_hashes_buffer)
+                    sys_free(next_hashes_buffer);
+                goto cleanup_error;
+            }
+
+            if (read_exact(handle, (char*) prev_hashes_buffer, entry->num_chunks * sizeof(SHA256)) <= 0) {
+                sys_free(prev_hashes_buffer);
+                sys_free(next_hashes_buffer);
+                goto cleanup_error;
+            }
+            if (read_exact(handle, (char*) next_hashes_buffer, entry->num_chunks * sizeof(SHA256)) <= 0) {
+                sys_free(prev_hashes_buffer);
+                sys_free(next_hashes_buffer);
+                goto cleanup_error;
+            }
 
             entry->prev_hashes = prev_hashes_buffer;
             entry->next_hashes = next_hashes_buffer;
@@ -280,10 +313,19 @@ static int next_entry(Handle handle, WALEntry *entry)
         break;
 
     default:
-        return -1;
+        goto cleanup_error;
     }
 
     return 1;
+
+cleanup_error:
+    if (entry->path.ptr)
+        sys_free((char*) entry->path.ptr);
+    if (entry->prev_hashes)
+        sys_free(entry->prev_hashes);
+    if (entry->next_hashes)
+        sys_free(entry->next_hashes);
+    return -1;
 }
 
 int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
@@ -291,22 +333,30 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
     wal->entry_count = 0;
     wal->entry_limit = entry_limit;
     wal->file_tree = file_tree;
-    wal->file_path = file_path;
+    wal->file_path.ptr = NULL;
+
+    // Copy file_path since the passed string may not have the same lifetime as WAL
+    char *path_copy = sys_malloc(file_path.len);
+    if (!path_copy)
+        return -1;
+    memcpy(path_copy, file_path.ptr, file_path.len);
+    wal->file_path.ptr = path_copy;
+    wal->file_path.len = file_path.len;
 
     Handle handle;
     if (file_open(file_path, &handle) < 0)
-        return -1;
+        goto error_cleanup_path;
 
     if (file_lock(handle) < 0) {
         file_close(handle);
-        return -1;
+        goto error_cleanup_path;
     }
 
     // Check if the file is empty (newly created) and initialize it
     size_t size;
     if (file_size(handle, &size) < 0) {
         file_close(handle);
-        return -1;
+        goto error_cleanup_path;
     }
 
     if (size == 0) {
@@ -318,23 +368,23 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
 
         if (write_exact(handle, (char*) &header, sizeof(header)) < 0) {
             file_close(handle);
-            return -1;
+            goto error_cleanup_path;
         }
 
         if (write_snapshot(file_tree, handle) < 0) {
             file_close(handle);
-            return -1;
+            goto error_cleanup_path;
         }
 
         if (file_sync(handle) < 0) {
             file_close(handle);
-            return -1;
+            goto error_cleanup_path;
         }
 
         // Reset to beginning after initialization
         if (file_set_offset(handle, 0) < 0) {
             file_close(handle);
-            return -1;
+            goto error_cleanup_path;
         }
     }
 
@@ -345,7 +395,7 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
         int ret = file_read(handle, (char*) &header + copied, (int) sizeof(header) - copied);
         if (ret <= 0) {
             file_close(handle); // TODO: what happens if I close a file without unlocking it?
-            return -1;
+            goto error_cleanup_path;
         }
         copied += ret;
     }
@@ -353,11 +403,11 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
     // Validate header fields
     if (header.magic != WAL_MAGIC) {
         file_close(handle);
-        return -1;
+        goto error_cleanup_path;
     }
     if (header.version != WAL_VERSION) {
         file_close(handle);
-        return -1;
+        goto error_cleanup_path;
     }
 
     // The read_snapshot function may read more
@@ -368,23 +418,23 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
     int saved_offset;
     if (file_get_offset(handle, &saved_offset) < 0) {
         file_close(handle);
-        return -1;
+        goto error_cleanup_path;
     }
 
     int num = read_snapshot(file_tree, handle);
     if (num < 0) {
         file_close(handle);
-        return -1;
+        goto error_cleanup_path;
     }
 
     // Now restore the offset to the correct position.
     if (num > INT_MAX - saved_offset) {
         file_close(handle);
-        return -1;
+        goto error_cleanup_path;
     }
     if (file_set_offset(handle, saved_offset + num) < 0) {
         file_close(handle);
-        return -1;
+        goto error_cleanup_path;
     }
 
     WALEntry entry;
@@ -395,7 +445,7 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
             break;
         if (ret < 0) {
             file_close(handle);
-            return -1;
+            goto error_cleanup_path;
         }
         assert(ret == 1);
 
@@ -413,22 +463,37 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
             UNREACHABLE;
         }
 
+        // Free dynamically allocated fields from next_entry
+        if (entry.path.ptr)
+            sys_free((char*) entry.path.ptr);
+        if (entry.prev_hashes)
+            sys_free(entry.prev_hashes);
+        if (entry.next_hashes)
+            sys_free(entry.next_hashes);
+
         wal->entry_count++;
     }
 
     wal->handle = handle;
 
     if (wal->entry_count >= wal->entry_limit) {
-        if (swap_file(wal) < 0)
-            return -1;
+        if (swap_file(wal) < 0) {
+            goto error_cleanup_path;
+        }
     }
     return 0;
+
+error_cleanup_path:
+    sys_free(path_copy);
+    return -1;
 }
 
 void wal_close(WAL *wal)
 {
     file_unlock(wal->handle);
     file_close(wal->handle);
+    if (wal->file_path.ptr)
+        sys_free((char*) wal->file_path.ptr);
 }
 
 static int write_u8(Handle handle, uint8_t value)
