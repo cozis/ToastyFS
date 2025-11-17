@@ -209,3 +209,12 @@ Chunk Management:
     already cached that chunk list or not. If it didn't, the chunk server sends the entire list
     in chunks during state updates, with an increased
     update frequency.
+
+Metadata Persistence & Crash Recovery:
+    The metadata server uses a write-ahead log (WAL) file to store its state on disk.
+
+    Log files start with a full snapshot of the metadata and continues with operation
+    log entries.
+
+    When a file gets too big, the metadata server creates a new WAL file by writing
+    a snapshot to it and continuing logging there.
