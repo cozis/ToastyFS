@@ -12,3 +12,4 @@
 [ ] Implement metadata server WAL
 [ ] Add failt injections to the simulation
 [ ] Add authentication
+[ ] Add release build and allow switching between debug, release, coverage, sanitizer builds while calling make
