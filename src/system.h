@@ -73,6 +73,7 @@ int      mock__mkdir(char *path);
 HANDLE   mock_FindFirstFileA(char *lpFileName, WIN32_FIND_DATAA *lpFindFileData);
 BOOL     mock_FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA *lpFindFileData);
 BOOL     mock_FindClose(HANDLE hFindFile);
+BOOL     mock_MoveFileExW(WCHAR *lpExistingFileName, WCHAR *lpNewFileName, DWORD dwFlags);
 #else
 int     mock_clock_gettime(clockid_t clockid, struct timespec *tp);
 int     mock_open(char *path, int flags, int mode);
@@ -124,6 +125,7 @@ int     mock_closedir(DIR *dirp);
 #define sys_FindFirstFileA   mock_FindFirstFileA
 #define sys_FindNextFileA    mock_FindNextFileA
 #define sys_FindClose        mock_FindClose
+#define sys_MoveFileExW      mock_MoveFileExW
 
 // Linux
 #define sys_mkdir            mock_mkdir
@@ -178,6 +180,7 @@ int     mock_closedir(DIR *dirp);
 #define sys_FindFirstFileA   FindFirstFileA
 #define sys_FindNextFileA    FindNextFileA
 #define sys_FindClose        FindClose
+#define sys_MoveFileExW      MoveFileExW
 
 // Linux
 #define sys_mkdir            mkdir
