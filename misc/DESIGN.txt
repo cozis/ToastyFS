@@ -218,3 +218,26 @@ Metadata Persistence & Crash Recovery:
 
     When a file gets too big, the metadata server creates a new WAL file by writing
     a snapshot to it and continuing logging there.
+
+Security:
+    All nodes are assumed to share a single secret. The secret is used once to
+    register the public key of each node. When nodes connect to each other, they
+    communicate using ephimeral key pairs leveraging the previously registered
+    public keys.
+
+    TODO: Thread Model?
+
+    First, the metadata server is ran with "--secret <file>" where the file contains
+    the secret.
+
+    Then, chunk servers are ran with "--secret <file>" where the file contains the
+    same secret. The chunk servers then generate a key pair and send a registration
+    request for the public key to the metadata server using the shared secret. If
+    registration succedes, the pair is stored in "keys.pem". If the keys.pem file
+    is generate, the user can delete the secret file.
+
+    Once all chunk servers registered their public keys, the user can delete the
+    secret file from the metadata server's machine. This will disable its ability
+    to register new public keys.
+
+    Deleting the secret files is optional, but advised.
