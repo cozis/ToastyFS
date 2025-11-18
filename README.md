@@ -8,11 +8,12 @@ int main(void)
 {
     ToastyString addr = TOASTY_STR("127.0.0.1");
     int          port = 8080;
-    ToastyString file = TOASTY_STR("/my_file.txt");
     
     // Connect to cluster
     ToastyFS *toasty = toasty_connect(addr, port);
     
+    ToastyString file = TOASTY_STR("/my_file.txt");
+
     // Create and write to a file
     toasty_create_file(toasty, file, 4096);
     toasty_write(toasty, file, 0, "Hello!", 6);
