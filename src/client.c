@@ -2235,6 +2235,7 @@ int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *resu
         if (ret < 0)
             return -1;
 
+        // TODO: Detect when this returns WAKEUP
         num_polled = toasty_process_events(toasty, contexts, polled, num_polled);
         if (num_polled < 0)
             return -1;
