@@ -1,14 +1,18 @@
-#include "basic.h"
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #define POLL WSAPoll
+typedef CRITICAL_SECTION Mutex;
 #else
+#include <pthread.h>
 #include <arpa/inet.h>
 #define POLL poll
+typedef pthread_mutex_t Mutex;
 #endif
 
 #include "tcp.h"
@@ -160,6 +164,7 @@ typedef struct {
 struct ToastyFS {
 
     TCP tcp;
+    Mutex mutex;
 
     MetadataServer metadata_server;
 
@@ -169,6 +174,54 @@ struct ToastyFS {
     int num_operations;
     Operation operations[MAX_OPERATIONS];
 };
+
+static int mutex_init(Mutex *mutex)
+{
+#ifdef _WIN32
+    InitializeCriticalSection(mutex); // TODO: mock?
+    return 0;
+#else
+    if (pthread_mutex_init(mutex, NULL)) // TODO: mock
+        return -1;
+    return 0;
+#endif
+}
+
+static int mutex_free(Mutex *mutex)
+{
+#ifdef _WIN32
+    DeleteCriticalSection(mutex); // TODO: mock?
+    return 0;
+#else
+    if (pthread_mutex_destroy(mutex)) // TODO: mock
+        return -1;
+    return 0;
+#endif
+}
+
+static int mutex_lock(Mutex *mutex)
+{
+#ifdef _WIN32
+    EnterCriticalSection(mutex); // TODO: mock?
+    return 0;
+#else
+    if (pthread_mutex_lock(mutex)) // TODO: mock
+        return -1;
+    return 0;
+#endif
+}
+
+static int mutex_unlock(Mutex *mutex)
+{
+#ifdef _WIN32
+    LeaveCriticalSection(mutex); // TODO: mock?
+    return 0;
+#else
+    if (pthread_mutex_unlock(mutex)) // TODO: mock
+        return -1;
+    return 0;
+#endif
+}
 
 static void request_queue_init(RequestQueue *reqs)
 {
@@ -281,10 +334,20 @@ ToastyFS *toasty_connect(ToastyString addr, uint16_t port)
         }
     }
 
-    tcp_context_init(&toasty->tcp);
+    if (mutex_init(&toasty->mutex) < 0) {
+        sys_free(toasty);
+        return NULL;
+    }
+
+    if (tcp_context_init(&toasty->tcp) < 0) {
+        mutex_free(&toasty->mutex);
+        sys_free(toasty);
+        return NULL;
+    }
 
     if (tcp_connect(&toasty->tcp, addr2, TAG_METADATA_SERVER, NULL) < 0) {
         tcp_context_free(&toasty->tcp);
+        mutex_free(&toasty->mutex);
         sys_free(toasty);
         return NULL;
     }
@@ -308,6 +371,21 @@ ToastyFS *toasty_connect(ToastyString addr, uint16_t port)
     }
 
     return toasty;
+}
+
+int toasty_wakeup(ToastyFS *toasty)
+{
+    if (mutex_lock(&toasty->mutex) < 0)
+        return -1;
+
+    int ret;
+    if (tcp_wakeup(&toasty->tcp) < 0)
+        ret = -1;
+
+    if (mutex_unlock(&toasty->mutex) < 0)
+        return -1;
+
+    return ret;
 }
 
 static void
@@ -346,6 +424,7 @@ metadata_server_request_end(ToastyFS *toasty, MessageWriter *writer, int opidx, 
 void toasty_disconnect(ToastyFS *toasty)
 {
     tcp_context_free(&toasty->tcp);
+    mutex_free(&toasty->mutex);
     sys_free(toasty);
 }
 
@@ -449,31 +528,38 @@ static int send_download_chunk(ToastyFS *toasty, int chunk_server_idx,
 static ToastyHandle begin_create(ToastyFS *toasty,
     ToastyString path, bool is_dir, uint32_t chunk_size)
 {
+    int opidx = -1;
+    ToastyHandle handle = TOASTY_INVALID;
+
+    if (mutex_lock(&toasty->mutex) < 0)
+        return TOASTY_INVALID;
+
     OperationType type = OPERATION_TYPE_CREATE;
 
-    int opidx = alloc_operation(toasty, type, 0, NULL, 0);
+    opidx = alloc_operation(toasty, type, 0, NULL, 0);
     if (opidx < 0)
-        return TOASTY_INVALID;
+        goto unlock_and_exit;
+
+    if (path.len > UINT16_MAX) {
+        free_operation(toasty, opidx);
+        opidx = -1;
+        goto unlock_and_exit;
+    }
+    uint16_t tmp = path.len;
+    uint8_t tmp_u8 = is_dir;
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_CREATE);
 
-    if (path.len > UINT16_MAX) {
-        free_operation(toasty, opidx);
-        return TOASTY_INVALID;
-    }
-    uint16_t tmp = path.len;
     message_write(&writer, &tmp, sizeof(tmp));
-
     message_write(&writer, path.ptr, path.len);
-
-    uint8_t tmp_u8 = is_dir;
     message_write(&writer, &tmp_u8, sizeof(tmp_u8));
 
     if (!is_dir) {
         if (chunk_size == 0 || chunk_size > UINT32_MAX) {
             free_operation(toasty, opidx);
-            return TOASTY_INVALID;
+            opidx = -1;
+            goto unlock_and_exit;
         }
         uint32_t tmp_u32 = chunk_size;
         message_write(&writer, &tmp_u32, sizeof(tmp_u32));
@@ -481,10 +567,19 @@ static ToastyHandle begin_create(ToastyFS *toasty,
 
     if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
         free_operation(toasty, opidx);
-        return TOASTY_INVALID;
+        opidx = -1;
+        goto unlock_and_exit;
     }
 
-    return operation_to_handle(toasty, opidx);
+    handle = operation_to_handle(toasty, opidx);
+
+unlock_and_exit:
+    if (mutex_unlock(&toasty->mutex) < 0) {
+        if (opidx > -1)
+            free_operation(toasty, opidx);
+        return TOASTY_INVALID;
+    }
+    return handle;
 }
 
 ToastyHandle toasty_begin_create_dir(ToastyFS *toasty, ToastyString path)
@@ -500,15 +595,22 @@ ToastyHandle toasty_begin_create_file(ToastyFS *toasty, ToastyString path,
 
 ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path)
 {
+    int opidx = -1;
+    ToastyHandle handle = TOASTY_INVALID;
+
+    if (mutex_lock(&toasty->mutex) < 0)
+        return TOASTY_INVALID;
+
     OperationType type = OPERATION_TYPE_DELETE;
 
-    int opidx = alloc_operation(toasty, type, 0, NULL, 0);
+    opidx = alloc_operation(toasty, type, 0, NULL, 0);
     if (opidx < 0)
-        return TOASTY_INVALID;
+        goto unlock_and_exit;
 
     if (path.len > UINT16_MAX) {
         free_operation(toasty, opidx);
-        return TOASTY_INVALID;
+        opidx = -1;
+        goto unlock_and_exit;
     }
     uint16_t tmp = path.len;
 
@@ -518,38 +620,61 @@ ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path)
     message_write(&writer, path.ptr, path.len);
     if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
         free_operation(toasty, opidx);
-        return TOASTY_INVALID;
+        opidx = -1;
+        goto unlock_and_exit;
     }
 
-    return operation_to_handle(toasty, opidx);
+    handle = operation_to_handle(toasty, opidx);
+
+unlock_and_exit:
+    if (mutex_unlock(&toasty->mutex) < 0) {
+        if (opidx > -1)
+            free_operation(toasty, opidx);
+        return TOASTY_INVALID;
+    }
+    return handle;
 }
 
 ToastyHandle toasty_begin_list(ToastyFS *toasty, ToastyString path)
 {
+    int opidx = -1;
+    ToastyHandle handle = TOASTY_INVALID;
+
+    if (mutex_lock(&toasty->mutex) < 0)
+        return TOASTY_INVALID;
+
     OperationType type = OPERATION_TYPE_LIST;
 
-    int opidx = alloc_operation(toasty, type, 0, NULL, 0);
+    opidx = alloc_operation(toasty, type, 0, NULL, 0);
     if (opidx < 0)
-        return TOASTY_INVALID;
+        goto unlock_and_exit;
 
     if (path.len > UINT16_MAX) {
         free_operation(toasty, opidx);
-        return TOASTY_INVALID;
+        opidx = -1;
+        goto unlock_and_exit;
     }
     uint16_t tmp = path.len;
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_LIST);
-
     message_write(&writer, &tmp, sizeof(tmp));
     message_write(&writer, path.ptr, path.len);
-
     if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
         free_operation(toasty, opidx);
-        return TOASTY_INVALID;
+        opidx = -1;
+        goto unlock_and_exit;
     }
 
-    return operation_to_handle(toasty, opidx);
+    handle = operation_to_handle(toasty, opidx);
+
+unlock_and_exit:
+    if (mutex_unlock(&toasty->mutex) < 0) {
+        if (opidx > -1)
+            free_operation(toasty, opidx);
+        return TOASTY_INVALID;
+    }
+    return handle;
 }
 
 static int send_read_message(ToastyFS *toasty, int opidx, int tag, ToastyString path, uint32_t offset, uint32_t length)
@@ -571,36 +696,66 @@ static int send_read_message(ToastyFS *toasty, int opidx, int tag, ToastyString 
 
 ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path, int off, void *dst, int len)
 {
+    int opidx = -1;
+    ToastyHandle handle = TOASTY_INVALID;
+
+    if (mutex_lock(&toasty->mutex) < 0)
+        goto unlock_and_exit;
+
     OperationType type = OPERATION_TYPE_READ;
 
-    int opidx = alloc_operation(toasty, type, off, dst, len);
+    opidx = alloc_operation(toasty, type, off, dst, len);
     if (opidx < 0)
-        return TOASTY_INVALID;
+        goto unlock_and_exit;
 
     if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_READ, path, off, len) < 0) {
         free_operation(toasty, opidx);
-        return TOASTY_INVALID;
+        opidx = -1;
+        goto unlock_and_exit;
     }
 
-    return operation_to_handle(toasty, opidx);
+    handle = operation_to_handle(toasty, opidx);
+
+unlock_and_exit:
+    if (mutex_unlock(&toasty->mutex) < 0) {
+        if (opidx > -1)
+            free_operation(toasty, opidx);
+        return TOASTY_INVALID;
+    }
+    return handle;
 }
 
 ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path, int off, void *src, int len)
 {
+    int opidx = -1;
+    ToastyHandle handle = TOASTY_INVALID;
+
+    if (mutex_lock(&toasty->mutex) < 0)
+        goto unlock_and_exit;
+
     OperationType type = OPERATION_TYPE_WRITE;
 
-    int opidx = alloc_operation(toasty, type, off, src, len);
+    opidx = alloc_operation(toasty, type, off, src, len);
     if (opidx < 0)
-        return TOASTY_INVALID;
+        goto unlock_and_exit;
 
     toasty->operations[opidx].path = path; // TODO: must be a copy
 
     if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, path, off, len) < 0) {
         free_operation(toasty, opidx);
-        return TOASTY_INVALID;
+        opidx = -1;
+        goto unlock_and_exit;
     }
 
-    return operation_to_handle(toasty, opidx);
+    handle = operation_to_handle(toasty, opidx);
+
+unlock_and_exit:
+    if (mutex_unlock(&toasty->mutex) < 0) {
+        if (opidx > -1)
+            free_operation(toasty, opidx);
+        return TOASTY_INVALID;
+    }
+    return handle;
 }
 
 void toasty_free_result(ToastyResult *result)
@@ -1862,13 +2017,22 @@ translate_operation_into_result(ToastyFS *toasty, int opidx, ToastyResult *resul
 
 int toasty_get_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *result)
 {
+    int ret;
+
+    if (mutex_lock(&toasty->mutex) < 0) {
+        ret = -1;
+        goto unlock_and_exit;
+    }
+
     int opidx;
     if (handle == TOASTY_INVALID)
         opidx = -1;
     else {
         opidx = handle_to_operation(toasty, handle);
-        if (opidx < 0)
-            return -1;
+        if (opidx < 0) {
+            ret = -1;
+            goto unlock_and_exit;
+        }
     }
 
     if (opidx < 0) {
@@ -1878,19 +2042,30 @@ int toasty_get_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *resul
                 continue;
             j++;
 
-            if (translate_operation_into_result(toasty, i, result))
-                return 0;
+            if (translate_operation_into_result(toasty, i, result)) {
+                ret = 0;
+                goto unlock_and_exit;
+            }
         }
     } else {
-        if (translate_operation_into_result(toasty, opidx, result))
-            return 0;
+        if (translate_operation_into_result(toasty, opidx, result)) {
+            ret = 0;
+            goto unlock_and_exit;
+        }
     }
 
-    return 1;
+    ret = 1;
+unlock_and_exit:
+    if (mutex_unlock(&toasty->mutex) < 0)
+        return -1;
+    return ret;
 }
 
 int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *polled, int num_polled)
 {
+    if (mutex_lock(&toasty->mutex) < 0)
+        return -1;
+
     int num_events;
     Event events[MAX_CONNS+1];
 
@@ -1898,6 +2073,10 @@ int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *poll
     for (int i = 0; i < num_events; i++) {
         int conn_idx = events[i].conn_idx;
         switch (events[i].type) {
+
+            case EVENT_WAKEUP:
+            // Do nothing
+            break;
 
             case EVENT_CONNECT:
             {
@@ -2003,7 +2182,12 @@ int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *poll
         }
     }
 
-    return tcp_register_events(&toasty->tcp, contexts, polled);
+    int ret = tcp_register_events(&toasty->tcp, contexts, polled);
+
+    if (mutex_unlock(&toasty->mutex) < 0)
+        return -1;
+
+    return ret;
 }
 
 int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *result, int timeout)

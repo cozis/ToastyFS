@@ -1001,7 +1001,8 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
     for (int i = 0; i < MAX_CHUNK_SERVERS; i++)
         state->chunk_servers[i].used = false;
 
-    tcp_context_init(&state->tcp);
+    if (tcp_context_init(&state->tcp) < 0)
+        return -1;
 
     int ret = tcp_listen(&state->tcp, addr, port);
     if (ret < 0) {
@@ -1049,6 +1050,10 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
     for (int i = 0; i < num_events; i++) {
         int conn_idx = events[i].conn_idx;
         switch (events[i].type) {
+
+            case EVENT_WAKEUP:
+            // Do nothing
+            break;
 
             case EVENT_CONNECT:
             tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_UNKNOWN, false);

@@ -15,6 +15,7 @@
 #define MAX_CONNS 512
 
 typedef enum {
+    EVENT_WAKEUP,
     EVENT_MESSAGE,
     EVENT_CONNECT,
     EVENT_DISCONNECT,
@@ -38,13 +39,16 @@ typedef struct {
 
 typedef struct {
     SOCKET listen_fd;
+    SOCKET wait_fd;
+    SOCKET signal_fd;
     int    num_conns;
     Connection conns[MAX_CONNS];
 } TCP;
 
 bool addr_eql(Address a, Address b);
-void tcp_context_init(TCP *tcp);
+int  tcp_context_init(TCP *tcp);
 void tcp_context_free(TCP *tcp);
+int  tcp_wakeup(TCP *tcp);
 int  tcp_index_from_tag(TCP *tcp, int tag);
 int  tcp_listen(TCP *tcp, string addr, uint16_t port);
 int  tcp_next_message(TCP *tcp, int conn_idx, ByteView *msg, uint16_t *type);

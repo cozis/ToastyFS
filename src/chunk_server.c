@@ -834,7 +834,8 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     state->trace = trace;
     state->reconnect_delay = 1; // 1 second
 
-    tcp_context_init(&state->tcp);
+    if (tcp_context_init(&state->tcp) < 0)
+        return -1;
 
     int ret = tcp_listen(&state->tcp, addr, port);
     if (ret < 0) {
@@ -928,6 +929,10 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
     for (int i = 0; i < num_events; i++) {
         int conn_idx = events[i].conn_idx;
         switch (events[i].type) {
+
+            case EVENT_WAKEUP:
+            // Do nothing
+            break;
 
             case EVENT_CONNECT:
             if (tcp_get_tag(&state->tcp, conn_idx) == TAG_METADATA_SERVER) {

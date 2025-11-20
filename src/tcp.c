@@ -86,6 +86,65 @@ static SOCKET create_listen_socket(string addr, uint16_t port)
     return fd;
 }
 
+static int create_socket_pair(SOCKET *a, SOCKET *b)
+{
+#ifdef _WIN32
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET)
+        return -1;
+
+    // Bind to loopback address with port 0 (dynamic port assignment)
+    struct sockaddr_in addr;
+    int addr_len = sizeof(addr);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1
+    addr.sin_port = 0; // Let system choose port
+
+    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        closesocket(sock);
+        return -1;
+    }
+
+    if (getsockname(sock, (struct sockaddr*)&addr, &addr_len) == SOCKET_ERROR) {
+        closesocket(sock);
+        return -1;
+    }
+
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        closesocket(sock);
+        return -1;
+    }
+
+    *a = sock;
+    *b = sock;
+
+    // Optional: Set socket to non-blocking mode
+    // This prevents send() from blocking if the receive buffer is full
+    u_long mode = 1;
+    ioctlsocket(sock, FIONBIO, &mode); // TODO: does this fail?
+    return 0;
+#else
+    int fds[2];
+    if (pipe(fds) < 0)
+        return -1;
+    *a = fds[0];
+    *b = fds[1];
+    return 0;
+#endif
+}
+
+static void close_socket_pair(SOCKET a, SOCKET b)
+{
+#ifdef _WIN32
+    closesocket(a);
+    (void) b;
+#else
+    close(a);
+    close(b);
+#endif
+}
+
 static void conn_init(Connection *conn, SOCKET fd, bool connecting)
 {
     conn->fd = fd;
@@ -122,10 +181,15 @@ static int conn_events(Connection *conn)
     return events;
 }
 
-void tcp_context_init(TCP *tcp)
+int tcp_context_init(TCP *tcp)
 {
     tcp->listen_fd = INVALID_SOCKET;
     tcp->num_conns = 0;
+
+    if (create_socket_pair(&tcp->wait_fd, &tcp->signal_fd) < 0)
+        return -1;
+
+    return 0;
 }
 
 void tcp_context_free(TCP *tcp)
@@ -140,6 +204,14 @@ void tcp_context_free(TCP *tcp)
 
     if (tcp->listen_fd != INVALID_SOCKET)
         CLOSE_SOCKET(tcp->listen_fd);
+
+    close_socket_pair(tcp->wait_fd, tcp->signal_fd);
+}
+
+int tcp_wakeup(TCP *tcp)
+{
+    send(tcp->signal_fd, "0", 1, 0); // TODO: Handle error
+    return 0;
 }
 
 int tcp_index_from_tag(TCP *tcp, int tag)
@@ -199,6 +271,15 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
 {
     int num_polled = 0;
 
+    // TODO: Check that there is enough capacity in the polled array.
+    //       At the moment only MAX_CONNS plus 1 for the listener are
+    //       allowed.
+    polled[num_polled].fd = tcp->wait_fd;
+    polled[num_polled].events = POLLIN;
+    polled[num_polled].revents = 0;
+    contexts[num_polled] = NULL;
+    num_polled++;
+
     if (tcp->listen_fd != INVALID_SOCKET && tcp->num_conns < MAX_CONNS) {
         polled[num_polled].fd = tcp->listen_fd;
         polled[num_polled].events = POLLIN;
@@ -222,14 +303,21 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
 }
 
 // The "events" array must be an array of capacity MAX_CONNS+1
+// TODO: Actually, it should have capacity MAX_CONNS+2
 int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd *polled, int num_polled)
 {
     bool removed[MAX_CONNS+1];
 
     int num_events = 0;
-    for (int i = 0; i < num_polled; i++) {
+    for (int i = 1; i < num_polled; i++) {
 
-        if (polled[i].fd == tcp->listen_fd) {
+        if (polled[i].fd == tcp->wait_fd) {
+
+            char buf[100];
+            recv(tcp->wait_fd, buf, sizeof(buf), 0); // TODO: Make sure all bytes are consumed
+            events[num_events++] = (Event) { EVENT_WAKEUP, -1, -1 };
+
+        } else if (polled[i].fd == tcp->listen_fd) {
 
             assert(contexts[i] == NULL);
 

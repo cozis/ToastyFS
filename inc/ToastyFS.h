@@ -41,6 +41,11 @@ ToastyFS *toasty_connect(ToastyString addr, uint16_t port);
 // Release all resources associated to this client
 void toasty_disconnect(ToastyFS *toasty);
 
+// Threads can call this function to wake up a thread blocked
+// inside "toasty_wait_result".
+// Return 0 on success, -1 on error.
+int toasty_wakeup(ToastyFS *toasty);
+
 //////////////////////////////////////////////////////////////////////////////////
 // BLOCKING API
 //////////////////////////////////////////////////////////////////////////////////

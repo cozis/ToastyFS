@@ -22,3 +22,4 @@
 [ ] Check write() errors when appending WAL entries
 [ ] When WAL entries are partially written, remove partial data and fail
 [ ] Find a way to ensure listing operations of large directories are handled
+[ ] What happens if a client adds a chunk such that the hash already exists in the system? The client doesn't know it exists already. Will this lead to over-replication?
