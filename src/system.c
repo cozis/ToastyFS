@@ -343,8 +343,8 @@ int spawn_simulated_process(char *args)
         process->desc[i].generation = 0;
     }
 
-    void *contexts[MAX_CONNS+1];
-    struct pollfd polled[MAX_CONNS+1];
+    void *contexts[TCP_POLL_CAPACITY];
+    struct pollfd polled[TCP_POLL_CAPACITY];
     int num_polled;
     int timeout = -1;
 
@@ -711,8 +711,8 @@ void update_simulation(void)
 
             current_process = processes[i];
 
-            void *contexts[MAX_CONNS+1];
-            struct pollfd polled[MAX_CONNS+1];
+            void *contexts[TCP_POLL_CAPACITY];
+            struct pollfd polled[TCP_POLL_CAPACITY];
             int num_polled = setup_poll_array(contexts, polled);
 
             if (num_polled > 0) {
@@ -787,8 +787,8 @@ void update_simulation(void)
 
     current_process = next_process;
 
-    void *contexts[MAX_CONNS+1];
-    struct pollfd polled[MAX_CONNS+1];
+    void *contexts[TCP_POLL_CAPACITY];
+    struct pollfd polled[TCP_POLL_CAPACITY];
     int num_polled = setup_poll_array(contexts, polled);
 
     int timeout = -1;

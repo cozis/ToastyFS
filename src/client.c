@@ -2061,13 +2061,15 @@ unlock_and_exit:
     return ret;
 }
 
+_Static_assert(TCP_POLL_CAPACITY == TOASTY_POLL_CAPACITY);
+
 int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *polled, int num_polled)
 {
     if (mutex_lock(&toasty->mutex) < 0)
         return -1;
 
     int num_events;
-    Event events[MAX_CONNS+1];
+    Event events[TCP_EVENT_CAPACITY];
 
     num_events = tcp_translate_events(&toasty->tcp, events, contexts, polled, num_polled);
     for (int i = 0; i < num_events; i++) {
@@ -2199,8 +2201,8 @@ int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *resu
             return -1;
     }
 
-    void *contexts[MAX_CONNS+1];
-    struct pollfd polled[MAX_CONNS+1];
+    void *contexts[TCP_POLL_CAPACITY];
+    struct pollfd polled[TCP_POLL_CAPACITY];
     int num_polled;
 
     num_polled = toasty_process_events(toasty, contexts, polled, 0);

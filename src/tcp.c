@@ -271,16 +271,13 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
 {
     int num_polled = 0;
 
-    // TODO: Check that there is enough capacity in the polled array.
-    //       At the moment only MAX_CONNS plus 1 for the listener are
-    //       allowed.
     polled[num_polled].fd = tcp->wait_fd;
     polled[num_polled].events = POLLIN;
     polled[num_polled].revents = 0;
     contexts[num_polled] = NULL;
     num_polled++;
 
-    if (tcp->listen_fd != INVALID_SOCKET && tcp->num_conns < MAX_CONNS) {
+    if (tcp->listen_fd != INVALID_SOCKET && tcp->num_conns < TCP_CONNECTION_LIMIT) {
         polled[num_polled].fd = tcp->listen_fd;
         polled[num_polled].events = POLLIN;
         polled[num_polled].revents = 0;
@@ -302,11 +299,11 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
     return num_polled;
 }
 
-// The "events" array must be an array of capacity MAX_CONNS+1
-// TODO: Actually, it should have capacity MAX_CONNS+2
+// The "events" array must be an array of capacity TCP_EVENT_CAPACITY,
+// while "contexts" and "polled" must have capacity TCP_POLL_CAPACITY.
 int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd *polled, int num_polled)
 {
-    bool removed[MAX_CONNS+1];
+    bool removed[TCP_CONNECTION_LIMIT+1];
 
     int num_events = 0;
     for (int i = 1; i < num_polled; i++) {
@@ -431,7 +428,7 @@ ByteQueue *tcp_output_buffer(TCP *tcp, int conn_idx)
 
 int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
 {
-    if (tcp->num_conns == MAX_CONNS)
+    if (tcp->num_conns == TCP_CONNECTION_LIMIT)
         return -1;
     int conn_idx = tcp->num_conns;
 

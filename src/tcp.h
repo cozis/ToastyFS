@@ -12,7 +12,23 @@
 #define CLOSE_SOCKET sys_close
 #endif
 
-#define MAX_CONNS 512
+#ifndef TCP_CONNECTION_LIMIT
+// Maximum number of connections that can be managed
+// simultaneously.
+#define TCP_CONNECTION_LIMIT 512
+#endif
+
+// This is the maximum number of descriptors that the
+// TCP system will want to wait at any given time.
+// One descriptor per connection plus a listener socket
+// and a self-pipe handle for wakeup.
+#define TCP_POLL_CAPACITY (TCP_CONNECTION_LIMIT+2)
+
+// Number of TCP events that can be returned at a given
+// time by "tcp_translate_events". There may be a single
+// event per connection (MESSAGE, CONNECT, DISCONNECT)
+// plus a general WAKEUP event.
+#define TCP_EVENT_CAPACITY (TCP_CONNECTION_LIMIT+1)
 
 typedef enum {
     EVENT_WAKEUP,
@@ -42,7 +58,7 @@ typedef struct {
     SOCKET wait_fd;
     SOCKET signal_fd;
     int    num_conns;
-    Connection conns[MAX_CONNS];
+    Connection conns[TCP_CONNECTION_LIMIT];
 } TCP;
 
 bool addr_eql(Address a, Address b);

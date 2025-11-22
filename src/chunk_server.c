@@ -919,7 +919,7 @@ int chunk_server_free(ChunkServer *state)
 
 int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout)
 {
-    Event events[MAX_CONNS+1];
+    Event events[TCP_EVENT_CAPACITY];
     int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
 
     Time current_time = get_current_time();

@@ -1040,7 +1040,7 @@ int metadata_server_free(MetadataServer *state)
 
 int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout)
 {
-    Event events[MAX_CONNS+1];
+    Event events[TCP_EVENT_CAPACITY];
     int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
 
     Time current_time = get_current_time();

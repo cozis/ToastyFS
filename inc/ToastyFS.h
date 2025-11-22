@@ -188,8 +188,9 @@ void toasty_free_result(ToastyResult *result);
 // OTHER
 //////////////////////////////////////////////////////////////////////////////////
 
-// This is a hook for the simulation testing framework.
-// You shouldn't need to use this.
+#define TOASTY_POLL_CAPACITY 514
+
+// TODO: comment
 int toasty_process_events(ToastyFS *toasty, void **contexts,
     struct pollfd *polled, int num_polled);
 

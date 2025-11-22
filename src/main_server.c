@@ -15,8 +15,8 @@
 
 int metadata_server_main(int argc, char **argv)
 {
-    void *contexts[MAX_CONNS+1];
-    struct pollfd polled[MAX_CONNS+1];
+    void *contexts[TCP_POLL_CAPACITY];
+    struct pollfd polled[TCP_POLL_CAPACITY];
     int num_polled;
     int timeout = -1;
     MetadataServer state;
@@ -37,8 +37,8 @@ int metadata_server_main(int argc, char **argv)
 
 int chunk_server_main(int argc, char **argv)
 {
-    void *contexts[MAX_CONNS+1];
-    struct pollfd polled[MAX_CONNS+1];
+    void *contexts[TCP_POLL_CAPACITY];
+    struct pollfd polled[TCP_POLL_CAPACITY];
     int num_polled;
     int timeout = -1;
     ChunkServer state;

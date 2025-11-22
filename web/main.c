@@ -84,9 +84,6 @@ int main(void)
 
     for (;;) {
 
-        #define HTTP_SERVER_POLL_CAPACITY (HTTP_SERVER_CAPACITY+3)
-        #define TOASTY_POLL_CAPACITY (MAX_CONNS+1)
-
         #define POLL_CAPACITY (HTTP_SERVER_POLL_CAPACITY + TOASTY_POLL_CAPACITY)
 
         EventRegister reg;
