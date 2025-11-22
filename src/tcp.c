@@ -303,7 +303,7 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
 // while "contexts" and "polled" must have capacity TCP_POLL_CAPACITY.
 int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd *polled, int num_polled)
 {
-    bool removed[TCP_CONNECTION_LIMIT+1];
+    bool removed[TCP_POLL_CAPACITY];
 
     int num_events = 0;
     for (int i = 1; i < num_polled; i++) {
@@ -409,7 +409,7 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
         }
     }
 
-    for (int i = 0; i < num_polled; i++) {
+    for (int i = 1; i < num_polled; i++) {
         if (removed[i]) {
             Connection *conn = contexts[i];
             assert(conn);
