@@ -57,13 +57,71 @@ static int find_unused_struct(ProxiedOperation *arr, int num)
     return i;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     ToastyString upstream_addr = TOASTY_STR("127.0.0.1");
     uint16_t     upstream_port = 9000;
 
     HTTP_String  local_addr = HTTP_STR("127.0.0.1");
     uint16_t     local_port = 8080;
+
+    for (int i = 1; i < argc; i++) {
+
+        if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+            printf("TODO: print help\n");
+            return 0;
+        }
+
+        if (!strcmp(argv[i], "--upstream-addr")) {
+
+            i++;
+            if (i == argc) {
+                fprintf(stderr, "Error: Missing value after %s\n", argv[i-1]);
+                return -1;
+            }
+            upstream_addr = (ToastyString) { argv[i], strlen(argv[i]) };
+
+        } else if (!strcmp(argv[i], "--upstream-port")) {
+
+            i++;
+            if (i == argc) {
+                fprintf(stderr, "Error: Missing value after %s\n", argv[i-1]);
+                return -1;
+            }
+            int tmp = atoi(argv[i]);
+            if (tmp < 1 || tmp > UINT16_MAX) {
+                fprintf(stderr, "Error: Invalid port %s\n", argv[i]);
+                return -1;
+            }
+            upstream_port = (uint16_t) tmp;
+
+        } else if (!strcmp(argv[i], "--local-addr")) {
+
+            i++;
+            if (i == argc) {
+                fprintf(stderr, "Error: Missing value after %s\n", argv[i-1]);
+                return -1;
+            }
+            local_addr = (HTTP_String) { argv[i], strlen(argv[i]) };
+
+        } else if (!strcmp(argv[i], "--local-port")) {
+
+            i++;
+            if (i == argc) {
+                fprintf(stderr, "Error: Missing value after %s\n", argv[i-1]);
+                return -1;
+            }
+            int tmp = atoi(argv[i]);
+            if (tmp < 1 || tmp > UINT16_MAX) {
+                fprintf(stderr, "Error: Invalid port %s\n", argv[i]);
+                return -1;
+            }
+            upstream_port = (uint16_t) tmp;
+        } else {
+            fprintf(stderr, "Error: Invalid option %s\n", argv[i]);
+            return -1;
+        }
+    }
 
     ToastyFS *toasty = toasty_connect(upstream_addr, upstream_port);
     if (toasty == NULL) {
