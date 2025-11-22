@@ -116,6 +116,7 @@ typedef struct {
     int ranges_head;
     int ranges_count;
     int num_pending;
+    int actual_bytes; // For reads: actual number of bytes that can be read
 
     // Write fields
     SHA256 *hashes;
@@ -1006,12 +1007,22 @@ static void process_event_for_read(ToastyFS *toasty,
             return;
         }
 
+        // Read actual bytes that can be read
+        uint32_t actual_bytes;
+        if (!binary_read(&reader, &actual_bytes, sizeof(actual_bytes))) {
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
+            return;
+        }
+
+        // Store actual_bytes for later use
+        toasty->operations[opidx].actual_bytes = actual_bytes;
+
         // Calculate which chunks we need
         int off = toasty->operations[opidx].off;
         int len = toasty->operations[opidx].len;
 
         if (len == 0) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user, .bytes_read=0 };
             return;
         }
 
@@ -1166,7 +1177,7 @@ static void process_event_for_read(ToastyFS *toasty,
         } else {
             // No chunks to download
             sys_free(ranges);
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user, .bytes_read=toasty->operations[opidx].actual_bytes };
         }
 
     } else {
@@ -1241,7 +1252,7 @@ static void process_event_for_read(ToastyFS *toasty,
         if (toasty->operations[opidx].num_pending == 0) {
             sys_free(toasty->operations[opidx].ranges);
             toasty->operations[opidx].ranges = NULL;
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user, .bytes_read=toasty->operations[opidx].actual_bytes };
         }
     }
 }
@@ -2360,8 +2371,9 @@ int toasty_read(ToastyFS *toasty, ToastyString path,
         return -1;
     }
 
+    int bytes_read = result.bytes_read;
     toasty_free_result(&result);
-    return 0; // TODO: return the number of bytes read?
+    return bytes_read;
 }
 
 int toasty_write(ToastyFS *toasty, ToastyString path,

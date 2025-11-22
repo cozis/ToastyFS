@@ -197,13 +197,13 @@ int main(void)
                         // First, ACK the byte we just read, even if it's
                         // just 0 bytes (every bodybuf must by paired with
                         // a bodyack).
-                        proxied[i].transferred += result.count;
-                        int ack = proxied[i].head_only ? 0 : result.count;
+                        proxied[i].transferred += result.bytes_read;
+                        int ack = proxied[i].head_only ? 0 : result.bytes_read;
                         http_response_builder_bodyack(proxied[i].builder, ack);
 
                         // If we didn't reach the end of the file, start
                         // a new read.
-                        if (result.count > 0) {
+                        if (result.bytes_read > 0) {
 
                             // Make sure there is some free space in the buffer
                             int mincap = 1<<10; // TODO: Choose based on overall file size

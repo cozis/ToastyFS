@@ -159,6 +159,7 @@ typedef struct {
     ToastyResultType type;
     ToastyListing    listing;
     void *user;
+    int bytes_read; // For read operations: actual number of bytes read
 } ToastyResult;
 
 // If the operation specified by "handle" is complete,

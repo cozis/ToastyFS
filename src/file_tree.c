@@ -411,7 +411,7 @@ int file_tree_write(FileTree *ft, string path,
 
 int file_tree_read(FileTree *ft, string path,
     uint64_t off, uint64_t len, uint64_t *chunk_size,
-    SHA256 *hashes, int max_hashes)
+    SHA256 *hashes, int max_hashes, uint64_t *actual_bytes)
 {
     int num_comps;
     string comps[MAX_COMPS];
@@ -431,6 +431,18 @@ int file_tree_read(FileTree *ft, string path,
     File *f = &e->f;
 
     *chunk_size = f->chunk_size;
+
+    // Calculate file size (number of chunks * chunk size)
+    uint64_t file_size = f->num_chunks * f->chunk_size;
+
+    // Calculate actual bytes that can be read
+    if (off >= file_size) {
+        *actual_bytes = 0;
+    } else if (off + len > file_size) {
+        *actual_bytes = file_size - off;
+    } else {
+        *actual_bytes = len;
+    }
 
     if (len == 0)
         return 0;

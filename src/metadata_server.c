@@ -406,8 +406,9 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
     #define MAX_READ_HASHES 128
 
     uint64_t chunk_size;
+    uint64_t actual_bytes;
     SHA256 hashes[MAX_READ_HASHES];
-    int ret = file_tree_read(&state->file_tree, path, offset, length, &chunk_size, hashes, MAX_READ_HASHES);
+    int ret = file_tree_read(&state->file_tree, path, offset, length, &chunk_size, hashes, MAX_READ_HASHES, &actual_bytes);
 
     if (ret < 0) {
 
@@ -438,6 +439,14 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
         }
         uint32_t tmp = chunk_size;
         message_write(&writer, &tmp, sizeof(tmp));
+
+        // Send the actual number of bytes that can be read
+        if (actual_bytes > UINT32_MAX) {
+            message_writer_free(&writer);
+            return -1;
+        }
+        uint32_t tmp_actual = actual_bytes;
+        message_write(&writer, &tmp_actual, sizeof(tmp_actual));
 
         uint32_t num_hashes = ret;
         message_write(&writer, &num_hashes, sizeof(num_hashes));
