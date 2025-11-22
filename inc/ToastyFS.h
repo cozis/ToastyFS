@@ -136,6 +136,11 @@ ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path,
 ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path,
     int off, void *src, int len);
 
+// Associate the pointer "user" to the handle. The user
+// pointer will be returned in the ToastyResult when the
+// operation compltes.
+void toasty_set_uesr(ToastyFS *toasty, ToastyHandle handle, void *user);
+
 typedef enum {
     TOASTY_RESULT_EMPTY,
     TOASTY_RESULT_CREATE_ERROR,
@@ -153,6 +158,7 @@ typedef enum {
 typedef struct {
     ToastyResultType type;
     ToastyListing    listing;
+    void *user;
 } ToastyResult;
 
 // If the operation specified by "handle" is complete,

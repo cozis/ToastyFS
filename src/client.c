@@ -104,6 +104,9 @@ typedef struct {
     // and -1 are always invalid.
     uint16_t generation;
 
+    // Opaque pointer set by the user
+    void *user;
+
     ToastyString path; // Only set for writes
     void *ptr;
     int   off;
@@ -260,6 +263,7 @@ alloc_operation(ToastyFS *toasty, OperationType type, int off, void *ptr, int le
         assert(o < toasty->operations + MAX_OPERATIONS);
     }
     o->type = type;
+    o->user = NULL;
     o->ptr  = ptr;
     o->off  = off;
     o->len  = len;
@@ -764,13 +768,22 @@ void toasty_free_result(ToastyResult *result)
         toasty_free_listing(&result->listing);
 }
 
+void toasty_set_uesr(ToastyFS *toasty, ToastyHandle handle, void *user)
+{
+    int opidx = handle_to_operation(toasty, handle);
+    if (opidx < 0)
+        return;
+
+    toasty->operations[opidx].user = user;
+}
+
 static void process_event_for_create(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
     (void) request_tag;
 
     if (msg.len == 0) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
@@ -778,34 +791,34 @@ static void process_event_for_create(ToastyFS *toasty,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     if (type != MESSAGE_TYPE_CREATE_SUCCESS) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
-    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_SUCCESS };
+    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_SUCCESS, .user=toasty->operations[opidx].user };
 }
 
 static void process_event_for_delete(ToastyFS *toasty,
@@ -814,7 +827,7 @@ static void process_event_for_delete(ToastyFS *toasty,
     (void) request_tag;
 
     if (msg.len == 0) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
@@ -822,34 +835,34 @@ static void process_event_for_delete(ToastyFS *toasty,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     if (type != MESSAGE_TYPE_DELETE_SUCCESS) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
-    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_SUCCESS };
+    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_DELETE_SUCCESS, .user=toasty->operations[opidx].user };
 }
 
 static void process_event_for_list(ToastyFS *toasty,
@@ -858,7 +871,7 @@ static void process_event_for_list(ToastyFS *toasty,
     (void) request_tag;
 
     if (msg.len == 0) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
@@ -866,43 +879,43 @@ static void process_event_for_list(ToastyFS *toasty,
 
     // version
     if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     uint16_t type;
     if (!binary_read(&reader, &type, sizeof(type))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     // length
     if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     if (type != MESSAGE_TYPE_LIST_SUCCESS) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     // Read and validate the list data
     uint32_t item_count;
     if (!binary_read(&reader, &item_count, sizeof(item_count))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     uint8_t truncated;
     if (!binary_read(&reader, &truncated, sizeof(truncated))) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
     ToastyListingEntry *entities = sys_malloc(item_count * sizeof(ToastyListingEntry));
     if (entities == NULL) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
@@ -910,21 +923,21 @@ static void process_event_for_list(ToastyFS *toasty,
     for (uint32_t i = 0; i < item_count; i++) {
         uint8_t is_dir;
         if (!binary_read(&reader, &is_dir, sizeof(is_dir))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
             sys_free(entities);
             return;
         }
 
         uint16_t name_len;
         if (!binary_read(&reader, &name_len, sizeof(name_len))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
             sys_free(entities);
             return;
         }
 
         char *name = (char*) reader.src + reader.cur;
         if (!binary_read(&reader, NULL, name_len)) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
             sys_free(entities);
             return;
         }
@@ -932,7 +945,7 @@ static void process_event_for_list(ToastyFS *toasty,
         entities[i].is_dir = is_dir;
 
         if (name_len > sizeof(entities[i].name)-1) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
             sys_free(entities);
             return;
         }
@@ -942,19 +955,19 @@ static void process_event_for_list(ToastyFS *toasty,
 
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         sys_free(entities);
         return;
     }
 
-    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_SUCCESS, .listing=(ToastyListing) { item_count, entities } };
+    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_SUCCESS, .user=toasty->operations[opidx].user, .listing=(ToastyListing) { item_count, entities } };
 }
 
 static void process_event_for_read(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
@@ -964,32 +977,32 @@ static void process_event_for_read(ToastyFS *toasty,
 
         // Skip version
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         // Check message type
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         if (type != MESSAGE_TYPE_READ_SUCCESS) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         // Skip message length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         // Read chunk size
         uint32_t chunk_size;
         if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
@@ -998,7 +1011,7 @@ static void process_event_for_read(ToastyFS *toasty,
         int len = toasty->operations[opidx].len;
 
         if (len == 0) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user };
             return;
         }
 
@@ -1011,14 +1024,14 @@ static void process_event_for_read(ToastyFS *toasty,
         // Read number of hashes
         uint32_t num_hashes;
         if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         // Allocate ranges
         Range *ranges = sys_malloc(num_chunks_needed * sizeof(Range));
         if (ranges == NULL) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
@@ -1032,7 +1045,7 @@ static void process_event_for_read(ToastyFS *toasty,
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
                 sys_free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1040,7 +1053,7 @@ static void process_event_for_read(ToastyFS *toasty,
             uint32_t num_servers;
             if (!binary_read(&reader, &num_servers, sizeof(num_servers))) {
                 sys_free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1048,7 +1061,7 @@ static void process_event_for_read(ToastyFS *toasty,
             uint32_t num_ipv4;
             if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
                 sys_free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1062,7 +1075,7 @@ static void process_event_for_read(ToastyFS *toasty,
                 if (!binary_read(&reader, &ipv4, sizeof(ipv4)) ||
                     !binary_read(&reader, &port, sizeof(port))) {
                     sys_free(ranges);
-                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
                 if (!found) {
@@ -1077,21 +1090,21 @@ static void process_event_for_read(ToastyFS *toasty,
             uint32_t num_ipv6;
             if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
                 sys_free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
             for (uint32_t j = 0; j < num_ipv6; j++) {
                 if (!binary_read(&reader, NULL, sizeof(IPv6)) ||
                     !binary_read(&reader, NULL, sizeof(uint16_t))) {
                     sys_free(ranges);
-                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
             }
 
             if (!found) {
                 sys_free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1136,7 +1149,7 @@ static void process_event_for_read(ToastyFS *toasty,
             int cs_idx = get_chunk_server(toasty, &r->server_addr, 1, NULL);
             if (cs_idx < 0) {
                 sys_free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
             r->chunk_server_idx = cs_idx;
@@ -1144,7 +1157,7 @@ static void process_event_for_read(ToastyFS *toasty,
             if (send_download_chunk(toasty, cs_idx, r->hash, r->offset_within_chunk,
                 r->length_within_chunk, opidx, 0) < 0) {
                 sys_free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1153,7 +1166,7 @@ static void process_event_for_read(ToastyFS *toasty,
         } else {
             // No chunks to download
             sys_free(ranges);
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user };
         }
 
     } else {
@@ -1164,40 +1177,40 @@ static void process_event_for_read(ToastyFS *toasty,
 
         // Parse response
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         if (type != MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         uint32_t data_len;
         if (!binary_read(&reader, &data_len, sizeof(data_len))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         uint8_t *data = reader.src + reader.cur;
         if (!binary_read(&reader, NULL, data_len)) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         if (binary_read(&reader, NULL, 1)) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
@@ -1228,7 +1241,7 @@ static void process_event_for_read(ToastyFS *toasty,
         if (toasty->operations[opidx].num_pending == 0) {
             sys_free(toasty->operations[opidx].ranges);
             toasty->operations[opidx].ranges = NULL;
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_SUCCESS, .user=toasty->operations[opidx].user };
         }
     }
 }
@@ -1376,7 +1389,7 @@ static void process_event_for_write(ToastyFS *toasty,
     int opidx, int request_tag, ByteView msg)
 {
     if (msg.len == 0) {
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
@@ -1385,36 +1398,36 @@ static void process_event_for_write(ToastyFS *toasty,
         BinaryReader reader = { msg.ptr, msg.len, 0 };
 
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(type))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         if (type != MESSAGE_TYPE_READ_SUCCESS) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         uint32_t chunk_size;
         if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
         toasty->operations[opidx].chunk_size = chunk_size;
 
         uint32_t num_hashes;
         if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
@@ -1461,7 +1474,7 @@ static void process_event_for_write(ToastyFS *toasty,
 
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1469,7 +1482,7 @@ static void process_event_for_write(ToastyFS *toasty,
 
             uint32_t num_holders;
             if (!binary_read(&reader, &num_holders, sizeof(num_holders))) {
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1480,7 +1493,7 @@ static void process_event_for_write(ToastyFS *toasty,
 
                 uint32_t num_ipv4;
                 if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
-                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
 
@@ -1488,13 +1501,13 @@ static void process_event_for_write(ToastyFS *toasty,
 
                     IPv4 ipv4;
                     if (!binary_read(&reader, &ipv4, sizeof(ipv4))) {
-                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                         return;
                     }
 
                     uint16_t port;
                     if (!binary_read(&reader, &port, sizeof(port))) {
-                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                         return;
                     }
 
@@ -1509,14 +1522,14 @@ static void process_event_for_write(ToastyFS *toasty,
                     upload.off = off;
                     upload.len = len;
                     if (schedule_upload(toasty, opidx, upload) < 0) {
-                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                         return;
                     }
                 }
 
                 uint32_t num_ipv6;
                 if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
-                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
 
@@ -1524,13 +1537,13 @@ static void process_event_for_write(ToastyFS *toasty,
 
                     IPv6 ipv6;
                     if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
-                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                         return;
                     }
 
                     uint16_t port;
                     if (!binary_read(&reader, &port, sizeof(port))) {
-                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                         return;
                     }
 
@@ -1545,7 +1558,7 @@ static void process_event_for_write(ToastyFS *toasty,
                     upload.off = off;
                     upload.len = len;
                     if (schedule_upload(toasty, opidx, upload) < 0) {
-                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                         return;
                     }
                 }
@@ -1554,7 +1567,7 @@ static void process_event_for_write(ToastyFS *toasty,
 
         uint32_t num_locations;
         if (!binary_read(&reader, &num_locations, sizeof(num_locations))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
@@ -1565,7 +1578,7 @@ static void process_event_for_write(ToastyFS *toasty,
 
             uint32_t num_ipv4;
             if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1573,13 +1586,13 @@ static void process_event_for_write(ToastyFS *toasty,
 
                 IPv4 ipv4;
                 if (!binary_read(&reader, &ipv4, sizeof(ipv4))) {
-                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
 
                 uint16_t port;
                 if (!binary_read(&reader, &port, sizeof(port))) {
-                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
 #if 0
@@ -1620,7 +1633,7 @@ static void process_event_for_write(ToastyFS *toasty,
                     upload.off = off;
                     upload.len = len;
                     if (schedule_upload(toasty, opidx, upload) < 0) {
-                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                         return;
                     }
                 }
@@ -1630,7 +1643,7 @@ static void process_event_for_write(ToastyFS *toasty,
 
             uint32_t num_ipv6;
             if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1640,13 +1653,13 @@ static void process_event_for_write(ToastyFS *toasty,
 
                 IPv6 ipv6;
                 if (!binary_read(&reader, &ipv6, sizeof(ipv6))) {
-                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
 
                 uint16_t port;
                 if (!binary_read(&reader, &port, sizeof(port))) {
-                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                    toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
 #if 0
@@ -1685,7 +1698,7 @@ static void process_event_for_write(ToastyFS *toasty,
                     upload.off = off;
                     upload.len = len;
                     if (schedule_upload(toasty, opidx, upload) < 0) {
-                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                         return;
                     }
                 }
@@ -1703,7 +1716,7 @@ static void process_event_for_write(ToastyFS *toasty,
 
         if (started == 0) {
             // We already failed
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
@@ -1881,7 +1894,7 @@ static void process_event_for_write(ToastyFS *toasty,
             }
 
             if (!ok) {
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                 free(upload_results);
                 return;
             }
@@ -1944,33 +1957,33 @@ static void process_event_for_write(ToastyFS *toasty,
 
         // version
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(uint16_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         // length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         if (binary_read(&reader, NULL, 1)) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         if (type != MESSAGE_TYPE_WRITE_SUCCESS) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR };
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
-        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_SUCCESS };
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_SUCCESS, .user=toasty->operations[opidx].user };
     }
 }
 

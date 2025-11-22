@@ -133,12 +133,8 @@ int main(void)
             // Completed
             assert(ret == 0);
 
-            // Find the operation associated to this completion
-            int i = 0;
-            while (proxied[i].handle != result.handle) {
-                i++;
-                assert(i < MAX_PROXIED_OPERATIONS);
-            }
+            int i = (ProxiedOperation*) result.user - proxied;
+            assert(i > -1 && i < MAX_PROXIED_OPERATIONS);
 
             switch (proxied[i].type) {
             case PROXIED_OPERATION_CREATE_DIR:
@@ -176,8 +172,7 @@ int main(void)
                         http_response_builder_status(proxied[i].builder, 200);
                         for (int i = 0; i < result.listing.count; i++)
                             http_response_builder_body(proxied[i].builder, (HTTP_String) {
-                                result.listing.items[i].name,
-                                result.listing.items[i].name_len
+                                result.listing.items[i].name, strlen(result.listing.items[i].name),
                             });
                         http_response_builder_send(proxied[i].builder);
                         toasty_free_listing(&result.listing);
@@ -289,6 +284,7 @@ int main(void)
                         break;
                     }
 
+                    toasty_set_user(toasty, handle, &proxied[num_proxied]);
                     proxied[num_proxied].type    = PROXIED_OPERATION_WRITE;
                     proxied[num_proxied].request = request;
                     proxied[num_proxied].builder = builder;
@@ -312,6 +308,7 @@ int main(void)
                         break;
                     }
 
+                    toasty_set_user(toasty, handle, &proxied[num_proxied]);
                     proxied[num_proxied].type    = PROXIED_OPERATION_DELETE;
                     proxied[num_proxied].request = request;
                     proxied[num_proxied].builder = builder;
