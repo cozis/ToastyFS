@@ -66,18 +66,24 @@ int main(void)
     uint16_t     local_port = 8080;
 
     ToastyFS *toasty = toasty_connect(upstream_addr, upstream_port);
-    if (toasty == NULL)
+    if (toasty == NULL) {
+        printf("toasty_connect error\n");
         return -1;
+    }
 
     HTTP_Server server;
-    if (http_server_init(&server) < 0)
+    if (http_server_init(&server) < 0) {
+        printf("http_server_init error\n");
         return -1;
+    }
 
     http_server_set_reuse_addr(&server, true);
     http_server_set_trace_bytes(&server, true);
 
-    if (http_server_listen_tcp(&server, local_addr, local_port) < 0)
+    if (http_server_listen_tcp(&server, local_addr, local_port) < 0) {
+        printf("http_server_listen_tcp error\n");
         return -1;
+    }
 
     int num_proxied = 0;
     ProxiedOperation proxied[MAX_PROXIED_OPERATIONS];
@@ -94,13 +100,15 @@ int main(void)
         struct pollfd *http_polled = polled;
 
         reg = (EventRegister) {
-            ptrs,
-            polled,
-            POLL_CAPACITY,
-            0
+            .ptrs=ptrs,
+            .polled=polled,
+            .max_polled=POLL_CAPACITY,
+            .num_polled=0,
         };
-        if (http_server_register_events(&server, &reg) < 0)
+        if (http_server_register_events(&server, &reg) < 0) {
+            printf("http_server_register_events error\n");
             return -1;
+        }
         int num_http_polled = reg.num_polled;
 
         void **toasty_ptrs = ptrs + num_http_polled;
@@ -189,7 +197,7 @@ int main(void)
                 {
                     bool again = false;
                     if (result.type != TOASTY_RESULT_READ_SUCCESS) {
-                        http_response_builder_bodyack(proxied[i].builder, 0);
+                        http_response_builder_body_ack(proxied[i].builder, 0);
                         http_response_builder_status(proxied[i].builder, 500);
                         http_response_builder_send(proxied[i].builder);
                     } else {
@@ -199,7 +207,7 @@ int main(void)
                         // a bodyack).
                         proxied[i].transferred += result.bytes_read;
                         int ack = proxied[i].head_only ? 0 : result.bytes_read;
-                        http_response_builder_bodyack(proxied[i].builder, ack);
+                        http_response_builder_body_ack(proxied[i].builder, ack);
 
                         // If we didn't reach the end of the file, start
                         // a new read.
@@ -207,16 +215,20 @@ int main(void)
 
                             // Make sure there is some free space in the buffer
                             int mincap = 1<<10; // TODO: Choose based on overall file size
-                            http_response_builder_bodycap(proxied[i].builder, mincap);
+                            http_response_builder_body_cap(proxied[i].builder, mincap);
 
                             // Get the location of that buffer
                             int cap;
-                            char *dst = http_response_builder_bodybuf(proxied[i].builder, &cap);
+                            char *dst = http_response_builder_body_buf(proxied[i].builder, &cap);
                             if (dst == NULL) {
                                 assert(0); // TODO
                             }
 
-                            proxied[i].handle = toasty_begin_read(toasty, path, off, dst, cap);
+                            ToastyString path = {
+                                proxied[i].request->url.path.ptr,
+                                proxied[i].request->url.path.len,
+                            };
+                            proxied[i].handle = toasty_begin_read(toasty, path, proxied[i].transferred, dst, cap);
                             if (proxied[i].handle == TOASTY_INVALID) {
                                 assert(0); // TODO
                             }
@@ -277,6 +289,10 @@ int main(void)
                         break;
                     }
 
+                    ToastyString path = {
+                        request->url.path.ptr,
+                        request->url.path.len,
+                    };
                     ToastyHandle handle = toasty_begin_write(toasty, path, 0, request->body.ptr, request->body.len);
                     if (handle == TOASTY_INVALID) {
                         http_response_builder_status(builder, 500); // Internal Server Error
@@ -301,6 +317,10 @@ int main(void)
                         break;
                     }
 
+                    ToastyString path = {
+                        request->url.path.ptr,
+                        request->url.path.len,
+                    };
                     ToastyHandle handle = toasty_begin_delete(toasty, path);
                     if (handle == TOASTY_INVALID) {
                         http_response_builder_status(builder, 500); // Internal Server Error

@@ -139,7 +139,7 @@ ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path,
 // Associate the pointer "user" to the handle. The user
 // pointer will be returned in the ToastyResult when the
 // operation compltes.
-void toasty_set_uesr(ToastyFS *toasty, ToastyHandle handle, void *user);
+void toasty_set_user(ToastyFS *toasty, ToastyHandle handle, void *user);
 
 typedef enum {
     TOASTY_RESULT_EMPTY,

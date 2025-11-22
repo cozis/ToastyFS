@@ -769,7 +769,7 @@ void toasty_free_result(ToastyResult *result)
         toasty_free_listing(&result->listing);
 }
 
-void toasty_set_uesr(ToastyFS *toasty, ToastyHandle handle, void *user)
+void toasty_set_user(ToastyFS *toasty, ToastyHandle handle, void *user)
 {
     int opidx = handle_to_operation(toasty, handle);
     if (opidx < 0)
