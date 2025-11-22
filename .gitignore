@@ -3,6 +3,7 @@
 *.o
 *.a
 chunk_server_data_*
+
 # Coverage reports
 coverage_report/
 *.gcov
@@ -10,3 +11,8 @@ coverage_report/
 *.gcno
 *.wal
 *.tmp
+
+# Cluster demo artifacts
+.cluster_demo.pids
+cluster_logs/
+cluster_data/

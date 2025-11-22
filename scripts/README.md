@@ -1,8 +1,45 @@
-# Branch Coverage Measurement
+# Scripts
 
-This directory contains scripts for measuring branch coverage of the random simulation.
+This directory contains utility scripts for ToastyFS development and testing.
 
-## Prerequisites
+## Cluster Demo Script
+
+The `cluster_demo.sh` script allows you to easily spawn and manage a ToastyFS cluster for demo and testing purposes.
+
+### Usage
+
+```bash
+# Start a cluster with 3 chunk servers (default)
+./scripts/cluster_demo.sh start
+
+# Start a cluster with a custom number of chunk servers
+./scripts/cluster_demo.sh start 5
+
+# Check cluster status
+./scripts/cluster_demo.sh status
+
+# Stop the cluster
+./scripts/cluster_demo.sh stop
+
+# Clean all cluster data and logs
+./scripts/cluster_demo.sh clean
+```
+
+### What it does
+
+The script:
+- Builds ToastyFS if needed
+- Starts one metadata server (leader) on port 8080
+- Starts the specified number of chunk servers on ports 8081, 8082, etc.
+- Stores all process IDs for easy management
+- Captures logs to `cluster_logs/` directory
+- Stores data in `cluster_data/` directory
+
+All servers run in the background, making it easy to test the cluster with client applications.
+
+## Branch Coverage Measurement
+
+### Prerequisites
 
 The HTML report generation requires `lcov`:
 
