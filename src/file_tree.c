@@ -122,6 +122,7 @@ static void file_init(File *f, uint64_t chunk_size)
 {
     f->chunk_size = chunk_size;
     f->num_chunks = 0;
+    f->file_size = 0;
     f->chunks = NULL;
 }
 
@@ -375,6 +376,11 @@ int file_tree_write(FileTree *ft, string path,
     for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++)
         f->chunks[i] = hashes[i - first_chunk_index];
 
+    // Update file size (last byte written + 1)
+    uint64_t new_size = off + len;
+    if (new_size > f->file_size)
+        f->file_size = new_size;
+
     // Now check which old hashes are no longer used
     // anywhere in the tree
     //
@@ -432,14 +438,11 @@ int file_tree_read(FileTree *ft, string path,
 
     *chunk_size = f->chunk_size;
 
-    // Calculate file size (number of chunks * chunk size)
-    uint64_t file_size = f->num_chunks * f->chunk_size;
-
-    // Calculate actual bytes that can be read
-    if (off >= file_size) {
+    // Calculate actual bytes that can be read based on actual file size
+    if (off >= f->file_size) {
         *actual_bytes = 0;
-    } else if (off + len > file_size) {
-        *actual_bytes = file_size - off;
+    } else if (off + len > f->file_size) {
+        *actual_bytes = f->file_size - off;
     } else {
         *actual_bytes = len;
     }
@@ -539,6 +542,7 @@ static void file_serialize(SerializeContext *sc, File *f)
 {
     sc_write_u64(sc, f->chunk_size);
     sc_write_u64(sc, f->num_chunks);
+    sc_write_u64(sc, f->file_size);
     for (uint64_t i = 0; i < f->num_chunks; i++)
         sc_write_hash(sc, f->chunks[i]);
 }
@@ -638,6 +642,7 @@ static void file_deserialize(DeserializeContext *dc, File *f)
 {
     dc_read_u64(dc, &f->chunk_size);
     dc_read_u64(dc, &f->num_chunks);
+    dc_read_u64(dc, &f->file_size);
 
     f->chunks = sys_malloc(f->num_chunks * sizeof(SHA256));
     if (f->chunks == NULL) {

@@ -18,6 +18,7 @@ typedef struct Entity Entity;
 typedef struct {
     uint64_t chunk_size; // TODO: this should be an u32
     uint64_t num_chunks; // TODO: and this too
+    uint64_t file_size;  // Offset of last byte written + 1
     SHA256 *chunks;
 } File;
 
