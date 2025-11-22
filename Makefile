@@ -17,7 +17,7 @@ OFILES = $(CFILES:.c=.o)
 
 .PHONY: all clean coverage coverage-report coverage-html
 
-all: toastyfs$(EXT) toastyfs_random_test$(EXT) example_async_api$(EXT) example_blocking_api$(EXT) libtoastyfs.a
+all: toastyfs$(EXT) toastyfs_web$(EXT) toastyfs_random_test$(EXT) example_async_api$(EXT) example_blocking_api$(EXT) libtoastyfs.a
 
 coverage: toastyfs_random_test_coverage$(EXT)
 
@@ -41,6 +41,9 @@ example_async_api$(EXT): libtoastyfs.a examples/async_api.c
 
 example_blocking_api$(EXT): libtoastyfs.a examples/blocking_api.c
 	gcc -o $@ examples/blocking_api.c $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinc -L.
+
+toastyfs_web$(EXT): libtoastyfs.a web/main.c web/chttp.c web/chttp.h
+	gcc -o $@ web/main.c web/chttp.c $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinc -L.
 
 %.o: %.c $(HFILES)
 	gcc -c -o $@ $< $(CFLAGS) -Iinc
