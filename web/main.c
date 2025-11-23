@@ -116,7 +116,7 @@ int main(int argc, char **argv)
                 fprintf(stderr, "Error: Invalid port %s\n", argv[i]);
                 return -1;
             }
-            upstream_port = (uint16_t) tmp;
+            local_port = (uint16_t) tmp;
         } else {
             fprintf(stderr, "Error: Invalid option %s\n", argv[i]);
             return -1;

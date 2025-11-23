@@ -21,6 +21,7 @@ DATA_DIR="$PROJECT_DIR/cluster_data"
 
 METADATA_PORT=8080
 CHUNK_SERVER_BASE_PORT=8081
+WEB_SERVER_PORT=8090
 
 # Colors for output
 RED='\033[0;31m'
@@ -46,8 +47,18 @@ print_error() {
 }
 
 build_if_needed() {
+    local need_build=false
+
     if [ ! -f "$PROJECT_DIR/toastyfs.out" ] && [ ! -f "$PROJECT_DIR/toastyfs.exe" ]; then
-        print_info "Binary not found. Building ToastyFS..."
+        need_build=true
+    fi
+
+    if [ ! -f "$PROJECT_DIR/toastyfs_web.out" ] && [ ! -f "$PROJECT_DIR/toastyfs_web.exe" ]; then
+        need_build=true
+    fi
+
+    if [ "$need_build" = true ]; then
+        print_info "Binaries not found. Building ToastyFS..."
         cd "$PROJECT_DIR"
         make
         print_success "Build complete"
@@ -61,6 +72,17 @@ get_binary() {
         echo "$PROJECT_DIR/toastyfs.exe"
     else
         print_error "ToastyFS binary not found"
+        exit 1
+    fi
+}
+
+get_web_binary() {
+    if [ -f "$PROJECT_DIR/toastyfs_web.out" ]; then
+        echo "$PROJECT_DIR/toastyfs_web.out"
+    elif [ -f "$PROJECT_DIR/toastyfs_web.exe" ]; then
+        echo "$PROJECT_DIR/toastyfs_web.exe"
+    else
+        print_error "ToastyFS web binary not found"
         exit 1
     fi
 }
@@ -84,6 +106,7 @@ start_cluster() {
     print_info "Starting ToastyFS cluster..."
     print_info "  Metadata server: 127.0.0.1:$METADATA_PORT"
     print_info "  Chunk servers: $num_chunk_servers"
+    print_info "  Web server: 127.0.0.1:$WEB_SERVER_PORT"
     echo
 
     # Start metadata server
@@ -126,12 +149,26 @@ start_cluster() {
         sleep 0.5
     done
 
+    # Start web server
+    local web_binary=$(get_web_binary)
+    print_info "Starting web server on port $WEB_SERVER_PORT..."
+    "$web_binary" \
+        --upstream-addr 127.0.0.1 \
+        --upstream-port $METADATA_PORT \
+        --local-addr 127.0.0.1 \
+        --local-port $WEB_SERVER_PORT \
+        > "$LOG_DIR/web_server.log" 2>&1 &
+
+    local web_pid=$!
+    echo "$web_pid" >> "$PID_FILE"
+    print_success "Web server started (PID: $web_pid)"
+
     echo
     print_success "Cluster started successfully!"
     echo
     print_info "Connect to the cluster using:"
-    print_info "  Address: 127.0.0.1"
-    print_info "  Port: $METADATA_PORT"
+    print_info "  ToastyFS Protocol: 127.0.0.1:$METADATA_PORT"
+    print_info "  HTTP Interface: http://127.0.0.1:$WEB_SERVER_PORT"
     echo
     print_info "View logs at: $LOG_DIR/"
     print_info "Data stored at: $DATA_DIR/"
@@ -184,12 +221,20 @@ show_status() {
     local running=0
     local not_running=0
     local line_num=0
+    local total_lines=$(wc -l < "$PID_FILE")
 
     while IFS= read -r pid; do
         if [ -n "$pid" ]; then
             line_num=$((line_num + 1))
-            local server_type="Chunk server $((line_num - 1))"
-            [ $line_num -eq 1 ] && server_type="Metadata server"
+            local server_type=""
+
+            if [ $line_num -eq 1 ]; then
+                server_type="Metadata server"
+            elif [ $line_num -eq $total_lines ]; then
+                server_type="Web server"
+            else
+                server_type="Chunk server $((line_num - 1))"
+            fi
 
             if kill -0 "$pid" 2>/dev/null; then
                 echo -e "  ${GREEN}●${NC} $server_type (PID: $pid) - ${GREEN}running${NC}"
