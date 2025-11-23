@@ -65,6 +65,9 @@ int main(int argc, char **argv)
     HTTP_String  local_addr = HTTP_STR("127.0.0.1");
     uint16_t     local_port = 8080;
 
+    bool         reuse_addr = false;
+    bool         trace_bytes = false;
+
     for (int i = 1; i < argc; i++) {
 
         if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
@@ -117,6 +120,10 @@ int main(int argc, char **argv)
                 return -1;
             }
             local_port = (uint16_t) tmp;
+        } else if(!strcmp(argv[i], "--reuse-addr")) {
+            reuse_addr = true;
+        } else if(!strcmp(argv[i], "--trace-bytes")) {
+            trace_bytes = true;
         } else {
             fprintf(stderr, "Error: Invalid option %s\n", argv[i]);
             return -1;
@@ -135,8 +142,8 @@ int main(int argc, char **argv)
         return -1;
     }
 
-    http_server_set_reuse_addr(&server, true);
-    http_server_set_trace_bytes(&server, true);
+    http_server_set_reuse_addr(&server, reuse_addr);
+    http_server_set_trace_bytes(&server, trace_bytes);
 
     if (http_server_listen_tcp(&server, local_addr, local_port) < 0) {
         printf("http_server_listen_tcp error\n");
@@ -192,12 +199,8 @@ int main(int argc, char **argv)
 
             ToastyResult result;
             int ret = toasty_get_result(toasty, TOASTY_INVALID, &result);
-
-            if (ret == 1)
-                break; // No completion
-
-            if (ret < 0)
-                return -1; // Error
+            if (ret == 1) break; // No completion
+            if (ret < 0)  return -1; // Error
 
             // Completed
             assert(ret == 0);
