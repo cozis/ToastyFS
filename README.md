@@ -1,32 +1,7 @@
 # ToastyFS
-ToastyFS is a distributed file system designed for self-hosting, so it aims to be pragmatic, understandable, and robust. You can use ToastyFS to store your files reliably over multiple machines knowing they will be automatically replicated and healed in case of hardware failure. ToastyFS works by running nodes on multiple machines. Clients using the ToastyFS C library can then send file operations to the cluster. Here's a quick example:
+ToastyFS is a distributed file system designed for self-hosting, so it aims to be pragmatic, understandable, and robust. You can use ToastyFS to store your files reliably over multiple machines knowing they will be automatically replicated and healed in case of failures.
 
-```c
-#include <ToastyFS.h>
-
-int main(void)
-{
-    ToastyString addr = TOASTY_STR("127.0.0.1");
-    int          port = 8080;
-    
-    // Connect to cluster
-    ToastyFS *toasty = toasty_connect(addr, port);
-    
-    ToastyString file = TOASTY_STR("/my_file.txt");
-
-    // Create and write to a file
-    toasty_create_file(toasty, file, 4096);
-    toasty_write(toasty, file, 0, "Hello!", 6);
-    
-    // Read it back
-    char buf[6];
-    toasty_read(toasty, file, 0, buf, 6);
-    
-    // Done!
-    toasty_disconnect(toasty);
-    return 0;
-}
-```
+To try it out, run the script `./scripts/cluster_demo.sh`. It will spawn a local cluster with a web interface at `https://127.0.0.1:8090/` which will allow you to PUT, GET, DELETE files.
 
 ⚠️ Note that ToastyFS is still in early development ⚠️
 
