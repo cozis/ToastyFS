@@ -10,6 +10,8 @@
 
 #define UNREACHABLE __builtin_trap()
 
+#define MAX_PROXIED_OPERATIONS (1<<10)
+
 typedef enum {
     PROXIED_OPERATION_FREE,
     PROXIED_OPERATION_CREATE_DIR,
@@ -42,8 +44,6 @@ typedef struct {
     ToastyHandle handle;
 
 } ProxiedOperation;
-
-#define MAX_PROXIED_OPERATIONS (1<<10)
 
 static int find_unused_struct(ProxiedOperation *arr, int num)
 {
@@ -116,7 +116,7 @@ int main(int argc, char **argv)
                 fprintf(stderr, "Error: Invalid port %s\n", argv[i]);
                 return -1;
             }
-            upstream_port = (uint16_t) tmp;
+            local_port = (uint16_t) tmp;
         } else {
             fprintf(stderr, "Error: Invalid option %s\n", argv[i]);
             return -1;
@@ -146,6 +146,9 @@ int main(int argc, char **argv)
     int num_proxied = 0;
     ProxiedOperation proxied[MAX_PROXIED_OPERATIONS];
 
+    for (int i = 0; i < MAX_PROXIED_OPERATIONS; i++)
+        proxied[i].type = PROXIED_OPERATION_FREE;
+
     for (;;) {
 
         #define POLL_CAPACITY (HTTP_SERVER_POLL_CAPACITY + TOASTY_POLL_CAPACITY)
@@ -160,7 +163,7 @@ int main(int argc, char **argv)
         reg = (EventRegister) {
             .ptrs=ptrs,
             .polled=polled,
-            .max_polled=POLL_CAPACITY,
+            .max_polled=HTTP_SERVER_POLL_CAPACITY,
             .num_polled=0,
         };
         if (http_server_register_events(&server, &reg) < 0) {
