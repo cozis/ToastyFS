@@ -1,11 +1,49 @@
 import asyncio
+import logging
 from pathlib import Path
 
-import aiohttp
+from aiohttp import (
+    ClientSession,
+    TraceConfig,
+    TraceRequestEndParams,
+    TraceRequestStartParams,
+)
 from watchfiles import Change, awatch
 
 local_root = "."
 remote_root = f"http://127.0.0.1:8090/"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",  # No timestamp prefix for curl-like output
+)
+logger = logging.getLogger(__name__)
+
+
+async def on_request_start(session, context, params: TraceRequestStartParams):
+    logger.info(f"> {params.method} {params.url.path_qs} HTTP/1.1")
+    logger.info(f"> Host: {params.url.host}")
+    for name, value in params.headers.items():
+        logger.info(f"> {name}: {value}")
+    logger.info(">")
+
+
+async def on_request_end(session, context, params: TraceRequestEndParams):
+    response = params.response
+    logger.info(f"< HTTP/1.1 {response.status} {response.reason}")
+    for name, value in response.headers.items():
+        logger.info(f"< {name}: {value}")
+    logger.info("<")
+
+    # Optionally log response body
+    # body = await response.text()
+    # if body:
+    #     logger.info(body)
+
+
+trace_config = TraceConfig()
+trace_config.on_request_start.append(on_request_start)
+trace_config.on_request_end.append(on_request_end)
 
 
 async def main():
@@ -33,6 +71,8 @@ def make_relative_path(root, target):
 
 def endpoint_from_local_path(local_target):
     relative_path = make_relative_path(local_root, local_target)
+    relative_path = relative_path.replace("\\", "/")
+
     remote_target = remote_root + relative_path
 
     assert remote_target[-1] != "/"
@@ -43,7 +83,7 @@ def endpoint_from_local_path(local_target):
 
 
 async def process_change_added(local_target):
-    async with aiohttp.ClientSession() as session:
+    async with ClientSession(trace_configs=[trace_config]) as session:
         # Determine the endpoint the file should be
         # uploaded to.
         remote_target = endpoint_from_local_path(local_target)
@@ -58,7 +98,7 @@ async def process_change_added(local_target):
 
 
 async def process_change_modified(local_target):
-    async with aiohttp.ClientSession() as session:
+    async with ClientSession(trace_configs=[trace_config]) as session:
         # Determine the endpoint the file should be
         # uploaded to.
         remote_target = endpoint_from_local_path(local_target)
@@ -73,7 +113,7 @@ async def process_change_modified(local_target):
 
 
 async def process_change_deleted(local_target):
-    async with aiohttp.ClientSession() as session:
+    async with ClientSession(trace_configs=[trace_config]) as session:
         # Determine the endpoint that should be deleted
         remote_target = endpoint_from_local_path(local_target)
 
