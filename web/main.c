@@ -186,7 +186,7 @@ int main(int argc, char **argv)
             return -1;
 
         int num_polled = num_http_polled + num_toasty_polled;
-        if (num_polled > 0)
+        if (num_http_polled != 0 && num_toasty_polled != 0)
             POLL(polled, num_polled, -1);
 
         // First, process toasty events so that we free space
@@ -331,9 +331,11 @@ int main(int argc, char **argv)
         if (http_server_process_events(&server, &reg) < 0)
             return -1;
 
-        HTTP_Request *request;
-        HTTP_ResponseBuilder builder;
-        if (http_server_next_request(&server, &request, &builder)) {
+        for (;;) {
+            HTTP_Request *request;
+            HTTP_ResponseBuilder builder;
+            if (!http_server_next_request(&server, &request, &builder))
+                break;
 
             switch (request->method) {
             case HTTP_METHOD_GET:

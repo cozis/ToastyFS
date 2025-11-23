@@ -4057,7 +4057,7 @@ http_server_conn_process_events(HTTP_Server *server, HTTP_ServerConn *conn)
 
         byte_queue_write_ack(&conn->input, num);
 
-        if (byte_queue_error(&conn->output)) {
+        if (byte_queue_error(&conn->input)) {
             socket_close(&server->sockets, conn->handle);
         } else {
             check_request_buffer(server, conn);
