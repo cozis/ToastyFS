@@ -366,6 +366,10 @@ int file_tree_write(FileTree *ft, string path,
     SHA256 *removed_hashes,
     int *num_removed)
 {
+    // Per protocol spec, WRITE operations cannot use expect_gen=0
+    if (expect_gen == NO_GENERATION)
+        return FILETREE_BADGEN;
+
     int num_comps;
     string comps[MAX_COMPS];
 
@@ -534,6 +538,7 @@ string file_tree_strerror(int code)
         case FILETREE_EXISTS : return S("File or directory already exists");
         case FILETREE_BADPATH: return S("Invalid path");
         case FILETREE_BADOP  : return S("Invalid operation");
+        case FILETREE_BADGEN : return S("Generation counter cannot be zero for write operations");
         default:break;
     }
     return S("Unknown error");

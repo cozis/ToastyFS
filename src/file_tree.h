@@ -13,6 +13,7 @@ enum {
     FILETREE_EXISTS  = -5,
     FILETREE_BADPATH = -6,
     FILETREE_BADOP   = -7,
+    FILETREE_BADGEN  = -8,
 };
 
 typedef struct Entity Entity;
