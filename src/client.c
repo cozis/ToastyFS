@@ -617,11 +617,13 @@ ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path)
         opidx = -1;
         goto unlock_and_exit;
     }
-    uint16_t tmp = path.len;
+    uint16_t path_len = path.len;
+    uint64_t expect_gen = 0;  // 0 means skip generation check
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_DELETE);
-    message_write(&writer, &tmp, sizeof(tmp));
+    message_write(&writer, &expect_gen, sizeof(expect_gen));
+    message_write(&writer, &path_len, sizeof(path_len));
     message_write(&writer, path.ptr, path.len);
     if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
         free_operation(toasty, opidx);
@@ -659,11 +661,13 @@ ToastyHandle toasty_begin_list(ToastyFS *toasty, ToastyString path)
         opidx = -1;
         goto unlock_and_exit;
     }
-    uint16_t tmp = path.len;
+    uint16_t path_len = path.len;
+    uint64_t expect_gen = 0;  // 0 means skip generation check
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_LIST);
-    message_write(&writer, &tmp, sizeof(tmp));
+    message_write(&writer, &expect_gen, sizeof(expect_gen));
+    message_write(&writer, &path_len, sizeof(path_len));
     message_write(&writer, path.ptr, path.len);
     if (metadata_server_request_end(toasty, &writer, opidx, 0) < 0) {
         free_operation(toasty, opidx);
@@ -687,9 +691,11 @@ static int send_read_message(ToastyFS *toasty, int opidx, int tag, ToastyString 
     if (path.len > UINT16_MAX)
         return -1;
     uint16_t path_len = path.len;
+    uint64_t expect_gen = 0;  // 0 means skip generation check
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_READ);
+    message_write(&writer, &expect_gen, sizeof(expect_gen));
     message_write(&writer, &path_len, sizeof(path_len));
     message_write(&writer, path.ptr,  path.len);
     message_write(&writer, &offset,   sizeof(offset));
@@ -813,6 +819,13 @@ static void process_event_for_create(ToastyFS *toasty,
         return;
     }
 
+    // Read generation counter
+    uint64_t gen;
+    if (!binary_read(&reader, &gen, sizeof(gen))) {
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR, .user=toasty->operations[opidx].user };
+        return;
+    }
+
     // Check there is nothing else to read
     if (binary_read(&reader, NULL, 1)) {
         toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_CREATE_ERROR, .user=toasty->operations[opidx].user };
@@ -901,15 +914,22 @@ static void process_event_for_list(ToastyFS *toasty,
         return;
     }
 
-    // Read and validate the list data
-    uint32_t item_count;
-    if (!binary_read(&reader, &item_count, sizeof(item_count))) {
+    // Read generation counter
+    uint64_t gen;
+    if (!binary_read(&reader, &gen, sizeof(gen))) {
         toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
 
+    // Read and validate the list data
     uint8_t truncated;
     if (!binary_read(&reader, &truncated, sizeof(truncated))) {
+        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
+        return;
+    }
+
+    uint32_t item_count;
+    if (!binary_read(&reader, &item_count, sizeof(item_count))) {
         toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
         return;
     }
@@ -996,6 +1016,13 @@ static void process_event_for_read(ToastyFS *toasty,
 
         // Skip message length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
+            return;
+        }
+
+        // Read generation counter
+        uint64_t gen;
+        if (!binary_read(&reader, &gen, sizeof(gen))) {
             toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
@@ -1429,12 +1456,25 @@ static void process_event_for_write(ToastyFS *toasty,
             return;
         }
 
+        // Read generation counter
+        uint64_t gen;
+        if (!binary_read(&reader, &gen, sizeof(gen))) {
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+            return;
+        }
+
         uint32_t chunk_size;
         if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
             toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
         toasty->operations[opidx].chunk_size = chunk_size;
+
+        // Skip file_length field that comes after chunk_size
+        if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+            return;
+        }
 
         uint32_t num_hashes;
         if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
@@ -1921,21 +1961,19 @@ static void process_event_for_write(ToastyFS *toasty,
                 assert(0); // TODO
             }
             uint16_t path_len = path.len;
+            uint64_t expect_gen = 0;  // 0 means skip generation check - but per protocol, WRITE can't use 0
 
             uint32_t num_chunks = num_upload_results;
-            uint32_t chunk_size = toasty->operations[opidx].chunk_size;
 
+            message_write(&writer, &expect_gen, sizeof(expect_gen));
             message_write(&writer, &path_len,   sizeof(path_len));
             message_write(&writer, path.ptr,    path.len);
             message_write(&writer, &offset,     sizeof(offset));
             message_write(&writer, &length,     sizeof(length));
             message_write(&writer, &num_chunks, sizeof(num_chunks));
-            message_write(&writer, &chunk_size, sizeof(chunk_size));
 
             for (int i = 0; i < num_upload_results; i++) {
 
-                // TODO: newly create chunks don't have an old hash
-                message_write(&writer, &upload_results[i].old_hash, sizeof(upload_results[i].old_hash));
                 message_write(&writer, &upload_results[i].new_hash, sizeof(upload_results[i].new_hash));
 
                 uint32_t tmp = upload_results[i].num_locations;
@@ -1984,12 +2022,19 @@ static void process_event_for_write(ToastyFS *toasty,
             return;
         }
 
-        if (binary_read(&reader, NULL, 1)) {
+        if (type != MESSAGE_TYPE_WRITE_SUCCESS) {
             toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
-        if (type != MESSAGE_TYPE_WRITE_SUCCESS) {
+        // Read generation counter
+        uint64_t gen;
+        if (!binary_read(&reader, &gen, sizeof(gen))) {
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+            return;
+        }
+
+        if (binary_read(&reader, NULL, 1)) {
             toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }

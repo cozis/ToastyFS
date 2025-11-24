@@ -208,7 +208,7 @@ process_client_create(MetadataServer *state, int conn_idx, ByteView msg)
 
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
         message_writer_init(&writer, output, MESSAGE_TYPE_CREATE_SUCCESS);
-        // TODO: write the generation
+        message_write(&writer, &gen, sizeof(gen));
         if (!message_writer_free(&writer))
             return -1;
     }
@@ -225,8 +225,9 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
 
-    uint64_t expect_gen = NO_GENERATION;
-    // TODO: read expected generation
+    uint64_t expect_gen;
+    if (!binary_read(&reader, &expect_gen, sizeof(expect_gen)))
+        return -1;
 
     char     path_mem[1<<10];
     uint16_t path_len;
@@ -293,6 +294,10 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
 
+    uint64_t expect_gen;
+    if (!binary_read(&reader, &expect_gen, sizeof(expect_gen)))
+        return -1;
+
     char     path_mem[1<<10];
     uint16_t path_len;
 
@@ -342,7 +347,7 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_LIST_SUCCESS);
 
-        // TODO: write generation
+        message_write(&writer, &gen, sizeof(gen));
 
         uint32_t item_count = ret;
         uint8_t truncated = 0;
@@ -352,8 +357,8 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
             item_count = MAX_LIST_SIZE;
         }
 
-        message_write(&writer, &item_count, sizeof(item_count));
         message_write(&writer, &truncated, sizeof(truncated));
+        message_write(&writer, &item_count, sizeof(item_count));
 
         for (int i = 0; i < ret && i < MAX_LIST_SIZE; i++) {
 
@@ -382,6 +387,10 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
 
     // Read header
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
+        return -1;
+
+    uint64_t expect_gen;
+    if (!binary_read(&reader, &expect_gen, sizeof(expect_gen)))
         return -1;
 
     char     path_mem[1<<10];
@@ -441,7 +450,7 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_READ_SUCCESS);
 
-        // TODO: write generation
+        message_write(&writer, &gen, sizeof(gen));
 
         if (chunk_size > UINT32_MAX) {
             message_writer_free(&writer);
@@ -522,8 +531,9 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
 
-    // TODO: read expected generation
-    uint64_t expect_gen = NO_GENERATION;
+    uint64_t expect_gen;
+    if (!binary_read(&reader, &expect_gen, sizeof(expect_gen)))
+        return -1;
 
     char     path_mem[1<<10];
     uint16_t path_len;
@@ -551,15 +561,10 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, &num_chunks, sizeof(num_chunks)))
         return -1;
 
-    uint32_t chunk_size; // TODO: Not needed anymore
-    if (!binary_read(&reader, &chunk_size, sizeof(chunk_size)))
-        return -1;
-
     #define MAX_CHUNKS_PER_WRITE 32
 
     typedef struct {
-        SHA256  old_hash;
-        SHA256  new_hash;
+        SHA256  hash;
         int     num_addrs;
         Address addrs[REPLICATION_FACTOR];
     } ChunkWriteResult;
@@ -571,16 +576,11 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
     for (uint32_t i = 0; i < num_chunks; i++) {
 
-        SHA256 old_hash; // TODO: old hashes are not necessary anymore
-        if (!binary_read(&reader, &old_hash, sizeof(old_hash)))
+        SHA256 hash;
+        if (!binary_read(&reader, &hash, sizeof(hash)))
             return -1;
 
-        SHA256 new_hash;
-        if (!binary_read(&reader, &new_hash, sizeof(new_hash)))
-            return -1;
-
-        results[i].old_hash = old_hash;
-        results[i].new_hash = new_hash;
+        results[i].hash = hash;
         results[i].num_addrs = 0;
 
         uint32_t num_locations;
@@ -622,7 +622,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
     SHA256 new_hashes[MAX_CHUNKS_PER_WRITE];
     for (uint32_t i = 0; i < num_chunks; i++)
-        new_hashes[i] = results[i].new_hash;
+        new_hashes[i] = results[i].hash;
 
     if (wal_append_write(&state->wal, path, offset, length, num_chunks, expect_gen, new_hashes) < 0) {
         assert(0); // TODO
@@ -682,7 +682,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_WRITE_SUCCESS);
 
-        // TODO: write new generation
+        message_write(&writer, &new_gen, sizeof(new_gen));
 
         if (!message_writer_free(&writer))
             return -1;
