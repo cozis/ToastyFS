@@ -50,19 +50,37 @@ int toasty_wakeup(ToastyFS *toasty);
 // BLOCKING API
 //////////////////////////////////////////////////////////////////////////////////
 
+// TODO: comment
+typedef uint64_t ToastyVersionTag;
+
+// TODO: comment
+#define TOASTY_VERSION_TAG_EMPTY ((ToastyVersionTag) 0)
+
 // Creates a directory at the specified path.
 // Returns 0 on success, -1 on error.
-int toasty_create_dir(ToastyFS *toasty, ToastyString path);
+//
+// If the version tag is not NULL, it's used to
+// return the version tag associated to the newly
+// created file.
+int toasty_create_dir(ToastyFS *toasty, ToastyString path,
+    ToastyVersionTag *vtag);
 
 // Creates a file with the given chunk size at
 // the specified path. Returns 0 on success, -1
 // on error. The chunk size can't be 0.
+//
+// If the version tag is not NULL, it's used to
+// return the version tag associated to the newly
+// created file.
 int toasty_create_file(ToastyFS *toasty, ToastyString path,
-    unsigned int chunk_size);
+    unsigned int chunk_size, ToastyVersionTag *vtag);
 
 // Deletes a file or directory at the specified path.
 // Returns 0 on success, -1 on error.
-int toasty_delete(ToastyFS *toasty, ToastyString path);
+//
+// If the version tag is not 0, the file/directory
+// is only deleted if the tags match.
+int toasty_delete(ToastyFS *toasty, ToastyString path, ToastyVersionTag vtag);
 
 typedef struct {
     char name[128]; // TODO: Implement a proper name length
@@ -79,8 +97,13 @@ typedef struct {
 // on success, returns -1 on error. The listing is
 // a dynamic array that needs to be freed using
 // "toasy_free_listing".
+//
+// If the version tag is not 0, the listing only
+// succedes if the tag matches the remote one.
+// If the operation succedes, the vtag is set to
+// the remote tag.
 int toasty_list(ToastyFS *toasty, ToastyString path,
-    ToastyListing *listing);
+    ToastyListing *listing, ToastyVersionTag *vtag);
 
 // Frees a listing created by "toasty_list".
 void toasty_free_listing(ToastyListing *listing);
@@ -88,14 +111,21 @@ void toasty_free_listing(ToastyListing *listing);
 // Reads "len" bytes at offset "off" from the file at
 // the given path. Returns the number of bytes read on
 // success, or -1 on error.
+//
+// If vtag is not NULL, the read only succedes if the
+// target version tag matches vtag or vtag was 0. If
+// the operation succedes, the version tag is set to
+// the remote entity's.
 int toasty_read(ToastyFS *toasty, ToastyString path, int off,
-    void *dst, int len);
+    void *dst, int len, ToastyVersionTag *vtag);
 
 // Writes "len" bytes at offset "off" to the file at
 // the given path. Returns the number of bytes written
 // on success, or -1 on error.
+//
+// For how vtag works, see toasty_read.
 int toasty_write(ToastyFS *toasty, ToastyString path, int off,
-    void *src, int len);
+    void *src, int len, ToastyVersionTag *vtag);
 
 //////////////////////////////////////////////////////////////////////////////////
 // ASYNCHRONOUS API
@@ -119,22 +149,35 @@ ToastyHandle toasty_begin_create_file(ToastyFS *toasty, ToastyString path,
 // Begins a file or directory deletion operation and
 // returns a handle to it. On error, TOASTY_INVALID is
 // returned.
-ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path);
+//
+// If vtag is not 0, the operation only succedes if the
+// tag matches the remote entity's.
+ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path,
+    ToastyVersionTag vtag);
 
 // Begins a directory listing operation and returns
 // a handle to it. On error, TOASTY_INVALID is returned.
-ToastyHandle toasty_begin_list(ToastyFS *toasty, ToastyString path);
+//
+// If vtag is not 0, the operation only succedes if the
+// tag matches the remote entity's.
+ToastyHandle toasty_begin_list(ToastyFS *toasty, ToastyString path, ToastyVersionTag vtag);
 
 // Begins a read operation and returns a handle to it.
 // On error, TOASTY_INVALID is returned.
+//
+// If vtag is not 0, the operation only succedes if the
+// tag matches the remote entity's.
 ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path,
-    int off, void *dst, int len);
+    int off, void *dst, int len, ToastyVersionTag vtag);
 
 // Begins a write operation and returns a handle to it.
 // On error, TOASTY_INVALID is returned. Note that the source
 // buffer must be valid until the operation completes.
+//
+// If vtag is not 0, the operation only succedes if the
+// tag matches the remote entity's.
 ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path,
-    int off, void *src, int len);
+    int off, void *src, int len, ToastyVersionTag vtag);
 
 // Associate the pointer "user" to the handle. The user
 // pointer will be returned in the ToastyResult when the
@@ -158,8 +201,9 @@ typedef enum {
 typedef struct {
     ToastyResultType type;
     ToastyListing    listing;
-    void *user;
-    int bytes_read; // For read operations: actual number of bytes read
+    ToastyVersionTag vtag;
+    void*            user;
+    int              bytes_read; // For read operations: actual number of bytes read
 } ToastyResult;
 
 // If the operation specified by "handle" is complete,

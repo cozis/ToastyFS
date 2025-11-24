@@ -182,13 +182,13 @@ int simulation_client_step(SimulationClient *client, void **contexts,
 
             case PENDING_OPERATION_DELETE:
             entry = table[random_in_range(0, table_len-1)];
-            handle = toasty_begin_delete(client->toasty, entry.path);
+            handle = toasty_begin_delete(client->toasty, entry.path, TOASTY_VERSION_TAG_EMPTY);
             //printf("[Client] submit delete (path=%s)\n", entry.path);
             break;
 
             case PENDING_OPERATION_LIST:
             entry = table[random_in_range(0, table_len-1)];
-            handle = toasty_begin_list(client->toasty, entry.path);
+            handle = toasty_begin_list(client->toasty, entry.path, TOASTY_VERSION_TAG_EMPTY);
             //printf("[Client] submit list   (path=%s)\n", entry.path);
             break;
 
@@ -198,7 +198,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             len = random_in_range(0, 5000);
             ptr = malloc(len);
             if (ptr == NULL) assert(0);
-            handle = toasty_begin_read(client->toasty, entry.path, off, ptr, len);
+            handle = toasty_begin_read(client->toasty, entry.path, off, ptr, len, TOASTY_VERSION_TAG_EMPTY);
             //printf("[Client] submit read   (path=%s, off=%d, len=%d)\n", entry.path, off, len);
             break;
 
@@ -209,7 +209,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             ptr = malloc(len);
             if (ptr == NULL) assert(0);
             memset(ptr, 'a', len);
-            handle = toasty_begin_write(client->toasty, entry.path, off, ptr, len);
+            handle = toasty_begin_write(client->toasty, entry.path, off, ptr, len, TOASTY_VERSION_TAG_EMPTY);
             //printf("[Client] submit write  (path=%s, off=%d, len=%d)\n", entry.path, off, len);
             break;
         }

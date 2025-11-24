@@ -14,7 +14,7 @@ int main(void)
 
     ToastyString path = TOASTY_STR("/first_file");
 
-    int ret = toasty_create_file(toasty, path, 1024);
+    int ret = toasty_create_file(toasty, path, 1024, NULL);
     if (ret < 0) {
         printf("Couldn't create file\n");
         toasty_disconnect(toasty);
@@ -22,7 +22,7 @@ int main(void)
     }
 
     char data[] = "Hello, world!";
-    ret = toasty_write(toasty, path, 0, data, sizeof(data)-1);
+    ret = toasty_write(toasty, path, 0, data, sizeof(data)-1, 0);
     if (ret < 0) {
         printf("Couldn't write to file\n");
         toasty_disconnect(toasty);

@@ -123,6 +123,7 @@ typedef struct {
     int      num_hashes;
     uint32_t num_chunks;
     uint32_t chunk_size;
+    uint64_t expect_gen;
     UploadSchedule *uploads;
     int num_uploads;
     int cap_uploads;
@@ -598,7 +599,8 @@ ToastyHandle toasty_begin_create_file(ToastyFS *toasty, ToastyString path,
     return begin_create(toasty, path, false, chunk_size);
 }
 
-ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path)
+ToastyHandle toasty_begin_delete(ToastyFS *toasty,
+    ToastyString path, ToastyVersionTag vtag)
 {
     int opidx = -1;
     ToastyHandle handle = TOASTY_INVALID;
@@ -618,7 +620,7 @@ ToastyHandle toasty_begin_delete(ToastyFS *toasty, ToastyString path)
         goto unlock_and_exit;
     }
     uint16_t path_len = path.len;
-    uint64_t expect_gen = 0;  // 0 means skip generation check
+    uint64_t expect_gen = vtag;
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_DELETE);
@@ -642,7 +644,8 @@ unlock_and_exit:
     return handle;
 }
 
-ToastyHandle toasty_begin_list(ToastyFS *toasty, ToastyString path)
+ToastyHandle toasty_begin_list(ToastyFS *toasty,
+    ToastyString path, ToastyVersionTag vtag)
 {
     int opidx = -1;
     ToastyHandle handle = TOASTY_INVALID;
@@ -662,7 +665,7 @@ ToastyHandle toasty_begin_list(ToastyFS *toasty, ToastyString path)
         goto unlock_and_exit;
     }
     uint16_t path_len = path.len;
-    uint64_t expect_gen = 0;  // 0 means skip generation check
+    uint64_t expect_gen = vtag;
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_LIST);
@@ -686,12 +689,14 @@ unlock_and_exit:
     return handle;
 }
 
-static int send_read_message(ToastyFS *toasty, int opidx, int tag, ToastyString path, uint32_t offset, uint32_t length)
+static int send_read_message(ToastyFS *toasty, int opidx,
+    int tag, ToastyString path, uint32_t offset,
+    uint32_t length, ToastyVersionTag vtag)
 {
     if (path.len > UINT16_MAX)
         return -1;
     uint16_t path_len = path.len;
-    uint64_t expect_gen = 0;  // 0 means skip generation check
+    uint64_t expect_gen = vtag;
 
     MessageWriter writer;
     metadata_server_request_start(toasty, &writer, MESSAGE_TYPE_READ);
@@ -705,7 +710,8 @@ static int send_read_message(ToastyFS *toasty, int opidx, int tag, ToastyString 
     return 0;
 }
 
-ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path, int off, void *dst, int len)
+ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path,
+    int off, void *dst, int len, ToastyVersionTag vtag)
 {
     int opidx = -1;
     ToastyHandle handle = TOASTY_INVALID;
@@ -719,7 +725,7 @@ ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path, int off, voi
     if (opidx < 0)
         goto unlock_and_exit;
 
-    if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_READ, path, off, len) < 0) {
+    if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_READ, path, off, len, vtag) < 0) {
         free_operation(toasty, opidx);
         opidx = -1;
         goto unlock_and_exit;
@@ -736,7 +742,9 @@ unlock_and_exit:
     return handle;
 }
 
-ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path, int off, void *src, int len)
+ToastyHandle toasty_begin_write(ToastyFS *toasty,
+    ToastyString path, int off, void *src, int len,
+    ToastyVersionTag vtag)
 {
     int opidx = -1;
     ToastyHandle handle = TOASTY_INVALID;
@@ -752,7 +760,7 @@ ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path, int off, vo
 
     toasty->operations[opidx].path = path; // TODO: must be a copy
 
-    if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, path, off, len) < 0) {
+    if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, path, off, len, vtag) < 0) {
         free_operation(toasty, opidx);
         opidx = -1;
         goto unlock_and_exit;
@@ -1462,6 +1470,7 @@ static void process_event_for_write(ToastyFS *toasty,
             toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
+        toasty->operations[opidx].expect_gen = gen;
 
         uint32_t chunk_size;
         if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
@@ -1961,7 +1970,7 @@ static void process_event_for_write(ToastyFS *toasty,
                 assert(0); // TODO
             }
             uint16_t path_len = path.len;
-            uint64_t expect_gen = 0;  // 0 means skip generation check - but per protocol, WRITE can't use 0
+            uint64_t expect_gen = toasty->operations[opidx].expect_gen;
 
             uint32_t num_chunks = num_upload_results;
 
@@ -2315,7 +2324,8 @@ int toasty_wait_result(ToastyFS *toasty, ToastyHandle handle, ToastyResult *resu
     return 0;
 }
 
-int toasty_create_dir(ToastyFS *toasty, ToastyString path)
+int toasty_create_dir(ToastyFS *toasty, ToastyString path,
+    ToastyVersionTag *vtag)
 {
     ToastyHandle handle = toasty_begin_create_dir(toasty, path);
     if (handle == TOASTY_INVALID)
@@ -2330,12 +2340,13 @@ int toasty_create_dir(ToastyFS *toasty, ToastyString path)
         return -1;
     }
 
+    if (vtag) *vtag = result.vtag;
     toasty_free_result(&result);
     return 0;
 }
 
 int toasty_create_file(ToastyFS *toasty, ToastyString path,
-    unsigned int chunk_size)
+    unsigned int chunk_size, ToastyVersionTag *vtag)
 {
     ToastyHandle handle = toasty_begin_create_file(toasty, path, chunk_size);
     if (handle == TOASTY_INVALID)
@@ -2350,13 +2361,15 @@ int toasty_create_file(ToastyFS *toasty, ToastyString path,
         return -1;
     }
 
+    if (vtag) *vtag = result.vtag;
     toasty_free_result(&result);
     return 0;
 }
 
-int toasty_delete(ToastyFS *toasty, ToastyString path)
+int toasty_delete(ToastyFS *toasty, ToastyString path,
+    ToastyVersionTag vtag)
 {
-    ToastyHandle handle = toasty_begin_delete(toasty, path);
+    ToastyHandle handle = toasty_begin_delete(toasty, path, vtag);
     if (handle == TOASTY_INVALID)
         return -1;
 
@@ -2373,9 +2386,10 @@ int toasty_delete(ToastyFS *toasty, ToastyString path)
     return 0;
 }
 
-int toasty_list(ToastyFS *toasty, ToastyString path, ToastyListing *listing)
+int toasty_list(ToastyFS *toasty, ToastyString path,
+    ToastyListing *listing, ToastyVersionTag *vtag)
 {
-    ToastyHandle handle = toasty_begin_list(toasty, path);
+    ToastyHandle handle = toasty_begin_list(toasty, path, vtag ? *vtag : 0);
     if (handle == TOASTY_INVALID)
         return -1;
 
@@ -2387,6 +2401,9 @@ int toasty_list(ToastyFS *toasty, ToastyString path, ToastyListing *listing)
         toasty_free_result(&result);
         return -1;
     }
+
+    if (vtag)
+        *vtag = result.vtag;
 
     if (listing)
         *listing = result.listing;
@@ -2401,9 +2418,9 @@ void toasty_free_listing(ToastyListing *listing)
 }
 
 int toasty_read(ToastyFS *toasty, ToastyString path,
-    int off, void *dst, int len)
+    int off, void *dst, int len, ToastyVersionTag *vtag)
 {
-    ToastyHandle handle = toasty_begin_read(toasty, path, off, dst, len);
+    ToastyHandle handle = toasty_begin_read(toasty, path, off, dst, len, vtag ? *vtag : 0);
     if (handle == TOASTY_INVALID)
         return -1;
 
@@ -2416,15 +2433,16 @@ int toasty_read(ToastyFS *toasty, ToastyString path,
         return -1;
     }
 
+    if (vtag) *vtag = result.vtag;
     int bytes_read = result.bytes_read;
     toasty_free_result(&result);
     return bytes_read;
 }
 
 int toasty_write(ToastyFS *toasty, ToastyString path,
-    int off, void *src, int len)
+    int off, void *src, int len, ToastyVersionTag *vtag)
 {
-    ToastyHandle handle = toasty_begin_write(toasty, path, off, src, len);
+    ToastyHandle handle = toasty_begin_write(toasty, path, off, src, len, vtag ? *vtag : 0);
     if (handle == TOASTY_INVALID)
         return -1;
 
@@ -2437,6 +2455,7 @@ int toasty_write(ToastyFS *toasty, ToastyString path,
         return -1;
     }
 
+    if (vtag) *vtag = result.vtag;
     toasty_free_result(&result);
     return 0; // TODO: return the number of bytes written?
 }

@@ -292,7 +292,7 @@ int main(int argc, char **argv)
                                 proxied[i].request->url.path.ptr,
                                 proxied[i].request->url.path.len,
                             };
-                            proxied[i].handle = toasty_begin_read(toasty, path, proxied[i].transferred, dst, cap);
+                            proxied[i].handle = toasty_begin_read(toasty, path, proxied[i].transferred, dst, cap, TOASTY_VERSION_TAG_EMPTY);
                             if (proxied[i].handle == TOASTY_INVALID) {
                                 assert(0); // TODO
                             }
@@ -355,11 +355,22 @@ int main(int argc, char **argv)
                         break;
                     }
 
+                    ToastyVersionTag vtag;
+                    {
+                        int i = http_find_header(request->headers, request->num_headers, HTTP_STR("ETag"));
+                        if (i < 0)
+                            vtag = TOASTY_VERSION_TAG_EMPTY;
+                        else {
+                            // TODO: parse ETag and store its value into vtag
+                            vtag = -1;
+                        }
+                    }
+
                     ToastyString path = {
                         request->url.path.ptr,
                         request->url.path.len,
                     };
-                    ToastyHandle handle = toasty_begin_write(toasty, path, 0, request->body.ptr, request->body.len);
+                    ToastyHandle handle = toasty_begin_write(toasty, path, 0, request->body.ptr, request->body.len, vtag);
                     if (handle == TOASTY_INVALID) {
                         http_response_builder_status(builder, 500); // Internal Server Error
                         http_response_builder_send(builder);
@@ -383,11 +394,22 @@ int main(int argc, char **argv)
                         break;
                     }
 
+                    ToastyVersionTag vtag;
+                    {
+                        int i = http_find_header(request->headers, request->num_headers, HTTP_STR("ETag"));
+                        if (i < 0)
+                            vtag = TOASTY_VERSION_TAG_EMPTY;
+                        else {
+                            // TODO: parse ETag and store its value into vtag
+                            vtag = -1;
+                        }
+                    }
+
                     ToastyString path = {
                         request->url.path.ptr,
                         request->url.path.len,
                     };
-                    ToastyHandle handle = toasty_begin_delete(toasty, path);
+                    ToastyHandle handle = toasty_begin_delete(toasty, path, vtag);
                     if (handle == TOASTY_INVALID) {
                         http_response_builder_status(builder, 500); // Internal Server Error
                         http_response_builder_send(builder);
