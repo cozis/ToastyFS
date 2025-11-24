@@ -32,6 +32,9 @@ typedef struct {
     // create, write
     uint64_t chunk_size;
 
+    // delete, write
+    uint64_t expect_gen;
+
     // create
     bool is_dir;
 
@@ -39,8 +42,7 @@ typedef struct {
     uint64_t offset;
     uint64_t length;
     uint32_t num_chunks;
-    SHA256 *prev_hashes;
-    SHA256 *next_hashes;
+    SHA256 *hashes;
 
 } WALEntry;
 
@@ -249,8 +251,7 @@ static int next_entry(Handle handle, WALEntry *entry)
 {
     // Initialize pointers to NULL for cleanup on error
     entry->path.ptr = NULL;
-    entry->prev_hashes = NULL;
-    entry->next_hashes = NULL;
+    entry->hashes = NULL;
 
     uint8_t type;
     int ret = read_u8(handle, &type);
@@ -296,45 +297,35 @@ static int next_entry(Handle handle, WALEntry *entry)
         break;
 
     case WAL_ENTRY_DELETE:
-        // No additional fields
+        {
+            if (read_u64(handle, &entry->expect_gen) <= 0)
+                goto cleanup_error;
+        }
         break;
 
     case WAL_ENTRY_WRITE:
         {
+            if (read_u64(handle, &entry->expect_gen) <= 0)
+                goto cleanup_error;
             if (read_u64(handle, &entry->offset) <= 0)
                 goto cleanup_error;
             if (read_u64(handle, &entry->length) <= 0)
                 goto cleanup_error;
             if (read_u32(handle, &entry->num_chunks) <= 0)
                 goto cleanup_error;
-            if (read_u32(handle, (uint32_t*) &entry->chunk_size) <= 0)
-                goto cleanup_error;
 
             // Dynamically allocate hash buffers
-            SHA256 *prev_hashes_buffer = sys_malloc(entry->num_chunks * sizeof(SHA256));
-            SHA256 *next_hashes_buffer = sys_malloc(entry->num_chunks * sizeof(SHA256));
-
-            if (!prev_hashes_buffer || !next_hashes_buffer) {
-                if (prev_hashes_buffer)
-                    sys_free(prev_hashes_buffer);
-                if (next_hashes_buffer)
-                    sys_free(next_hashes_buffer);
+            SHA256 *hashes_buffer = sys_malloc(entry->num_chunks * sizeof(SHA256));
+            if (!hashes_buffer) {
                 goto cleanup_error;
             }
 
-            if (read_exact(handle, (char*) prev_hashes_buffer, entry->num_chunks * sizeof(SHA256)) <= 0) {
-                sys_free(prev_hashes_buffer);
-                sys_free(next_hashes_buffer);
-                goto cleanup_error;
-            }
-            if (read_exact(handle, (char*) next_hashes_buffer, entry->num_chunks * sizeof(SHA256)) <= 0) {
-                sys_free(prev_hashes_buffer);
-                sys_free(next_hashes_buffer);
+            if (read_exact(handle, (char*) hashes_buffer, entry->num_chunks * sizeof(SHA256)) <= 0) {
+                sys_free(hashes_buffer);
                 goto cleanup_error;
             }
 
-            entry->prev_hashes = prev_hashes_buffer;
-            entry->next_hashes = next_hashes_buffer;
+            entry->hashes = hashes_buffer;
         }
         break;
 
@@ -347,10 +338,8 @@ static int next_entry(Handle handle, WALEntry *entry)
 cleanup_error:
     if (entry->path.ptr)
         sys_free((char*) entry->path.ptr);
-    if (entry->prev_hashes)
-        sys_free(entry->prev_hashes);
-    if (entry->next_hashes)
-        sys_free(entry->next_hashes);
+    if (entry->hashes)
+        sys_free(entry->hashes);
     return -1;
 }
 
@@ -476,14 +465,15 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
         assert(ret == 1);
 
         switch (entry.type) {
+            uint64_t gen;
         case WAL_ENTRY_CREATE:
-            file_tree_create_entity(file_tree, entry.path, entry.is_dir, entry.chunk_size);
+            file_tree_create_entity(file_tree, entry.path, entry.is_dir, entry.chunk_size, &gen);
             break;
         case WAL_ENTRY_DELETE:
-            file_tree_delete_entity(file_tree, entry.path);
+            file_tree_delete_entity(file_tree, entry.path, entry.expect_gen);
             break;
         case WAL_ENTRY_WRITE:
-            file_tree_write(file_tree, entry.path, entry.offset, entry.length, entry.num_chunks, entry.chunk_size, entry.prev_hashes, entry.next_hashes, NULL, NULL);
+            file_tree_write(file_tree, entry.path, entry.offset, entry.length, entry.num_chunks, entry.expect_gen, &gen, entry.hashes, NULL, NULL);
             break;
         default:
             UNREACHABLE;
@@ -492,10 +482,8 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
         // Free dynamically allocated fields from next_entry
         if (entry.path.ptr)
             sys_free((char*) entry.path.ptr);
-        if (entry.prev_hashes)
-            sys_free(entry.prev_hashes);
-        if (entry.next_hashes)
-            sys_free(entry.next_hashes);
+        if (entry.hashes)
+            sys_free(entry.hashes);
 
         wal->entry_count++;
     }
@@ -585,7 +573,7 @@ int wal_append_create(WAL *wal, string path, bool is_dir, uint64_t chunk_size)
     return 0;
 }
 
-int wal_append_delete(WAL *wal, string path)
+int wal_append_delete(WAL *wal, string path, uint64_t expect_gen)
 {
     if (path.len > UINT16_MAX)
         return -1;
@@ -593,9 +581,11 @@ int wal_append_delete(WAL *wal, string path)
     if (append_begin(wal) < 0)
         return -1;
 
+    // TODO: check for errors
     write_u8(wal->handle, WAL_ENTRY_DELETE);
     write_u16(wal->handle, path.len);
     write_str(wal->handle, path);
+    write_u64(wal->handle, expect_gen);
 
     if (append_end(wal) < 0)
         return -1;
@@ -604,8 +594,8 @@ int wal_append_delete(WAL *wal, string path)
 }
 
 int wal_append_write(WAL *wal, string path, uint64_t off,
-    uint64_t len, uint32_t num_chunks, uint32_t chunk_size,
-    SHA256 *prev_hashes, SHA256 *hashes)
+    uint64_t len, uint32_t num_chunks, uint64_t expect_gen,
+    SHA256 *hashes)
 {
     if (path.len > UINT16_MAX)
         return -1;
@@ -619,15 +609,13 @@ int wal_append_write(WAL *wal, string path, uint64_t off,
         return -1;
     if (write_str(wal->handle, path) < 0)
         return -1;
+    if (write_u64(wal->handle, expect_gen) < 0)
+        return -1;
     if (write_u64(wal->handle, off) < 0)
         return -1;
     if (write_u64(wal->handle, len) < 0)
         return -1;
     if (write_u32(wal->handle, num_chunks) < 0)
-        return -1;
-    if (write_u32(wal->handle, chunk_size) < 0)
-        return -1;
-    if (write_exact(wal->handle, (char*) prev_hashes, num_chunks * sizeof(SHA256)) < 0)
         return -1;
     if (write_exact(wal->handle, (char*) hashes, num_chunks * sizeof(SHA256)) < 0)
         return -1;

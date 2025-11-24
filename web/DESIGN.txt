@@ -42,3 +42,15 @@ PUT
 DELETE
     Deletes the given file or directory. Returns 204 on success, 404 if
     no file or directory existed at that path, else returns 5xx.
+
+-----------
+cases:
+    PUT file / unused path -> OK
+    PUT file / file exists -> overwrite?
+    PUT file / directory exists
+    PUT directory / unused path -> OK
+    PUT directory / file exists
+    PUT directory / directory exists
+
+Idea: Use patch on the parent directory to rename
+-----------

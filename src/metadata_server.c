@@ -183,7 +183,8 @@ process_client_create(MetadataServer *state, int conn_idx, ByteView msg)
         assert(0); // TODO
     }
 
-    int ret = file_tree_create_entity(&state->file_tree, path, is_dir, chunk_size);
+    uint64_t gen;
+    int ret = file_tree_create_entity(&state->file_tree, path, is_dir, chunk_size, &gen);
 
     if (ret < 0) {
 
@@ -207,7 +208,7 @@ process_client_create(MetadataServer *state, int conn_idx, ByteView msg)
 
         ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
         message_writer_init(&writer, output, MESSAGE_TYPE_CREATE_SUCCESS);
-
+        // TODO: write the generation
         if (!message_writer_free(&writer))
             return -1;
     }
@@ -223,6 +224,9 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
     // Read header
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
+
+    uint64_t expect_gen = NO_GENERATION;
+    // TODO: read expected generation
 
     char     path_mem[1<<10];
     uint16_t path_len;
@@ -242,12 +246,12 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
     if (binary_read(&reader, NULL, 1))
         return -1;
 
-    if (wal_append_delete(&state->wal, path) < 0) {
+    if (wal_append_delete(&state->wal, path, expect_gen) < 0) {
         assert(0); // TODO
     }
 
     // TODO: return unused hashes and add them to the ms_rem_list of holder chunk servers
-    int ret = file_tree_delete_entity(&state->file_tree, path);
+    int ret = file_tree_delete_entity(&state->file_tree, path, expect_gen);
 
     if (ret < 0) {
 
@@ -309,8 +313,9 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
 
     #define MAX_LIST_SIZE 128
 
+    uint64_t gen;
     ListItem items[MAX_LIST_SIZE];
-    int ret = file_tree_list(&state->file_tree, path, items, MAX_LIST_SIZE);
+    int ret = file_tree_list(&state->file_tree, path, items, MAX_LIST_SIZE, &gen);
 
     if (ret < 0) {
 
@@ -336,6 +341,8 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
 
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_LIST_SUCCESS);
+
+        // TODO: write generation
 
         uint32_t item_count = ret;
         uint8_t truncated = 0;
@@ -405,10 +412,11 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
 
     #define MAX_READ_HASHES 128
 
+    uint64_t gen;
     uint64_t chunk_size;
     uint64_t actual_bytes;
     SHA256 hashes[MAX_READ_HASHES];
-    int ret = file_tree_read(&state->file_tree, path, offset, length, &chunk_size, hashes, MAX_READ_HASHES, &actual_bytes);
+    int ret = file_tree_read(&state->file_tree, path, offset, length, &gen, &chunk_size, hashes, MAX_READ_HASHES, &actual_bytes);
 
     if (ret < 0) {
 
@@ -432,6 +440,8 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
 
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_READ_SUCCESS);
+
+        // TODO: write generation
 
         if (chunk_size > UINT32_MAX) {
             message_writer_free(&writer);
@@ -512,6 +522,9 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, NULL, sizeof(MessageHeader)))
         return -1;
 
+    // TODO: read expected generation
+    uint64_t expect_gen = NO_GENERATION;
+
     char     path_mem[1<<10];
     uint16_t path_len;
 
@@ -538,7 +551,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, &num_chunks, sizeof(num_chunks)))
         return -1;
 
-    uint32_t chunk_size;
+    uint32_t chunk_size; // TODO: Not needed anymore
     if (!binary_read(&reader, &chunk_size, sizeof(chunk_size)))
         return -1;
 
@@ -558,7 +571,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
     for (uint32_t i = 0; i < num_chunks; i++) {
 
-        SHA256 old_hash;
+        SHA256 old_hash; // TODO: old hashes are not necessary anymore
         if (!binary_read(&reader, &old_hash, sizeof(old_hash)))
             return -1;
 
@@ -607,19 +620,17 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     SHA256 removed_hashes[MAX_CHUNKS_PER_WRITE];
     int num_removed = 0;
 
-    SHA256 old_hashes[MAX_CHUNKS_PER_WRITE];
     SHA256 new_hashes[MAX_CHUNKS_PER_WRITE];
-    for (uint32_t i = 0; i < num_chunks; i++) {
-        old_hashes[i] = results[i].old_hash;
+    for (uint32_t i = 0; i < num_chunks; i++)
         new_hashes[i] = results[i].new_hash;
-    }
 
-    if (wal_append_write(&state->wal, path, offset, length, num_chunks, chunk_size, old_hashes, new_hashes) < 0) {
+    if (wal_append_write(&state->wal, path, offset, length, num_chunks, expect_gen, new_hashes) < 0) {
         assert(0); // TODO
     }
 
+    uint64_t new_gen;
     int ret = file_tree_write(&state->file_tree, path, offset, length,
-        num_chunks, chunk_size, old_hashes, new_hashes, removed_hashes, &num_removed);
+        num_chunks, expect_gen, &new_gen, new_hashes, removed_hashes, &num_removed);
 
     if (ret < 0) {
 
@@ -670,6 +681,8 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_WRITE_SUCCESS);
+
+        // TODO: write new generation
 
         if (!message_writer_free(&writer))
             return -1;

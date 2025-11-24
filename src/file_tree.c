@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "basic.h"
 #include "system.h"
 #include "file_tree.h"
 
@@ -104,10 +105,32 @@ static void dir_free(Dir *d)
     sys_free(d->children);
 }
 
-static void dir_remove(Dir *d, int idx)
+static bool gen_match(uint64_t expected_gen, uint64_t entity_gen)
 {
+    assert(entity_gen != NO_GENERATION);
+
+    if (expected_gen == NO_GENERATION)
+        return true;
+
+    return expected_gen == entity_gen;
+}
+
+static uint64_t create_generation(uint64_t *next_gen)
+{
+    (*next_gen)++;
+    if (*next_gen == 0 || *next_gen == UINT64_MAX)
+        *next_gen = 1;
+    return *next_gen;
+}
+
+static int dir_remove(Dir *d, int idx, uint64_t expected_gen)
+{
+    if (!gen_match(expected_gen, d->children[idx].gen))
+        return -1;
+
     // TODO: pretty sure this leaks memory
     d->children[idx] = d->children[--d->num_children];
+    return 0;
 }
 
 static bool dir_uses_hash(Dir *d, SHA256 hash)
@@ -142,10 +165,14 @@ static bool file_uses_hash(File *f, SHA256 hash)
 
 // Fails when the name is too long
 static int entity_init(Entity *e, char *name, int name_len,
-    bool is_dir, uint64_t chunk_size)
+    bool is_dir, uint64_t chunk_size, uint64_t *next_gen)
 {
     if (name_len >= (int) sizeof(e->name))
         return -1;
+
+    e->gen = create_generation(next_gen);
+    assert(e->gen != NO_GENERATION);
+
     memcpy(e->name, name, name_len);
     e->name[name_len] = '\0';
     e->name_len = (uint16_t) name_len;
@@ -177,7 +204,9 @@ static bool entity_uses_hash(Entity *e, SHA256 hash)
 
 int file_tree_init(FileTree *ft)
 {
-    int ret = entity_init(&ft->root, "", 0, true, 0);
+    ft->next_gen = 1;
+
+    int ret = entity_init(&ft->root, "", 0, true, 0, &ft->next_gen);
     if (ret < 0) return -1;
 
     return 0;
@@ -194,7 +223,7 @@ bool file_tree_uses_hash(FileTree *ft, SHA256 hash)
 }
 
 int file_tree_list(FileTree *ft, string path,
-    ListItem *items, int max_items)
+    ListItem *items, int max_items, uint64_t *gen)
 {
     int num_comps;
     string comps[MAX_COMPS];
@@ -230,11 +259,14 @@ int file_tree_list(FileTree *ft, string path,
         items[i].is_dir = c->is_dir;
     }
 
+    assert(e->gen != NO_GENERATION);
+    *gen = e->gen;
+
     return d->num_children;
 }
 
 int file_tree_create_entity(FileTree *ft, string path,
-    bool is_dir, uint64_t chunk_size)
+    bool is_dir, uint64_t chunk_size, uint64_t *gen)
 {
     int num_comps;
     string comps[MAX_COMPS];
@@ -285,17 +317,21 @@ int file_tree_create_entity(FileTree *ft, string path,
     }
     Entity *c = &d->children[d->num_children];
 
-    int ret = entity_init(c, (char*) name.ptr, name.len, is_dir, chunk_size);
+    int ret = entity_init(c, (char*) name.ptr, name.len, is_dir, chunk_size, &ft->next_gen);
     if (ret < 0)
         // Invalid name for the new file
         return FILETREE_BADPATH;
+
+    assert(e->gen != NO_GENERATION);
+    *gen = e->gen;
 
     d->num_children++;
     return 0;
 }
 
 // TODO: this should return the list of unreferenced hashes
-int file_tree_delete_entity(FileTree *ft, string path)
+int file_tree_delete_entity(FileTree *ft, string path,
+    uint64_t expected_gen)
 {
     int num_comps;
     string comps[MAX_COMPS];
@@ -316,14 +352,18 @@ int file_tree_delete_entity(FileTree *ft, string path)
     if (i == -1)
         return FILETREE_NOENT;
 
-    dir_remove(&e->d, i);
+    if (dir_remove(&e->d, i, expected_gen) < 0)
+        return -1; // TODO: proper error code
+
     return 0;
 }
 
 int file_tree_write(FileTree *ft, string path,
     uint64_t off, uint64_t len, uint32_t num_chunks,
-    uint32_t chunk_size, SHA256 *prev_hashes,
-    SHA256 *hashes, SHA256 *removed_hashes,
+    uint64_t expect_gen,
+    uint64_t *new_gen,
+    SHA256 *hashes,
+    SHA256 *removed_hashes,
     int *num_removed)
 {
     int num_comps;
@@ -341,10 +381,10 @@ int file_tree_write(FileTree *ft, string path,
     if (e->is_dir)
         return FILETREE_ISDIR;
 
-    File *f = &e->f;
+    if (!gen_match(expect_gen, e->gen))
+        return -1; // TODO: proper error code
 
-    if (f->chunk_size != chunk_size)
-        return -1; // TODO: error code
+    File *f = &e->f;
 
     uint64_t first_chunk_index = off / f->chunk_size;
     uint64_t  last_chunk_index = first_chunk_index + (len - 1) / f->chunk_size;
@@ -367,14 +407,17 @@ int file_tree_write(FileTree *ft, string path,
             memset(&f->chunks[i], 0, sizeof(SHA256));
     }
 
-    // Verify prev_hashes match
-    for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++)
-        if (memcmp(&f->chunks[i], &prev_hashes[i - first_chunk_index], sizeof(SHA256)))
-            return -1; // TODO: error code
+    int num_overwritten_hashes = 0;
+    SHA256 overwritten_hashes[100]; // TODO: fix this limit
+    if (num_chunks > 100) {
+        assert(0); // TODO
+    }
 
     // Update chunks
-    for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++)
+    for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++) {
+        overwritten_hashes[num_overwritten_hashes++] = f->chunks[i];
         f->chunks[i] = hashes[i - first_chunk_index];
+    }
 
     // Update file size (last byte written + 1)
     uint64_t new_size = off + len;
@@ -388,13 +431,14 @@ int file_tree_write(FileTree *ft, string path,
     //       interested in which hashes are no longer reachable.
     if (removed_hashes != NULL) {
         *num_removed = 0;
-        for (uint64_t i = first_chunk_index; i <= last_chunk_index; i++) {
-            SHA256 old_hash = prev_hashes[i - first_chunk_index];
+        for (int i = 0; i < num_overwritten_hashes; i++) {
+
+            SHA256 hash = overwritten_hashes[i];
 
             // Skip zero hashes
             bool is_zero = true;
             for (int j = 0; j < (int) sizeof(SHA256); j++) {
-                if (old_hash.data[j] != 0) {
+                if (hash.data[j] != 0) {
                     is_zero = false;
                     break;
                 }
@@ -403,20 +447,22 @@ int file_tree_write(FileTree *ft, string path,
                 continue;
 
             // Check if this hash is still used anywhere in the tree
-            if (!entity_uses_hash(&ft->root, old_hash)) {
-                // Not used - add to removed list
-                if (removed_hashes)
-                    removed_hashes[*num_removed] = old_hash;
+            if (!entity_uses_hash(&ft->root, hash)) {
+                removed_hashes[*num_removed] = hash;
                 (*num_removed)++;
             }
         }
     }
 
+    e->gen = create_generation(&ft->next_gen);
+    assert(e->gen != NO_GENERATION);
+
+    *new_gen = e->gen;
     return 0;
 }
 
 int file_tree_read(FileTree *ft, string path,
-    uint64_t off, uint64_t len, uint64_t *chunk_size,
+    uint64_t off, uint64_t len, uint64_t *gen, uint64_t *chunk_size,
     SHA256 *hashes, int max_hashes, uint64_t *actual_bytes)
 {
     int num_comps;
@@ -471,6 +517,9 @@ int file_tree_read(FileTree *ft, string path,
             hashes[num_hashes] = hash;
         num_hashes++;
     }
+
+    assert(e->gen != NO_GENERATION);
+    *gen = e->gen;
 
     return num_hashes;
 }
