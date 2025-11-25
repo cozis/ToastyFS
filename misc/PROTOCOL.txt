@@ -178,6 +178,7 @@ The following is the list of messages the Metadata Server may send to a Client:
     When a client sends a LIST request to the metadata server and it succedes, the server replies with a LIST_SUCCESSS message with the following layout:
 
         struct ListItem {
+            uint64_t gen;
             uint8_t  is_dir;
             uint16_t name_len;
             char     name[name_len];
@@ -191,7 +192,7 @@ The following is the list of messages the Metadata Server may send to a Client:
             ListItem items[item_count];
         };
 
-    The gen field contains the generation counter for the directory.
+    The ListSuccessMessage gen field contains the generation counter for the directory, while the gen field in ListItem is the counter for that specific child.
 
     If the truncated field is non-zero, the actual item count for this directory is greater than the one sent in the message.
 

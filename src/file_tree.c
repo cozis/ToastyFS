@@ -257,6 +257,7 @@ int file_tree_list(FileTree *ft, string path,
 
         items[i].name_len = name_cpy;
         items[i].is_dir = c->is_dir;
+        items[i].gen = c->gen;
     }
 
     assert(e->gen != NO_GENERATION);

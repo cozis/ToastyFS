@@ -362,6 +362,8 @@ process_client_list(MetadataServer *state, int conn_idx, ByteView msg)
 
         for (int i = 0; i < ret && i < MAX_LIST_SIZE; i++) {
 
+            message_write(&writer, &items[i].gen, sizeof(items[i].gen));
+
             uint8_t is_dir = items[i].is_dir;
             message_write(&writer, &is_dir, sizeof(is_dir));
 

@@ -51,6 +51,7 @@ typedef struct {
     char name[1<<8];
     int  name_len;
     bool is_dir;
+    uint64_t gen;
 } ListItem;
 
 #define MAX_COMPS 32

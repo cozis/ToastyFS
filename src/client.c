@@ -950,6 +950,14 @@ static void process_event_for_list(ToastyFS *toasty,
 
     // Parse each list item
     for (uint32_t i = 0; i < item_count; i++) {
+
+        uint64_t gen;
+        if (!binary_read(&reader, &gen, sizeof(gen))) {
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
+            sys_free(entities);
+            return;
+        }
+
         uint8_t is_dir;
         if (!binary_read(&reader, &is_dir, sizeof(is_dir))) {
             toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_LIST_ERROR, .user=toasty->operations[opidx].user };
@@ -971,6 +979,7 @@ static void process_event_for_list(ToastyFS *toasty,
             return;
         }
 
+        entities[i].vtag = gen;
         entities[i].is_dir = is_dir;
 
         if (name_len > sizeof(entities[i].name)-1) {

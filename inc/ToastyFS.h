@@ -85,6 +85,7 @@ int toasty_delete(ToastyFS *toasty, ToastyString path, ToastyVersionTag vtag);
 typedef struct {
     char name[128]; // TODO: Implement a proper name length
     bool is_dir;
+    ToastyVersionTag vtag;
 } ToastyListingEntry;
 
 typedef struct {
