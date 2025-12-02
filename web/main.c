@@ -167,16 +167,8 @@ int main(int argc, char **argv)
         void **http_ptrs = ptrs;
         struct pollfd *http_polled = polled;
 
-        reg = (EventRegister) {
-            .ptrs=ptrs,
-            .polled=polled,
-            .max_polled=HTTP_SERVER_POLL_CAPACITY,
-            .num_polled=0,
-        };
-        if (http_server_register_events(&server, &reg) < 0) {
-            printf("http_server_register_events error\n");
-            return -1;
-        }
+        reg = (EventRegister) { ptrs, polled, 0 };
+        http_server_register_events(&server, &reg);
         int num_http_polled = reg.num_polled;
 
         void **toasty_ptrs = ptrs + num_http_polled;
@@ -327,9 +319,8 @@ int main(int argc, char **argv)
             }
         }
 
-        reg = (EventRegister) { http_ptrs, http_polled, HTTP_SERVER_POLL_CAPACITY, num_http_polled };
-        if (http_server_process_events(&server, &reg) < 0)
-            return -1;
+        reg = (EventRegister) { http_ptrs, http_polled, num_http_polled };
+        http_server_process_events(&server, reg);
 
         for (;;) {
             HTTP_Request *request;

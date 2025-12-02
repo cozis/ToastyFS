@@ -13,7 +13,7 @@ bool streq(string s1, string s2)
     return true;
 }
 
-// Returns the current time in milliseconds since
+// Returns the current time in nanoseconds since
 // an unspecified time in the past (useful to calculate
 // elapsed time intervals)
 Time get_current_time(void)
