@@ -22,6 +22,7 @@ int main(int argc, char **argv)
     }
     http_server_set_reuse_addr(&server, config.reuse_addr);
     http_server_set_trace_bytes(&server, config.trace_bytes);
+
     if (http_server_listen_tcp(&server, config.local_addr, config.local_port) < 0) {
         printf("http_server_listen_tcp error\n");
         return -1;

@@ -1373,11 +1373,16 @@ HANDLE mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess,
 
 BOOL mock_CloseHandle(HANDLE handle)
 {
-    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+    if (handle == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) handle;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1397,11 +1402,16 @@ BOOL mock_LockFile(HANDLE hFile,
     DWORD nNumberOfBytesToLockLow,
     DWORD nNumberOfBytesToLockHigh)
 {
-    if (hFile == INVALID_HANDLE_VALUE || (int)hFile < 0 || (int)hFile >= MAX_DESCRIPTORS) {
+    if (hFile == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) hFile;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1425,11 +1435,16 @@ BOOL mock_UnlockFile(
     DWORD  nNumberOfBytesToUnlockLow,
     DWORD  nNumberOfBytesToUnlockHigh)
 {
-    if (hFile == INVALID_HANDLE_VALUE || (int)hFile < 0 || (int)hFile >= MAX_DESCRIPTORS) {
+    if (hFile == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) hFile;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1448,11 +1463,16 @@ BOOL mock_UnlockFile(
 
 BOOL mock_FlushFileBuffers(HANDLE handle)
 {
-    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+    if (handle == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) handle;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1466,11 +1486,16 @@ BOOL mock_FlushFileBuffers(HANDLE handle)
 
 BOOL mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov)
 {
-    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+    if (handle == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) handle;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1484,11 +1509,16 @@ BOOL mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *
 
 BOOL mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov)
 {
-    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+    if (handle == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) handle;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1502,11 +1532,16 @@ BOOL mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED 
 
 DWORD mock_SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceToMoveHigh, DWORD dwMoveMethod)
 {
-    if (hFile == INVALID_HANDLE_VALUE || (int)hFile < 0 || (int)hFile >= MAX_DESCRIPTORS) {
+    if (hFile == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return INVALID_SET_FILE_POINTER;
     }
+
     int idx = (int) hFile;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return INVALID_SET_FILE_POINTER;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1520,11 +1555,16 @@ DWORD mock_SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceTo
 
 BOOL mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf)
 {
-    if (handle == INVALID_HANDLE_VALUE || (int)handle < 0 || (int)handle >= MAX_DESCRIPTORS) {
+    if (handle == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) handle;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_FILE) {
@@ -1599,7 +1639,7 @@ int mock_ioctlsocket(SOCKET fd, long cmd, u_long *argp)
         return -1;
     }
 
-    if (cmd == FIONBIO) {
+    if ((long unsigned int) cmd == FIONBIO) {
         desc->is_nonblocking = (*argp != 0);
         return 0;
     }
@@ -1637,11 +1677,16 @@ HANDLE mock_FindFirstFileA(char *lpFileName, WIN32_FIND_DATAA *lpFindFileData)
 
 BOOL mock_FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA *lpFindFileData)
 {
-    if (hFindFile == INVALID_HANDLE_VALUE || (int)hFindFile < 0 || (int)hFindFile >= MAX_DESCRIPTORS) {
+    if (hFindFile == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) hFindFile;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_DIRECTORY) {
@@ -1655,11 +1700,16 @@ BOOL mock_FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA *lpFindFileData)
 
 BOOL mock_FindClose(HANDLE hFindFile)
 {
-    if (hFindFile == INVALID_HANDLE_VALUE || (int)hFindFile < 0 || (int)hFindFile >= MAX_DESCRIPTORS) {
+    if (hFindFile == INVALID_HANDLE_VALUE) {
         SetLastError(ERROR_INVALID_HANDLE);
         return FALSE;
     }
+
     int idx = (int) hFindFile;
+    if (idx < 0 || idx >= MAX_DESCRIPTORS) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
 
     Descriptor *desc = &current_process->desc[idx];
     if (desc->type != DESC_DIRECTORY) {

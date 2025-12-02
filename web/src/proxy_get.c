@@ -108,7 +108,8 @@ bool process_completion_read_file(ProxyState *state,
                 operation->request->url.path.ptr,
                 operation->request->url.path.len,
             };
-            operation->handle = toasty_begin_read(state->backend, path, operation->transferred, dst, cap, TOASTY_VERSION_TAG_EMPTY);
+            operation->handle = toasty_begin_read(state->backend, path,
+                operation->transferred, dst, cap, TOASTY_VERSION_TAG_EMPTY);
             if (operation->handle == TOASTY_INVALID) {
                 assert(0); // TODO
             }
