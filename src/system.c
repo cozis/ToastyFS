@@ -1,3 +1,4 @@
+#include "basic.h"
 #include "tcp.h"
 #ifdef BUILD_TEST
 
@@ -627,6 +628,9 @@ static int setup_poll_array(void **contexts, struct pollfd *polled)
                 break;
             }
             break;
+
+            default:
+            UNREACHABLE;
         }
 
         revents &= desc->events;
@@ -1101,6 +1105,9 @@ int mock_getsockopt(SOCKET fd, int level, int optname, void *optval, socklen_t *
                 break;
             }
             break;
+
+            default:
+            UNREACHABLE;
         }
         *(int*)optval = val;
         *optlen = sizeof(int);
