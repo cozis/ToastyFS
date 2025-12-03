@@ -12,11 +12,6 @@ bool process_request_get(ProxyState *state, ProxyOperation *operation,
         || request->method == HTTP_METHOD_HEAD);
 
     http_response_builder_status(builder, 200); // OK
-    http_response_builder_body_cap(builder, 1<<10); // TODO: pick the prealloc better
-
-    int cap;
-    char *dst = http_response_builder_body_buf(builder, &cap);
-    // TODO: check for NULL dst
 
     ToastyString path = {
         request->url.path.ptr,
@@ -28,10 +23,19 @@ bool process_request_get(ProxyState *state, ProxyOperation *operation,
         handle = toasty_begin_list(state->backend, path,
             TOASTY_VERSION_TAG_EMPTY);
     } else {
+
+        http_response_builder_body_cap(builder, 1<<10); // TODO: pick the prealloc better
+
+        int cap;
+        char *dst = http_response_builder_body_buf(builder, &cap);
+        // TODO: check for NULL dst
+
         handle = toasty_begin_read(state->backend, path,
             0, dst, cap, TOASTY_VERSION_TAG_EMPTY);
     }
     if (handle == TOASTY_INVALID) {
+        if (!path_refers_to_dir(path))
+            http_response_builder_body_ack(builder, 0);
         http_response_builder_status(builder, 500); // Internal Server Error
         http_response_builder_send(builder);
         return false;
