@@ -473,7 +473,8 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
             file_tree_delete_entity(file_tree, entry.path, entry.expect_gen);
             break;
         case WAL_ENTRY_WRITE:
-            file_tree_write(file_tree, entry.path, entry.offset, entry.length, entry.num_chunks, entry.expect_gen, &gen, entry.hashes, NULL, NULL);
+            // WAL replay: use false for truncate_after since truncation was already handled
+            file_tree_write(file_tree, entry.path, entry.offset, entry.length, entry.num_chunks, entry.expect_gen, &gen, entry.hashes, NULL, NULL, false);
             break;
         default:
             UNREACHABLE;

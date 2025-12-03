@@ -122,6 +122,10 @@ the metadata server:
           the metadata server will atomically create it with a default chunk
           size of 4096 bytes and retry the write operation. The creation is
           logged to the WAL for crash consistency.
+        - TOASTY_WRITE_TRUNCATE_AFTER (0x02): Truncate the file after the write
+          operation, setting the file size to exactly offset+length. Any data
+          beyond this point is discarded. Useful for HTTP PUT semantics where
+          the entire file content should be replaced.
 
     The offset and length mark the region that is being written to.
 

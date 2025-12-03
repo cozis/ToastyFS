@@ -54,6 +54,11 @@ Architecture
   with a default chunk size (4096 bytes) and retries the write.
   This operation is logged to the WAL to ensure crash consistency.
 
+  If the TOASTY_WRITE_TRUNCATE_AFTER flag is set, the file is
+  truncated after the write, setting its size to exactly offset+length
+  and discarding any data beyond that point. This is useful for HTTP
+  PUT semantics where the entire file content should be replaced.
+
   Note that write failures may cause chunks to be orphaned
   on chunk servers. This is solved by a garbage collection
   algorithm implemented by the synchronization messages

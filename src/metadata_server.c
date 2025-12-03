@@ -634,13 +634,17 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
         assert(0); // TODO
     }
 
+    // Extract flag values
+    #define TOASTY_WRITE_CREATE_IF_MISSING (1 << 0)
+    #define TOASTY_WRITE_TRUNCATE_AFTER    (1 << 1)
+    bool truncate_after = (flags & TOASTY_WRITE_TRUNCATE_AFTER) != 0;
+
     uint64_t new_gen;
     int ret = file_tree_write(&state->file_tree, path, offset, length,
-        num_chunks, expect_gen, &new_gen, new_hashes, removed_hashes, &num_removed);
+        num_chunks, expect_gen, &new_gen, new_hashes, removed_hashes, &num_removed, truncate_after);
 
     // If write failed because file doesn't exist and CREATE_IF_MISSING flag is set,
     // create the file and retry the write
-    #define TOASTY_WRITE_CREATE_IF_MISSING (1 << 0)
     if (ret == FILETREE_NOENT && (flags & TOASTY_WRITE_CREATE_IF_MISSING)) {
         // Create the file with default chunk size of 4096 bytes
         uint64_t chunk_size = 4096;
@@ -656,7 +660,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
         if (create_ret == 0) {
             // File created successfully, retry the write with the new generation
             ret = file_tree_write(&state->file_tree, path, offset, length,
-                num_chunks, create_gen, &new_gen, new_hashes, removed_hashes, &num_removed);
+                num_chunks, create_gen, &new_gen, new_hashes, removed_hashes, &num_removed, truncate_after);
         }
     }
 

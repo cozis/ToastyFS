@@ -77,7 +77,8 @@ int file_tree_write(FileTree *ft, string path,
     uint64_t *new_gen,
     SHA256 *hashes,
     SHA256 *removed_hashes,
-    int *num_removed);
+    int *num_removed,
+    bool truncate_after);
 
 int file_tree_read(FileTree *ft, string path,
     uint64_t off, uint64_t len, uint64_t *gen, uint64_t *chunk_size,

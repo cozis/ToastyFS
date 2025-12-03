@@ -35,10 +35,13 @@ PUT
     operation fails with code 400.
 
     If the path refers to a file, the file is automatically created if it
-    doesn't exist, then the specified contents are written to it. This is
-    implemented using the TOASTY_WRITE_CREATE_IF_MISSING flag which performs
-    file creation and write atomically on the metadata server. Files are
-    created with a default chunk size of 4096 bytes.
+    doesn't exist, then the specified contents are written to it, replacing
+    the entire file content (HTTP PUT semantics). This is implemented using
+    two flags:
+    - TOASTY_WRITE_CREATE_IF_MISSING: Creates file if it doesn't exist
+    - TOASTY_WRITE_TRUNCATE_AFTER: Truncates file after the write, discarding
+      any data beyond the uploaded content
+    Files are created with a default chunk size of 4096 bytes.
 
     If a file or directory already existed at that path, it is overwritten
     unless the header "X-ToastyFS-Overwrite: no" is sent.

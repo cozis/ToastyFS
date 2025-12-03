@@ -369,7 +369,8 @@ int file_tree_write(
     uint64_t* new_gen,
     SHA256*   hashes,
     SHA256*   removed_hashes,
-    int*      num_removed)
+    int*      num_removed,
+    bool      truncate_after)
 {
     // WRITE operations cannot use expect_gen=0
     if (expect_gen == NO_GENERATION)
@@ -430,8 +431,24 @@ int file_tree_write(
 
     // Update file size (last byte written + 1)
     uint64_t new_size = off + len;
-    if (new_size > f->file_size)
+    if (truncate_after) {
+        // With truncation, set file size to exactly new_size and remove chunks beyond
+        uint64_t new_num_chunks = last_chunk_index + 1;
+
+        // Add any chunks beyond the write to the overwritten list (they'll be removed)
+        for (uint64_t i = new_num_chunks; i < f->num_chunks; i++) {
+            if (num_overwritten_hashes < 100) {  // Respect the limit
+                overwritten_hashes[num_overwritten_hashes++] = f->chunks[i];
+            }
+        }
+
+        f->num_chunks = new_num_chunks;
         f->file_size = new_size;
+    } else {
+        // Without truncation, only grow the file
+        if (new_size > f->file_size)
+            f->file_size = new_size;
+    }
 
     // Now check which old hashes are no longer used
     // anywhere in the tree
