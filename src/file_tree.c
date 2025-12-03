@@ -504,7 +504,7 @@ int file_tree_read(FileTree *ft, string path,
         return FILETREE_NOENT;
 
     if (e->is_dir)
-        return FILETREE_NOTDIR;
+        return FILETREE_ISDIR;
 
     File *f = &e->f;
 
