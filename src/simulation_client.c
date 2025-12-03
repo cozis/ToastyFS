@@ -209,7 +209,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             ptr = malloc(len);
             if (ptr == NULL) assert(0);
             memset(ptr, 'a', len);
-            handle = toasty_begin_write(client->toasty, entry.path, off, ptr, len, TOASTY_VERSION_TAG_EMPTY);
+            handle = toasty_begin_write(client->toasty, entry.path, off, ptr, len, TOASTY_VERSION_TAG_EMPTY, 0);
             //printf("[Client] submit write  (path=%s, off=%d, len=%d)\n", entry.path, off, len);
             break;
         }

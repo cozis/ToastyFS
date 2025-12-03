@@ -124,6 +124,7 @@ typedef struct {
     uint32_t num_chunks;
     uint32_t chunk_size;
     uint64_t expect_gen;
+    uint32_t flags;  // Write operation flags (e.g., TOASTY_WRITE_CREATE_IF_MISSING)
     UploadSchedule *uploads;
     int num_uploads;
     int cap_uploads;
@@ -744,7 +745,7 @@ unlock_and_exit:
 
 ToastyHandle toasty_begin_write(ToastyFS *toasty,
     ToastyString path, int off, void *src, int len,
-    ToastyVersionTag vtag)
+    ToastyVersionTag vtag, uint32_t flags)
 {
     int opidx = -1;
     ToastyHandle handle = TOASTY_INVALID;
@@ -759,6 +760,7 @@ ToastyHandle toasty_begin_write(ToastyFS *toasty,
         goto unlock_and_exit;
 
     toasty->operations[opidx].path = path; // TODO: must be a copy
+    toasty->operations[opidx].flags = flags;
 
     if (send_read_message(toasty, opidx, TAG_RETRIEVE_METADATA_FOR_WRITE, path, off, len, vtag) < 0) {
         free_operation(toasty, opidx);
@@ -1974,6 +1976,7 @@ static void process_event_for_write(ToastyFS *toasty,
             ToastyString path   = toasty->operations[opidx].path;
             uint32_t     offset = toasty->operations[opidx].off;
             uint32_t     length = toasty->operations[opidx].len;
+            uint32_t     flags  = toasty->operations[opidx].flags;
 
             if (path.len > UINT16_MAX) {
                 assert(0); // TODO
@@ -1984,6 +1987,7 @@ static void process_event_for_write(ToastyFS *toasty,
             uint32_t num_chunks = num_upload_results;
 
             message_write(&writer, &expect_gen, sizeof(expect_gen));
+            message_write(&writer, &flags,      sizeof(flags));
             message_write(&writer, &path_len,   sizeof(path_len));
             message_write(&writer, path.ptr,    path.len);
             message_write(&writer, &offset,     sizeof(offset));
@@ -2449,9 +2453,9 @@ int toasty_read(ToastyFS *toasty, ToastyString path,
 }
 
 int toasty_write(ToastyFS *toasty, ToastyString path,
-    int off, void *src, int len, ToastyVersionTag *vtag)
+    int off, void *src, int len, ToastyVersionTag *vtag, uint32_t flags)
 {
-    ToastyHandle handle = toasty_begin_write(toasty, path, off, src, len, vtag ? *vtag : 0);
+    ToastyHandle handle = toasty_begin_write(toasty, path, off, src, len, vtag ? *vtag : 0, flags);
     if (handle == TOASTY_INVALID)
         return -1;
 

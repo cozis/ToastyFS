@@ -56,6 +56,9 @@ typedef uint64_t ToastyVersionTag;
 // TODO: comment
 #define TOASTY_VERSION_TAG_EMPTY ((ToastyVersionTag) 0)
 
+// Write operation flags
+#define TOASTY_WRITE_CREATE_IF_MISSING (1 << 0)  // Create file if it doesn't exist
+
 // Creates a directory at the specified path.
 // Returns 0 on success, -1 on error.
 //
@@ -125,8 +128,12 @@ int toasty_read(ToastyFS *toasty, ToastyString path, int off,
 // on success, or -1 on error.
 //
 // For how vtag works, see toasty_read.
+//
+// The flags parameter can be set to TOASTY_WRITE_CREATE_IF_MISSING
+// to automatically create the file if it doesn't exist. A default
+// chunk size of 4096 bytes will be used for the created file.
 int toasty_write(ToastyFS *toasty, ToastyString path, int off,
-    void *src, int len, ToastyVersionTag *vtag);
+    void *src, int len, ToastyVersionTag *vtag, uint32_t flags);
 
 //////////////////////////////////////////////////////////////////////////////////
 // ASYNCHRONOUS API
@@ -177,8 +184,12 @@ ToastyHandle toasty_begin_read(ToastyFS *toasty, ToastyString path,
 //
 // If vtag is not 0, the operation only succedes if the
 // tag matches the remote entity's.
+//
+// The flags parameter can be set to TOASTY_WRITE_CREATE_IF_MISSING
+// to automatically create the file if it doesn't exist. A default
+// chunk size of 4096 bytes will be used for the created file.
 ToastyHandle toasty_begin_write(ToastyFS *toasty, ToastyString path,
-    int off, void *src, int len, ToastyVersionTag vtag);
+    int off, void *src, int len, ToastyVersionTag vtag, uint32_t flags);
 
 // Associate the pointer "user" to the handle. The user
 // pointer will be returned in the ToastyResult when the

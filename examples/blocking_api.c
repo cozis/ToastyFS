@@ -22,7 +22,7 @@ int main(void)
     }
 
     char data[] = "Hello, world!";
-    ret = toasty_write(toasty, path, 0, data, sizeof(data)-1, 0);
+    ret = toasty_write(toasty, path, 0, data, sizeof(data)-1, NULL, 0);
     if (ret < 0) {
         printf("Couldn't write to file\n");
         toasty_disconnect(toasty);

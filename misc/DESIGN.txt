@@ -41,11 +41,19 @@ Architecture
   modifications are successful, the client holds the set of
   old hashes and new hashes for that file range. It completes
   the write by telling the metadata server to swap the old
-  hashes with the new ones. If the old hashes don't match,
-  another write succeded in the mean time and touched that
-  range, therefore the write fails. If the old hashes match,
-  the write succeded. If the client fails to modify any
-  chunks, it doesn't commit the write with the metadata server.
+  hashes with the new ones (optionally including write flags
+  such as TOASTY_WRITE_CREATE_IF_MISSING). If the old hashes
+  don't match, another write succeded in the mean time and
+  touched that range, therefore the write fails. If the old
+  hashes match, the write succeded. If the client fails to
+  modify any chunks, it doesn't commit the write with the
+  metadata server.
+
+  If the file doesn't exist and the TOASTY_WRITE_CREATE_IF_MISSING
+  flag is set, the metadata server atomically creates the file
+  with a default chunk size (4096 bytes) and retries the write.
+  This operation is logged to the WAL to ensure crash consistency.
+
   Note that write failures may cause chunks to be orphaned
   on chunk servers. This is solved by a garbage collection
   algorithm implemented by the synchronization messages

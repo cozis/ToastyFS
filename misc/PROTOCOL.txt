@@ -106,6 +106,7 @@ the metadata server:
         struct WriteMessage {
             Header   header; // type=WRITE
             uint64_t expect_gen;
+            uint32_t flags;
             uint16_t path_len;
             char     path[path_len];
             uint32_t offset;
@@ -115,6 +116,12 @@ the metadata server:
         };
 
     If the expect_gen field doesn't match the generation of the target file, the operation fails. Note that unlike other operations, the expect_gen CAN'T be 0. This is due to the assumption that the chunk size hasn't change for that file since the writer originally retrieved the file's metadata.
+
+    The flags field contains write operation flags. Currently defined flags:
+        - TOASTY_WRITE_CREATE_IF_MISSING (0x01): If the file doesn't exist,
+          the metadata server will atomically create it with a default chunk
+          size of 4096 bytes and retry the write operation. The creation is
+          logged to the WAL for crash consistency.
 
     The offset and length mark the region that is being written to.
 

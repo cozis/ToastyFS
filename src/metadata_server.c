@@ -537,6 +537,10 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     if (!binary_read(&reader, &expect_gen, sizeof(expect_gen)))
         return -1;
 
+    uint32_t flags;
+    if (!binary_read(&reader, &flags, sizeof(flags)))
+        return -1;
+
     char     path_mem[1<<10];
     uint16_t path_len;
 
@@ -633,6 +637,28 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
     uint64_t new_gen;
     int ret = file_tree_write(&state->file_tree, path, offset, length,
         num_chunks, expect_gen, &new_gen, new_hashes, removed_hashes, &num_removed);
+
+    // If write failed because file doesn't exist and CREATE_IF_MISSING flag is set,
+    // create the file and retry the write
+    #define TOASTY_WRITE_CREATE_IF_MISSING (1 << 0)
+    if (ret == FILETREE_NOENT && (flags & TOASTY_WRITE_CREATE_IF_MISSING)) {
+        // Create the file with default chunk size of 4096 bytes
+        uint64_t chunk_size = 4096;
+
+        // Log the creation in the WAL
+        if (wal_append_create(&state->wal, path, false, chunk_size) < 0) {
+            assert(0); // TODO
+        }
+
+        uint64_t create_gen;
+        int create_ret = file_tree_create_entity(&state->file_tree, path, false, chunk_size, &create_gen);
+
+        if (create_ret == 0) {
+            // File created successfully, retry the write with the new generation
+            ret = file_tree_write(&state->file_tree, path, offset, length,
+                num_chunks, create_gen, &new_gen, new_hashes, removed_hashes, &num_removed);
+        }
+    }
 
     if (ret < 0) {
 

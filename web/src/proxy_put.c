@@ -7,8 +7,11 @@ bool process_request_put(ProxyState *state, ProxyOperation *operation,
         request->url.path.ptr,
         request->url.path.len,
     };
+    // Use TOASTY_WRITE_CREATE_IF_MISSING to automatically create files
+    // when they don't exist, enabling PUT operations to create new files
     ToastyHandle handle = toasty_begin_write(state->backend, path, 0,
-        request->body.ptr, request->body.len, TOASTY_VERSION_TAG_EMPTY);
+        request->body.ptr, request->body.len, TOASTY_VERSION_TAG_EMPTY,
+        TOASTY_WRITE_CREATE_IF_MISSING);
     if (handle == TOASTY_INVALID) {
         http_response_builder_status(builder, 500); // Internal Server Error
         http_response_builder_send(builder);
