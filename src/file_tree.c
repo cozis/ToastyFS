@@ -359,15 +359,19 @@ int file_tree_delete_entity(FileTree *ft, string path,
     return 0;
 }
 
-int file_tree_write(FileTree *ft, string path,
-    uint64_t off, uint64_t len, uint32_t num_chunks,
-    uint64_t expect_gen,
-    uint64_t *new_gen,
-    SHA256 *hashes,
-    SHA256 *removed_hashes,
-    int *num_removed)
+int file_tree_write(
+    FileTree* ft,
+    string    path,
+    uint64_t  off,
+    uint64_t  len,
+    uint32_t  num_chunks,
+    uint64_t  expect_gen,
+    uint64_t* new_gen,
+    SHA256*   hashes,
+    SHA256*   removed_hashes,
+    int*      num_removed)
 {
-    // Per protocol spec, WRITE operations cannot use expect_gen=0
+    // WRITE operations cannot use expect_gen=0
     if (expect_gen == NO_GENERATION)
         return FILETREE_BADGEN;
 
