@@ -7,13 +7,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Get the definition of "struct pollfd"
-#ifdef _WIN32
-#include <winsock2.h>
-#else
-#include <poll.h>
-#endif
-
 //////////////////////////////////////////////////////////////////////////////////
 // TYPES & UTILITIES
 //////////////////////////////////////////////////////////////////////////////////
@@ -257,6 +250,8 @@ void toasty_free_result(ToastyResult *result);
 //////////////////////////////////////////////////////////////////////////////////
 
 #define TOASTY_POLL_CAPACITY 514
+
+struct pollfd;
 
 // TODO: comment
 int toasty_process_events(ToastyFS *toasty, void **contexts,
