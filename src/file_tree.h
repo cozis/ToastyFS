@@ -3,7 +3,11 @@
 
 #include "basic.h"
 
+// Special generation counter values:
+// NO_GENERATION (0): Skip generation check (accept any generation)
+// MISSING_FILE_GENERATION (UINT64_MAX): Expect file/directory to NOT exist
 #define NO_GENERATION ((uint64_t) 0)
+#define MISSING_FILE_GENERATION ((uint64_t) UINT64_MAX)
 
 enum {
     FILETREE_NOMEM   = -1,

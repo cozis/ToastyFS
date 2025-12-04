@@ -430,6 +430,7 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
     uint64_t actual_bytes;
     SHA256 hashes[MAX_READ_HASHES];
     int ret = file_tree_read(&state->file_tree, path, offset, length, &gen, &chunk_size, hashes, MAX_READ_HASHES, &actual_bytes);
+    assert(gen != NO_GENERATION);
 
     if (ret < 0) {
 
@@ -476,6 +477,7 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
         MessageWriter writer;
         message_writer_init(&writer, output, MESSAGE_TYPE_READ_SUCCESS);
 
+        assert(gen != NO_GENERATION);
         message_write(&writer, &gen, sizeof(gen));
 
         if (chunk_size > UINT32_MAX) {
@@ -668,7 +670,10 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
         num_chunks, expect_gen, &new_gen, new_hashes, removed_hashes, &num_removed, truncate_after);
 
     // If write failed because file doesn't exist and CREATE_IF_MISSING flag is set,
-    // create the file and retry the write
+    // create the file and retry the write.
+    // Note: MISSING_FILE_GENERATION works WITH CREATE_IF_MISSING to implement
+    // atomic "create-only-if-not-exists" semantics: creates if missing (NOENT),
+    // but fails if file already exists (BADGEN from gen_match).
     if (ret == FILETREE_NOENT && (flags & TOASTY_WRITE_CREATE_IF_MISSING)) {
         // Create the file with default chunk size of 4096 bytes
         uint64_t chunk_size = 4096;

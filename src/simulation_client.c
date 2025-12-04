@@ -168,6 +168,7 @@ int simulation_client_step(SimulationClient *client, void **contexts,
 
             TableEntry entry;
             uint32_t chunk_size;
+            uint32_t flags;
 
             case PENDING_OPERATION_CREATE:
             entry = table[random_in_range(0, table_len-1)];
@@ -209,7 +210,25 @@ int simulation_client_step(SimulationClient *client, void **contexts,
             ptr = malloc(len);
             if (ptr == NULL) assert(0);
             memset(ptr, 'a', len);
-            handle = toasty_begin_write(client->toasty, entry.path, off, ptr, len, TOASTY_VERSION_TAG_EMPTY, 0);
+            flags = 0;
+            switch (random_in_range(0, 3)) {
+            case 0:
+                flags = 0;
+                break;
+            case 1:
+                flags = TOASTY_WRITE_CREATE_IF_MISSING;
+                break;
+            case 2:
+                flags = TOASTY_WRITE_TRUNCATE_AFTER;
+                break;
+            case 3:
+                flags = TOASTY_WRITE_CREATE_IF_MISSING
+                      | TOASTY_WRITE_TRUNCATE_AFTER;
+                break;
+            default:
+                assert(0);
+            }
+            handle = toasty_begin_write(client->toasty, entry.path, off, ptr, len, TOASTY_VERSION_TAG_EMPTY, flags);
             //printf("[Client] submit write  (path=%s, off=%d, len=%d)\n", entry.path, off, len);
             break;
         }

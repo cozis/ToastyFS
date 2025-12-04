@@ -13,6 +13,21 @@ All messages start with a shared header, defined as:
         uint32_t length;
     };
 
+1.1 Generation Counter Special Values
+
+Generation counters (uint64_t) have two special values:
+
+    NO_GENERATION (0):
+        When used in expect_gen, means "skip generation check entirely".
+        Files/directories are never assigned this generation value.
+
+    MISSING_FILE_GENERATION (UINT64_MAX):
+        When used in expect_gen, means "expect file/directory to NOT exist".
+        - For DELETE: succeeds if file doesn't exist (no-op)
+        - For WRITE: fails with BADGEN if file exists, fails with NOENT if missing
+        - For existing operations: causes generation mismatch if file exists
+        Files/directories are never assigned this generation value.
+
 2. Client Messages
 
 2.1 Client to Metadata Server messages

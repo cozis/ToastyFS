@@ -108,9 +108,16 @@ static void dir_free(Dir *d)
 static bool gen_match(uint64_t expected_gen, uint64_t entity_gen)
 {
     assert(entity_gen != NO_GENERATION);
+    assert(entity_gen != MISSING_FILE_GENERATION);
 
+    // NO_GENERATION means "skip generation check"
     if (expected_gen == NO_GENERATION)
         return true;
+
+    // MISSING_FILE_GENERATION means "expect file to NOT exist"
+    // Since we're checking against an existing entity, this is a mismatch
+    if (expected_gen == MISSING_FILE_GENERATION)
+        return false;
 
     return expected_gen == entity_gen;
 }
@@ -350,11 +357,17 @@ int file_tree_delete_entity(FileTree *ft, string path,
         return FILETREE_NOTDIR;
 
     int i = dir_find(&e->d, comps[num_comps-1]);
-    if (i == -1)
+    if (i == -1) {
+        // File doesn't exist
+        // If caller expected it not to exist (MISSING_FILE_GENERATION), succeed
+        if (expected_gen == MISSING_FILE_GENERATION)
+            return 0;
         return FILETREE_NOENT;
+    }
 
+    // File exists - check generation
     if (dir_remove(&e->d, i, expected_gen) < 0)
-        return -1; // TODO: proper error code
+        return FILETREE_BADGEN;
 
     return 0;
 }
@@ -385,14 +398,21 @@ int file_tree_write(
 
     Entity *e = resolve_path(&ft->root, comps, num_comps);
 
-    if (e == NULL)
+    if (e == NULL) {
+        // File doesn't exist
+        // If caller expected it not to exist (MISSING_FILE_GENERATION), that's correct
+        // but we still can't write to a non-existent file (need CREATE_IF_MISSING flag in client layer)
+        if (expect_gen == MISSING_FILE_GENERATION)
+            return FILETREE_NOENT;  // Expected behavior: file missing as expected, but can't write
         return FILETREE_NOENT;
+    }
 
     if (e->is_dir)
         return FILETREE_ISDIR;
 
+    // Check generation - will fail if expect_gen is MISSING_FILE_GENERATION (expects missing but file exists)
     if (!gen_match(expect_gen, e->gen))
-        return -1; // TODO: proper error code
+        return FILETREE_BADGEN;
 
     File *f = &e->f;
 
@@ -519,18 +539,26 @@ int file_tree_read(FileTree *ft, string path,
         *actual_bytes = len;
     }
 
-    if (len == 0)
+    if (len == 0) {
+        assert(e->gen != NO_GENERATION);
+        *gen = e->gen;
         return 0;
+    }
 
     uint64_t first_chunk_index = off / f->chunk_size;
     uint64_t  last_chunk_index = first_chunk_index + (len - 1) / f->chunk_size;
 
-    if (first_chunk_index >= f->num_chunks)
+    if (first_chunk_index >= f->num_chunks) {
+        *gen = e->gen;
         return 0;
+    }
 
     if (last_chunk_index >= f->num_chunks) {
-        if (f->num_chunks == 0)
+        if (f->num_chunks == 0) {
+            assert(e->gen != NO_GENERATION);
+            *gen = e->gen;
             return 0;
+        }
         last_chunk_index = f->num_chunks-1;
     }
 
@@ -560,7 +588,7 @@ string file_tree_strerror(int code)
         case FILETREE_EXISTS : return S("File or directory already exists");
         case FILETREE_BADPATH: return S("Invalid path");
         case FILETREE_BADOP  : return S("Invalid operation");
-        case FILETREE_BADGEN : return S("Generation counter cannot be zero for write operations");
+        case FILETREE_BADGEN : return S("Generation counter mismatch or invalid value");
         default:break;
     }
     return S("Unknown error");

@@ -19,6 +19,7 @@ typedef pthread_mutex_t Mutex;
 #include "system.h"
 #include "config.h"
 #include "message.h"
+#include "file_tree.h"
 
 #include <ToastyFS.h>
 
@@ -1494,7 +1495,7 @@ static void process_event_for_write(ToastyFS *toasty,
                 return;
             }
 
-            gen = 0; // TODO: is setting the generation to 0 right?
+            gen = MISSING_FILE_GENERATION; // TODO: is setting the generation to 0 right?
             chunk_size = 4096; // The creation flag defaults to a chunk size of 4K
             num_hashes = 0;
 
@@ -1505,6 +1506,7 @@ static void process_event_for_write(ToastyFS *toasty,
                 toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
+            assert(gen != NO_GENERATION); // TODO: should this be an assertion?
 
             if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
                 toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
@@ -2007,6 +2009,7 @@ static void process_event_for_write(ToastyFS *toasty,
             }
             uint16_t path_len = path.len;
             uint64_t expect_gen = toasty->operations[opidx].expect_gen;
+            assert(expect_gen != NO_GENERATION);
 
             uint32_t num_chunks = num_upload_results;
 
