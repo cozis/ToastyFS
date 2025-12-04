@@ -208,7 +208,7 @@ The following is the list of messages the Metadata Server may send to a Client:
     If the truncated field is non-zero, the actual item count for this directory is greater than the one sent in the message.
 
 [ READ_ERROR | MS -> C ]
-    See CREATE_ERROR
+    TODO
 
 [ READ_SUCCESS | MS -> C ]
 

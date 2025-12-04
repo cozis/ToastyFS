@@ -3,6 +3,7 @@
 *.o
 *.a
 chunk_server_data_*
+crash_*.txt
 
 # Coverage reports
 coverage_report/

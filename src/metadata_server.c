@@ -7,6 +7,8 @@
 #include "message.h"
 #include "metadata_server.h"
 
+#define MS_TRACE(fmt, ...) fprintf(stderr, "MS: " fmt "\n", ##__VA_ARGS__);
+
 static void chunk_server_peer_init(ChunkServerPeer *chunk_server, Time current_time)
 {
     chunk_server->used = true;
@@ -441,6 +443,28 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
         uint16_t len = desc.len;
         message_write(&writer, &len, sizeof(len));
         message_write(&writer, desc.ptr, desc.len);
+
+        int locations[MAX_CHUNK_SERVERS];
+        int num_locations = choose_servers_for_write(state, locations, state->replication_factor);
+
+        assert(num_locations > -1 && num_locations < MAX_CHUNK_SERVERS);
+        if (num_locations > state->replication_factor)
+            num_locations = state->replication_factor;
+
+        uint32_t tmp_u32 = num_locations;
+        message_write(&writer, &tmp_u32, sizeof(tmp_u32));
+
+        for (int j = 0; j < num_locations; j++) {
+
+            int k = locations[j];
+
+            assert(k > -1);
+            assert(k < state->num_chunk_servers);
+            assert(state->chunk_servers[k].auth == true);
+            assert(state->chunk_servers[k].num_addrs > 0);
+
+            message_write_server_addr(&writer, &state->chunk_servers[k]);
+        }
 
         if (!message_writer_free(&writer))
             return -1;
@@ -1106,16 +1130,20 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
         switch (events[i].type) {
 
             case EVENT_WAKEUP:
+            MS_TRACE("TCP EVENT: wakeup");
             // Do nothing
             break;
 
             case EVENT_CONNECT:
+            MS_TRACE("TCP EVENT: connect");
             tcp_set_tag(&state->tcp, conn_idx, CONNECTION_TAG_UNKNOWN, false);
             break;
 
             case EVENT_DISCONNECT:
             {
+                MS_TRACE("TCP EVENT: disconnect");
                 if (events[i].tag >= 0) {
+                    MS_TRACE("Chunk server disconnected");
                     chunk_server_peer_free(&state->chunk_servers[events[i].tag]);
                     assert(state->num_chunk_servers > 0);
                     state->num_chunk_servers--;
@@ -1125,14 +1153,19 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
 
             case EVENT_MESSAGE:
             {
+                // We don't trace message events from chunk servers
+                // as it would become very verbose
                 for (;;) {
 
                     ByteView msg;
                     uint16_t msg_type;
                     int ret = tcp_next_message(&state->tcp, conn_idx, &msg, &msg_type);
-                    if (ret == 0)
+                    if (ret == 0) {
+                        MS_TRACE("Incomplete message");
                         break;
+                    }
                     if (ret < 0) {
+                        MS_TRACE("Invalid message");
                         tcp_close(&state->tcp, conn_idx);
                         break;
                     }
@@ -1167,12 +1200,14 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
 
                     int tag = tcp_get_tag(&state->tcp, conn_idx);
                     if (tag == CONNECTION_TAG_CLIENT) {
+                        MS_TRACE("Message from client");
                         ret = process_client_message(state, conn_idx, msg_type, msg);
                     } else {
                         state->chunk_servers[tag].last_response_time = current_time;
                         ret = process_chunk_server_message(state, conn_idx, msg_type, msg);
                     }
                     if (ret < 0) {
+                        MS_TRACE("Message processing failure");
                         tcp_close(&state->tcp, conn_idx);
                         break;
                     }

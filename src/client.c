@@ -33,6 +33,8 @@ typedef pthread_mutex_t Mutex;
 
 #define PARALLEL_LIMIT 5
 
+#define CLIENT_TRACE(fmt, ...) fprintf(stderr, "CLIENT: " fmt "\n", ##__VA_ARGS__);
+
 typedef struct {
     SHA256   hash;
     char*    dst;
@@ -1465,42 +1467,64 @@ static void process_event_for_write(ToastyFS *toasty,
             return;
         }
 
-        if (type != MESSAGE_TYPE_READ_SUCCESS) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
-            return;
-        }
-
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
             toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
-        // Read generation counter
         uint64_t gen;
-        if (!binary_read(&reader, &gen, sizeof(gen))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
-            return;
-        }
-        toasty->operations[opidx].expect_gen = gen;
-
         uint32_t chunk_size;
-        if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
-            return;
-        }
-        toasty->operations[opidx].chunk_size = chunk_size;
-
-        // Skip file_length field that comes after chunk_size
-        if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
-            return;
-        }
-
         uint32_t num_hashes;
-        if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
-            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
-            return;
+
+        if (type != MESSAGE_TYPE_READ_SUCCESS) {
+
+            if ((toasty->operations[opidx].flags & TOASTY_WRITE_CREATE_IF_MISSING) == 0) {
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
+            }
+
+            uint16_t message_len;
+            if (!binary_read(&reader, &message_len, sizeof(message_len))) {
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
+            }
+
+            if (!binary_read(&reader, NULL, message_len)) {
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
+            }
+
+            gen = 0; // TODO: is setting the generation to 0 right?
+            chunk_size = 4096; // The creation flag defaults to a chunk size of 4K
+            num_hashes = 0;
+
+        } else {
+
+            // Read generation counter
+            if (!binary_read(&reader, &gen, sizeof(gen))) {
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
+            }
+
+            if (!binary_read(&reader, &chunk_size, sizeof(chunk_size))) {
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
+            }
+
+            // Skip file_length field that comes after chunk_size
+            if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
+            }
+
+            if (!binary_read(&reader, &num_hashes, sizeof(num_hashes))) {
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
+            }
         }
+
+        toasty->operations[opidx].expect_gen = gen;
+        toasty->operations[opidx].chunk_size = chunk_size;
 
         uint32_t num_all_hasehs = (toasty->operations[opidx].len + chunk_size - 1) / chunk_size;
         uint32_t num_new_hashes = num_all_hasehs - num_hashes;
@@ -2168,6 +2192,7 @@ int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *poll
         switch (events[i].type) {
 
             case EVENT_WAKEUP:
+            CLIENT_TRACE("TCP EVENT: wakeup");
             // Do nothing
             break;
 
@@ -2176,6 +2201,8 @@ int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *poll
                 int tag = tcp_get_tag(&toasty->tcp, conn_idx);
                 if (tag != TAG_METADATA_SERVER)
                     toasty->chunk_servers[tag].connected = true;
+
+                CLIENT_TRACE("TCP EVENT: CONNECT (tag=%d)", tag);
             }
             break;
 
@@ -2201,11 +2228,16 @@ int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *poll
                 RequestQueue *reqs = NULL;
 
                 int tag = tcp_get_tag(&toasty->tcp, conn_idx);
+                CLIENT_TRACE("TCP EVENT: DISCONNECT (tag=%d)", tag);
+
                 if (tag == TAG_METADATA_SERVER) {
                     reqs = &toasty->metadata_server.reqs;
                     toasty->metadata_server.used = false;
+                    CLIENT_TRACE("MS disconnect");
                 } else {
+
                     assert(tag > -1);
+                    CLIENT_TRACE("CS disconnect");
 
                     if (toasty->chunk_servers[tag].connected)
                         reqs = &toasty->chunk_servers[tag].reqs;
@@ -2240,14 +2272,19 @@ int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *poll
 
             case EVENT_MESSAGE:
             {
+                CLIENT_TRACE("TCP EVENT: message");
+
                 for (;;) {
 
                     ByteView msg;
                     uint16_t msg_type;
                     int ret = tcp_next_message(&toasty->tcp, conn_idx, &msg, &msg_type);
-                    if (ret == 0)
+                    if (ret == 0) {
+                        CLIENT_TRACE("Incomplete message");
                         break;
+                    }
                     if (ret < 0) {
+                        CLIENT_TRACE("Invalid message");
                         tcp_close(&toasty->tcp, conn_idx);
                         break;
                     }
@@ -2255,14 +2292,18 @@ int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *poll
                     RequestQueue *reqs;
 
                     int tag = tcp_get_tag(&toasty->tcp, conn_idx);
-                    if (tag == TAG_METADATA_SERVER)
+                    if (tag == TAG_METADATA_SERVER) {
+                        CLIENT_TRACE("Message is from MS");
                         reqs = &toasty->metadata_server.reqs;
-                    else
+                    } else {
+                        CLIENT_TRACE("Message is from CS");
                         reqs = &toasty->chunk_servers[tag].reqs;
+                    }
 
                     Request req;
                     if (request_queue_pop(reqs, &req) < 0) {
                         // Unexpected message
+                        CLIENT_TRACE("Message was unexpected");
                         tcp_consume_message(&toasty->tcp, conn_idx);
                         continue;
                     }
