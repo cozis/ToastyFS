@@ -20,8 +20,7 @@ bool process_request_get(ProxyState *state, ProxyOperation *operation,
 
     ToastyHandle handle;
     if (path_refers_to_dir(path)) {
-        handle = toasty_begin_list(state->backend, path,
-            TOASTY_VERSION_TAG_EMPTY);
+        handle = toasty_begin_list(state->backend, path, TOASTY_VERSION_TAG_EMPTY);
     } else {
 
         http_response_builder_body_cap(builder, 1<<10); // TODO: pick the prealloc better
@@ -30,8 +29,7 @@ bool process_request_get(ProxyState *state, ProxyOperation *operation,
         char *dst = http_response_builder_body_buf(builder, &cap);
         // TODO: check for NULL dst
 
-        handle = toasty_begin_read(state->backend, path,
-            0, dst, cap, TOASTY_VERSION_TAG_EMPTY);
+        handle = toasty_begin_read(state->backend, path, 0, dst, cap, TOASTY_VERSION_TAG_EMPTY);
     }
     if (handle == TOASTY_INVALID) {
         if (!path_refers_to_dir(path))
@@ -62,10 +60,22 @@ bool process_completion_read_dir(ProxyState *state,
 {
     if (completion.type == TOASTY_RESULT_LIST_SUCCESS) {
         http_response_builder_status(operation->builder, 200);
-        for (int i = 0; i < completion.listing.count; i++)
+        for (int i = 0; i < completion.listing.count; i++) {
+            char vtag[32];
+            int ret = snprintf(vtag, sizeof(vtag), "%lu", completion.listing.items[i].vtag);
+            if (ret < 0 || ret >= (int) sizeof(vtag)) {
+                http_response_builder_status(operation->builder, 500); // Internal Server Error
+                http_response_builder_send(operation->builder);
+                return true;
+            }
             http_response_builder_body(operation->builder, (HTTP_String) {
-                completion.listing.items[i].name, strlen(completion.listing.items[i].name),
+                completion.listing.items[i].name,
+                strlen(completion.listing.items[i].name),
             });
+            http_response_builder_body(operation->builder, HTTP_STR(" "));
+            http_response_builder_body(operation->builder, (HTTP_String) { vtag, ret });
+            http_response_builder_body(operation->builder, HTTP_STR("\n"));
+        }
         http_response_builder_send(operation->builder);
         toasty_free_listing(&completion.listing);
     } else {
@@ -117,8 +127,11 @@ bool process_completion_read_file(ProxyState *state,
             if (operation->handle == TOASTY_INVALID) {
                 assert(0); // TODO
             }
+            toasty_set_user(state->backend, operation->handle, operation);
 
             again = true;
+        } else {
+            http_response_builder_send(operation->builder);
         }
     }
 

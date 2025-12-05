@@ -94,8 +94,10 @@ void proxy_process_request(ProxyState *state,
 void proxy_process_completion(ProxyState *state,
     ToastyResult completion)
 {
-    bool completed;
     ProxyOperation *operation = completion.user;
+    assert(operation);
+
+    bool completed;
     switch (operation->type) {
     case PO_CREATE_DIR:
         completed = process_completion_create_dir(state, operation, completion);
