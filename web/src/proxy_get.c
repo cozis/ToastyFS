@@ -61,18 +61,22 @@ bool process_completion_read_dir(ProxyState *state,
     if (completion.type == TOASTY_RESULT_LIST_SUCCESS) {
         http_response_builder_status(operation->builder, 200);
         for (int i = 0; i < completion.listing.count; i++) {
+
+            ToastyListingEntry *entry = &completion.listing.items[i];
+
             char vtag[32];
-            int ret = snprintf(vtag, sizeof(vtag), "%lu", completion.listing.items[i].vtag);
+            int ret = snprintf(vtag, sizeof(vtag), "%lu", entry->vtag);
             if (ret < 0 || ret >= (int) sizeof(vtag)) {
                 http_response_builder_status(operation->builder, 500); // Internal Server Error
                 http_response_builder_send(operation->builder);
                 return true;
             }
-            http_response_builder_body(operation->builder, (HTTP_String) {
-                completion.listing.items[i].name,
-                strlen(completion.listing.items[i].name),
-            });
-            http_response_builder_body(operation->builder, HTTP_STR(" "));
+            http_response_builder_body(operation->builder, (HTTP_String) { entry->name, strlen(entry->name) });
+            if (entry->is_dir) {
+                http_response_builder_body(operation->builder, HTTP_STR("/ "));
+            } else {
+                http_response_builder_body(operation->builder, HTTP_STR(" "));
+            }
             http_response_builder_body(operation->builder, (HTTP_String) { vtag, ret });
             http_response_builder_body(operation->builder, HTTP_STR("\n"));
         }
