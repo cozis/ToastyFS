@@ -1,125 +1,51 @@
 import asyncio
-import logging
 from pathlib import Path
 
-from aiohttp import (
-    ClientSession,
-    TraceConfig,
-    TraceRequestEndParams,
-    TraceRequestStartParams,
-)
-from watchfiles import Change, awatch
-
-local_root = "."
-remote_root = f"http://127.0.0.1:8090/"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",  # No timestamp prefix for curl-like output
-)
-logger = logging.getLogger(__name__)
+import aiohttp
 
 
-async def on_request_start(session, context, params: TraceRequestStartParams):
-    logger.info(f"> {params.method} {params.url.path_qs} HTTP/1.1")
-    logger.info(f"> Host: {params.url.host}")
-    for name, value in params.headers.items():
-        logger.info(f"> {name}: {value}")
-    logger.info(">")
+async def fetch(session, url):
+    async with session.get(url) as response:
+        if response.status != 200:
+            raise "Didn't work"  # TODO
 
+        data = await response.text()
 
-async def on_request_end(session, context, params: TraceRequestEndParams):
-    response = params.response
-    logger.info(f"< HTTP/1.1 {response.status} {response.reason}")
-    for name, value in response.headers.items():
-        logger.info(f"< {name}: {value}")
-    logger.info("<")
+        files = []
+        lines = data.splitlines()
+        for line in lines:
+            name, vtag = line.split(" ")
 
-    # Optionally log response body
-    # body = await response.text()
-    # if body:
-    #     logger.info(body)
+            # Process name
+            is_dir = False
+            if len(name) > 0 and name[-1] == "/":
+                name = name[:-1]
+                is_dir = True
 
+            # Process vtag
+            vtag = int(vtag)
 
-trace_config = TraceConfig()
-trace_config.on_request_start.append(on_request_start)
-trace_config.on_request_end.append(on_request_end)
+            files.append({"name": name, "is_dir": is_dir, "vtag": vtag})
+
+        return files
 
 
 async def main():
-    async for changes in awatch(local_root):
-        for change_type, filepath in changes:
-            await process_change(change_type, filepath)
+    async with aiohttp.ClientSession() as session:
+        remote = "http://127.0.0.1:8090"  # Must not end with a "/"
+        remote_dir = remote + "/"
+        local_dir = "local_root"
 
+        local_dir = Path(local_dir)
 
-async def process_change(change_type, filepath):
-    if change_type == Change.added:
-        await process_change_added(filepath)
-    elif change_type == Change.modified:
-        await process_change_modified(filepath)
-    elif change_type == Change.deleted:
-        await process_change_deleted(filepath)
-    else:
-        raise "Unexpected change type"
+        while True:
+            # List of files in the remote root directory
+            remote_files = await fetch(session, remote_dir)
 
+            # List of files in the local root directory
+            local_files = list(local_dir.iterdir())
 
-def make_relative_path(root, target):
-    root = Path(root).resolve()
-    target = Path(target).resolve()
-    return str(target.relative_to(root))
-
-
-def endpoint_from_local_path(local_target):
-    relative_path = make_relative_path(local_root, local_target)
-    relative_path = relative_path.replace("\\", "/")
-
-    remote_target = remote_root + relative_path
-
-    assert remote_target[-1] != "/"
-    if Path(local_target).is_dir():
-        remote_target += "/"
-
-    return remote_target
-
-
-async def process_change_added(local_target):
-    async with ClientSession(trace_configs=[trace_config]) as session:
-        # Determine the endpoint the file should be
-        # uploaded to.
-        remote_target = endpoint_from_local_path(local_target)
-
-        # Read its contents
-        with open(local_target, "rb") as f:
-            data = f.read()
-
-        # Upload
-        async with session.put(remote_target, data=data) as response:
-            pass  # TODO
-
-
-async def process_change_modified(local_target):
-    async with ClientSession(trace_configs=[trace_config]) as session:
-        # Determine the endpoint the file should be
-        # uploaded to.
-        remote_target = endpoint_from_local_path(local_target)
-
-        # Read its contents
-        with open(local_target, "rb") as f:
-            data = f.read()
-
-        # Upload
-        async with session.put(remote_target, data=data) as response:
-            pass  # TODO
-
-
-async def process_change_deleted(local_target):
-    async with ClientSession(trace_configs=[trace_config]) as session:
-        # Determine the endpoint that should be deleted
-        remote_target = endpoint_from_local_path(local_target)
-
-        # Delete
-        async with session.delete(remote_target) as response:
-            pass  # TODO
+            await asyncio.sleep(1)
 
 
 try:
