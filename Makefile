@@ -31,25 +31,25 @@ coverage-html:
 	@./scripts/measure_coverage.sh 60 --html
 
 toastyfs$(EXT): $(CFILES) $(HFILES)
-	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_SERVER
+	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinclude -DBUILD_SERVER
 
 toastyfs_random_test$(EXT): $(CFILES) $(HFILES)
-	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinc -DBUILD_TEST
+	gcc -o $@ $(CFILES) $(CFLAGS) $(LFLAGS) -Iinclude -DBUILD_TEST
 
 toastyfs_random_test_coverage$(EXT): $(CFILES) $(HFILES)
-	gcc -o $@ $(CFILES) $(COVERAGE_CFLAGS) $(LFLAGS) $(COVERAGE_LFLAGS) -Iinc -DBUILD_TEST
+	gcc -o $@ $(CFILES) $(COVERAGE_CFLAGS) $(LFLAGS) $(COVERAGE_LFLAGS) -Iinclude -DBUILD_TEST
 
 example_async_api$(EXT): libtoastyfs.a examples/async_api.c
-	gcc -o $@ examples/async_api.c $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinc -L.
+	gcc -o $@ examples/async_api.c $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinclude -L.
 
 example_blocking_api$(EXT): libtoastyfs.a examples/blocking_api.c
-	gcc -o $@ examples/blocking_api.c $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinc -L.
+	gcc -o $@ examples/blocking_api.c $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinclude -L.
 
 toastyfs_web$(EXT): libtoastyfs.a $(WEB_CFILES) $(WEB_HFILES)
-	gcc -o $@ $(WEB_CFILES) $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinc -Iweb/3p -L.
+	gcc -o $@ $(WEB_CFILES) $(CFLAGS) -ltoastyfs $(LFLAGS) -Iinclude -Iweb/3p -L.
 
 %.o: %.c $(HFILES)
-	gcc -c -o $@ $< $(CFLAGS) -Iinc
+	gcc -c -o $@ $< $(CFLAGS) -Iinclude
 
 libtoastyfs.a: $(OFILES)
 	ar rcs $@ $^
