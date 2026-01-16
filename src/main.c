@@ -109,8 +109,20 @@ int main(int argc, char **argv)
 #endif
 
 #ifdef MAIN_SIMULATION
+#include <signal.h>
+
+static volatile int simulation_running = 1;
+
+static void sigint_handler(int sig)
+{
+    (void)sig;
+    simulation_running = 0;
+}
+
 int main(void)
 {
+    signal(SIGINT, sigint_handler);
+
     Quakey *quakey;
     int ret = quakey_init(&quakey, 1);
     if (ret < 0)
@@ -161,7 +173,7 @@ int main(void)
         quakey_spawn(quakey, config, "cs --addr 127.0.0.4");
     }
 
-    for (;;)
+    while (simulation_running)
         quakey_schedule_one(quakey);
 
     quakey_free(quakey);

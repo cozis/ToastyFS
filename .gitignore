@@ -1,3 +1,9 @@
 toasty_metadata_server
 toasty_chunk_server
 toasty_simulation
+toasty_simulation_coverage
+*.gcno
+*.gcda
+*.gcov
+*.info
+coverage_html/
