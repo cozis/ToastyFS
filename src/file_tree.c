@@ -513,6 +513,9 @@ int file_tree_read(FileTree *ft, string path,
     uint64_t off, uint64_t len, uint64_t *gen, uint64_t *chunk_size,
     SHA256 *hashes, int max_hashes, uint64_t *actual_bytes)
 {
+    // Initialize gen to NO_GENERATION so error paths have a well-defined value
+    *gen = NO_GENERATION;
+
     int num_comps;
     string comps[MAX_COMPS];
 

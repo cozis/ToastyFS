@@ -432,7 +432,6 @@ process_client_read(MetadataServer *state, int conn_idx, ByteView msg)
     uint64_t actual_bytes;
     SHA256 hashes[MAX_READ_HASHES];
     int ret = file_tree_read(&state->file_tree, path, offset, length, &gen, &chunk_size, hashes, MAX_READ_HASHES, &actual_bytes);
-    assert(gen != NO_GENERATION);
 
     if (ret < 0) {
 
