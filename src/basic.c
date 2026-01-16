@@ -1,7 +1,9 @@
-#include <string.h>
-
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
+#include <stdint.h>
+#include <quakey.h>
 #include "basic.h"
-#include "system.h"
 
 bool streq(string s1, string s2)
 {
@@ -24,10 +26,10 @@ Time get_current_time(void)
         int64_t freq;
         int ok;
 
-        ok = sys_QueryPerformanceCounter((LARGE_INTEGER*) &count);
+        ok = QueryPerformanceCounter((LARGE_INTEGER*) &count);
         if (!ok) return INVALID_TIME;
 
-        ok = sys_QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
+        ok = QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
         if (!ok) return INVALID_TIME;
 
         uint64_t res = 1000000000 * (double) count / freq;
@@ -37,7 +39,7 @@ Time get_current_time(void)
     {
         struct timespec time;
 
-        if (sys_clock_gettime(CLOCK_REALTIME, &time))
+        if (clock_gettime(CLOCK_REALTIME, &time))
             return INVALID_TIME;
 
         uint64_t res;
@@ -99,11 +101,17 @@ int getargi(int argc, char **argv, char *name, int fallback)
             if (i == argc)
                 break;
 
-            int tmp = atoi(argv[i]);
-            if (tmp == 0 && argv[i][0] != '0') // best effort
+            errno = 0;
+            char *end;
+            long val = strtol(argv[i], &end, 10);
+
+            if (end == argv[i] || *end != '\0' || errno == ERANGE)
                 break;
 
-            return tmp;
+            if (val < INT_MIN || val > INT_MAX)
+                break;
+
+            return (int) val;
         }
     return fallback;
 }

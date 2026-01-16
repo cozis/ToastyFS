@@ -1,7 +1,8 @@
-#include <assert.h>
-#include <string.h>
-
-#include "system.h"
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
+#include <stdint.h>
+#include <quakey.h>
 #include "hash_set.h"
 
 void hash_set_init(HashSet *set)
@@ -13,7 +14,7 @@ void hash_set_init(HashSet *set)
 
 void hash_set_free(HashSet *set)
 {
-    sys_free(set->items);
+    free(set->items);
     set->items = NULL;
 }
 
@@ -40,7 +41,7 @@ int hash_set_insert(HashSet *set, SHA256 hash)
         else
             new_capacity = 2 * set->capacity;
 
-        SHA256 *new_items = sys_realloc(set->items, new_capacity * sizeof(SHA256));
+        SHA256 *new_items = realloc(set->items, new_capacity * sizeof(SHA256));
         if (new_items == NULL)
             return -1;
 
@@ -109,7 +110,7 @@ void timed_hash_set_init(TimedHashSet *set)
 
 void timed_hash_set_free(TimedHashSet *set)
 {
-    sys_free(set->items);
+    free(set->items);
     set->items = NULL;
 }
 
@@ -137,13 +138,13 @@ int timed_hash_set_insert(TimedHashSet *set, SHA256 hash, Time time)
         else
             new_capacity = 2 * set->capacity;
 
-        TimedHash *new_items = sys_malloc(new_capacity * sizeof(TimedHash));
+        TimedHash *new_items = malloc(new_capacity * sizeof(TimedHash));
         if (new_items == NULL)
             return -1;
 
         if (set->capacity > 0) {
             memcpy(new_items, set->items, set->count * sizeof(set->items[0]));
-            sys_free(set->items);
+            free(set->items);
         }
 
         set->items = new_items;

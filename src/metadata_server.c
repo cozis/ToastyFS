@@ -1,8 +1,10 @@
-#define _GNU_SOURCE
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
 
-#include <string.h>
+#include <quakey.h>
+#include <stdint.h>
 #include <assert.h>
-#include <stdlib.h>
 
 #include "message.h"
 #include "metadata_server.h"
@@ -1061,19 +1063,27 @@ static bool is_chunk_server_message_type(uint16_t type)
     return false;
 }
 
-int metadata_server_init(MetadataServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
+int metadata_server_init(void *state_, int argc, char **argv,
+    void **ctxs, struct pollfd *pdata, int pcap, int *pnum,
+    int *timeout)
 {
+    MetadataServer *state = state_;
+
     string addr      = getargs(argc, argv, "--addr", "127.0.0.1");
     int    port      = getargi(argc, argv, "--port", 8080);
     bool   trace     = getargb(argc, argv, "--trace");
     string wal_file  = getargs(argc, argv, "--wal-file", "metadata.wal");
     int    wal_limit = getargi(argc, argv, "--wal-limit", 1000); // TODO: Choose a good default limit
 
-    if (port <= 0 || port >= 1<<16)
+    if (port <= 0 || port >= 1<<16) {
+        fprintf(stderr, "metadata server :: Invalid port\n");
         return -1;
+    }
 
-    if (wal_limit < 0)
+    if (wal_limit < 0) {
+        fprintf(stderr, "metadata server :: Invalid WAL limit\n");
         return -1;
+    }
 
     state->trace = trace;
     state->replication_factor = 3; // TODO: what about the REPLICATION_FACTOR macro?
@@ -1084,22 +1094,27 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
     for (int i = 0; i < MAX_CHUNK_SERVERS; i++)
         state->chunk_servers[i].used = false;
 
-    if (tcp_context_init(&state->tcp) < 0)
+    if (tcp_context_init(&state->tcp) < 0) {
+        fprintf(stderr, "metadata server :: Couldn't setup TCP context\n");
         return -1;
+    }
 
     int ret = tcp_listen(&state->tcp, addr, port);
     if (ret < 0) {
+        fprintf(stderr, "metadata server :: Couldn't setup TCP listener\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
 
     ret = file_tree_init(&state->file_tree);
     if (ret < 0) {
+        fprintf(stderr, "metadata server :: Couldn't setup file tree\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
 
     if (wal_open(&state->wal, &state->file_tree, wal_file, wal_limit) < 0) {
+        fprintf(stderr, "metadata server :: Couldn't setup WAL\n");
         assert(0); // TODO
     }
 
@@ -1110,21 +1125,21 @@ int metadata_server_init(MetadataServer *state, int argc, char **argv, void **co
     );
 
     *timeout = -1;  // No timeout until we have chunk servers
-    return tcp_register_events(&state->tcp, contexts, polled);
-}
-
-int metadata_server_free(MetadataServer *state)
-{
-    wal_close(&state->wal);
-    file_tree_free(&state->file_tree);
-    tcp_context_free(&state->tcp);
+    if (pcap < TCP_POLL_CAPACITY) {
+        fprintf(stderr, "metadata server :: Not enough poll() capacity (got %d, needed %d)\n", pcap, TCP_POLL_CAPACITY);
+        return -1;
+    }
+    *pnum = tcp_register_events(&state->tcp, ctxs, pdata);
     return 0;
 }
 
-int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout)
+int metadata_server_tick(void *state_, void **ctxs,
+    struct pollfd *pdata, int pcap, int *pnum, int *timeout)
 {
+    MetadataServer *state = state_;
+
     Event events[TCP_EVENT_CAPACITY];
-    int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
+    int num_events = tcp_translate_events(&state->tcp, events, ctxs, pdata, *pnum);
 
     Time current_time = get_current_time();
     if (current_time == INVALID_TIME)
@@ -1243,5 +1258,18 @@ int metadata_server_step(MetadataServer *state, void **contexts, struct pollfd *
     }
 
     *timeout = deadline_to_timeout(next_wakeup, current_time);
-    return tcp_register_events(&state->tcp, contexts, polled);
+    if (pcap < TCP_POLL_CAPACITY)
+        return -1;
+    *pnum = tcp_register_events(&state->tcp, ctxs, pdata);
+    return 0;
+}
+
+int metadata_server_free(void *state_)
+{
+    MetadataServer *state = state_;
+
+    wal_close(&state->wal);
+    file_tree_free(&state->file_tree);
+    tcp_context_free(&state->tcp);
+    return 0;
 }

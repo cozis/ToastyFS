@@ -1,8 +1,9 @@
-#include <limits.h>
-#include <string.h>
-#include <assert.h>
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
+#include <stdint.h>
+#include <quakey.h>
 
-#include "system.h"
 #include "file_system.h"
 
 int rename_file_or_dir(string oldpath, string newpath);
@@ -16,7 +17,7 @@ int file_open(string path, Handle *fd)
     memcpy(zt, path.ptr, path.len);
     zt[path.len] = '\0';
 
-    int ret = sys_open(zt, O_RDWR | O_CREAT | O_APPEND, 0644);
+    int ret = open(zt, O_RDWR | O_CREAT | O_APPEND, 0644);
     if (ret < 0)
         return -1;
 
@@ -29,7 +30,7 @@ int file_open(string path, Handle *fd)
     MultiByteToWideChar(CP_UTF8, 0, path.ptr, path.len, wpath, MAX_PATH);
     wpath[path.len] = L'\0';
 
-    HANDLE h = sys_CreateFileW(
+    HANDLE h = CreateFileW(
         wpath,
         GENERIC_WRITE | GENERIC_READ,
         0,
@@ -49,18 +50,18 @@ int file_open(string path, Handle *fd)
 void file_close(Handle fd)
 {
 #ifdef __linux__
-    sys_close((int) fd.data);
+    close((int) fd.data);
 #endif
 
 #ifdef _WIN32
-    sys_CloseHandle((HANDLE) fd.data);
+    CloseHandle((HANDLE) fd.data);
 #endif
 }
 
 int file_set_offset(Handle fd, int off)
 {
 #ifdef __linux__
-    off_t ret = sys_lseek((int) fd.data, off, SEEK_SET);
+    off_t ret = lseek((int) fd.data, off, SEEK_SET);
     if (ret < 0)
         return -1;
     return 0;
@@ -69,8 +70,8 @@ int file_set_offset(Handle fd, int off)
 #ifdef _WIN32
     LARGE_INTEGER distance;
     distance.QuadPart = off;
-    if (!sys_SetFilePointer((HANDLE) fd.data, distance.LowPart, &distance.HighPart, FILE_BEGIN))
-        if (GetLastError() != NO_ERROR)
+    if (!SetFilePointer((HANDLE) fd.data, distance.LowPart, &distance.HighPart, FILE_BEGIN))
+        if (GetLastError() != 0)
             return -1;
     return 0;
 #endif
@@ -79,7 +80,7 @@ int file_set_offset(Handle fd, int off)
 int file_get_offset(Handle fd, int *off)
 {
 #ifdef __linux__
-    off_t ret = sys_lseek((int) fd.data, 0, SEEK_CUR);
+    off_t ret = lseek((int) fd.data, 0, SEEK_CUR);
     if (ret < 0)
         return -1;
     *off = (int) ret;
@@ -87,8 +88,8 @@ int file_get_offset(Handle fd, int *off)
 #endif
 
 #ifdef _WIN32
-    DWORD pos = sys_SetFilePointer((HANDLE) fd.data, 0, NULL, FILE_CURRENT);
-    if (pos == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR)
+    DWORD pos = SetFilePointer((HANDLE) fd.data, 0, NULL, FILE_CURRENT);
+    if (pos == INVALID_SET_FILE_POINTER && GetLastError() != 0)
         return -1;
     *off = (int) pos;
     return 0;
@@ -98,13 +99,13 @@ int file_get_offset(Handle fd, int *off)
 int file_lock(Handle fd)
 {
 #ifdef __linux__
-    if (sys_flock((int) fd.data, LOCK_EX) < 0)
+    if (flock((int) fd.data, LOCK_EX) < 0)
         return -1;
     return 0;
 #endif
 
 #ifdef _WIN32
-    if (!sys_LockFile((HANDLE) fd.data, 0, 0, MAXDWORD, MAXDWORD))
+    if (!LockFile((HANDLE) fd.data, 0, 0, MAXDWORD, MAXDWORD))
         return -1;
     return 0;
 #endif
@@ -113,13 +114,13 @@ int file_lock(Handle fd)
 int file_unlock(Handle fd)
 {
 #ifdef __linux__
-    if (sys_flock((int) fd.data, LOCK_UN) < 0)
+    if (flock((int) fd.data, LOCK_UN) < 0)
         return -1;
     return 0;
 #endif
 
 #ifdef _WIN32
-    if (!sys_UnlockFile((HANDLE) fd.data, 0, 0, MAXDWORD, MAXDWORD))
+    if (!UnlockFile((HANDLE) fd.data, 0, 0, MAXDWORD, MAXDWORD))
         return -1;
     return 0;
 #endif
@@ -128,13 +129,13 @@ int file_unlock(Handle fd)
 int file_sync(Handle fd)
 {
 #ifdef __linux__
-    if (sys_fsync((int) fd.data) < 0)
+    if (fsync((int) fd.data) < 0)
         return -1;
     return 0;
 #endif
 
 #ifdef _WIN32
-    if (!sys_FlushFileBuffers((HANDLE) fd.data))
+    if (!FlushFileBuffers((HANDLE) fd.data))
         return -1;
     return 0;
 #endif
@@ -143,12 +144,12 @@ int file_sync(Handle fd)
 int file_read(Handle fd, char *dst, int max)
 {
 #ifdef __linux__
-    return sys_read((int) fd.data, dst, max);
+    return read((int) fd.data, dst, max);
 #endif
 
 #ifdef _WIN32
     DWORD num;
-    if (!sys_ReadFile((HANDLE) fd.data, dst, max, &num, NULL))
+    if (!ReadFile((HANDLE) fd.data, dst, max, &num, NULL))
         return -1;
     if (num > INT_MAX)
         return -1;
@@ -159,12 +160,12 @@ int file_read(Handle fd, char *dst, int max)
 int file_write(Handle fd, char *src, int len)
 {
 #ifdef __linux__
-    return sys_write((int) fd.data, src, len);
+    return write((int) fd.data, src, len);
 #endif
 
 #ifdef _WIN32
     DWORD num;
-    if (!sys_WriteFile((HANDLE) fd.data, src, len, &num, NULL))
+    if (!WriteFile((HANDLE) fd.data, src, len, &num, NULL))
         return -1;
     if (num > INT_MAX)
         return -1;
@@ -176,7 +177,7 @@ int file_size(Handle fd, size_t *len)
 {
 #ifdef __linux__
     struct stat buf;
-    if (sys_fstat((int) fd.data, &buf) < 0)
+    if (fstat((int) fd.data, &buf) < 0)
         return -1;
     if (buf.st_size < 0 || (uint64_t) buf.st_size > SIZE_MAX)
         return -1;
@@ -186,7 +187,7 @@ int file_size(Handle fd, size_t *len)
 
 #ifdef _WIN32
     LARGE_INTEGER buf;
-    if (!sys_GetFileSizeEx((HANDLE) fd.data, &buf))
+    if (!GetFileSizeEx((HANDLE) fd.data, &buf))
         return -1;
     if (buf.QuadPart < 0 || (uint64_t) buf.QuadPart > SIZE_MAX)
         return -1;
@@ -204,10 +205,10 @@ int create_dir(string path)
     zt[path.len] = '\0';
 
 #ifdef _WIN32
-    if (sys__mkdir(zt) < 0)
+    if (_mkdir(zt) < 0)
         return -1;
 #else
-    if (sys_mkdir(zt, 0766))
+    if (mkdir(zt, 0766))
         return -1;
 #endif
 
@@ -228,7 +229,7 @@ int rename_file_or_dir(string oldpath, string newpath)
     memcpy(newpath_zt, newpath.ptr, newpath.len);
     newpath_zt[newpath.len] = '\0';
 
-    if (sys_rename(oldpath_zt, newpath_zt))
+    if (rename(oldpath_zt, newpath_zt))
         return -1;
     return 0;
 }
@@ -241,7 +242,7 @@ int remove_file_or_dir(string path)
     memcpy(path_zt, path.ptr, path.len);
     path_zt[path.len] = '\0';
 
-    if (sys_remove(path_zt))
+    if (remove(path_zt))
         return -1;
     return 0;
 }
@@ -255,12 +256,12 @@ int get_full_path(string path, char *dst)
     path_zt[path.len] = '\0';
 
 #ifdef __linux__
-    if (sys_realpath(path_zt, dst) == NULL)
+    if (realpath(path_zt, dst) == NULL)
         return -1;
 #endif
 
 #ifdef _WIN32
-    if (sys__fullpath(path_zt, dst, PATH_MAX) == NULL)
+    if (_fullpath(path_zt, dst, PATH_MAX) == NULL)
         return -1;
 #endif
 
@@ -285,7 +286,7 @@ int file_read_all(string path, string *data)
         return -1;
     }
 
-    char *dst = sys_malloc(len);
+    char *dst = malloc(len);
     if (dst == NULL) {
         file_close(fd);
         return -1;
@@ -295,7 +296,7 @@ int file_read_all(string path, string *data)
     while ((size_t) copied < len) {
         ret = file_read(fd, dst + copied, len - copied);
         if (ret < 0) {
-            sys_free(dst);
+            free(dst);
             file_close(fd);
             return -1;
         }
@@ -316,7 +317,7 @@ int directory_scanner_init(DirectoryScanner *scanner, string path)
     if (ret < 0 || ret >= (int) sizeof(pattern))
         return -1;
 
-    scanner->handle = sys_FindFirstFileA(pattern, &scanner->find_data);
+    scanner->handle = FindFirstFileA(pattern, &scanner->find_data);
     if (scanner->handle == INVALID_HANDLE_VALUE) {
         if (GetLastError() == ERROR_FILE_NOT_FOUND) {
             scanner->done = true;
@@ -336,7 +337,7 @@ int directory_scanner_next(DirectoryScanner *scanner, string *name)
         return 1;
 
     if (!scanner->first) {
-        BOOL ok = sys_FindNextFileA(scanner->handle, &scanner->find_data);
+        BOOL ok = FindNextFileA(scanner->handle, &scanner->find_data);
         if (!ok) {
             scanner->done = true;
             if (GetLastError() == ERROR_NO_MORE_FILES)
@@ -354,7 +355,7 @@ int directory_scanner_next(DirectoryScanner *scanner, string *name)
 
 void directory_scanner_free(DirectoryScanner *scanner)
 {
-    sys_FindClose(scanner->handle);
+    FindClose(scanner->handle);
 }
 
 #else
@@ -367,7 +368,7 @@ int directory_scanner_init(DirectoryScanner *scanner, string path)
     memcpy(path_copy, path.ptr, path.len);
     path_copy[path.len] = '\0';
 
-    scanner->d = sys_opendir(path_copy);
+    scanner->d = opendir(path_copy);
     if (scanner->d == NULL) {
         scanner->done = true;
         return -1;
@@ -382,7 +383,7 @@ int directory_scanner_next(DirectoryScanner *scanner, string *name)
     if (scanner->done)
         return 1;
 
-    scanner->e = sys_readdir(scanner->d);
+    scanner->e = readdir(scanner->d);
     if (scanner->e == NULL) {
         scanner->done = true;
         return 1;
@@ -394,7 +395,7 @@ int directory_scanner_next(DirectoryScanner *scanner, string *name)
 
 void directory_scanner_free(DirectoryScanner *scanner)
 {
-    sys_closedir(scanner->d);
+    closedir(scanner->d);
 }
 
 #endif

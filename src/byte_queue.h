@@ -1,6 +1,8 @@
 #ifndef BYTE_QUEUE_INCLUDED
 #define BYTE_QUEUE_INCLUDED
 
+#include <stddef.h>
+
 #include "basic.h"
 
 typedef struct {

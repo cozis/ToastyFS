@@ -1,14 +1,18 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <assert.h>
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
 
-#include "config.h"
-#include "metadata_server.h"
+#include <quakey.h>
+#include <assert.h>
+#include <stdint.h>
+
 #include "sha256.h"
-#include "message.h"
 #include "file_system.h"
+#include "hash_set.h"
+#include "config.h"
 #include "tcp.h"
+#include "message.h"
+#include "byte_queue.h"
 #include "chunk_server.h"
 
 static string hash2path(ChunkServer *state, SHA256 hash, char *out)
@@ -99,12 +103,12 @@ static int patch_chunk(ChunkServer *state, SHA256 target_chunk,
         return -1;
 
     if (patch_off > SIZE_MAX - patch.len) {
-        sys_free(data.ptr);
+        free(data.ptr);
         return -1;
     }
 
     if (patch_off + (size_t) patch.len > (size_t) data.len) {
-        sys_free(data.ptr);
+        free(data.ptr);
         return -1;
     }
 
@@ -112,11 +116,11 @@ static int patch_chunk(ChunkServer *state, SHA256 target_chunk,
 
     ret = store_chunk(state, data, new_hash);
     if (ret < 0) {
-        sys_free(data.ptr);
+        free(data.ptr);
         return -1;
     }
 
-    sys_free(data.ptr);
+    free(data.ptr);
     return 0;
 }
 
@@ -129,7 +133,7 @@ static void download_targets_init(DownloadTargets *targets)
 
 static void download_targets_free(DownloadTargets *targets)
 {
-    sys_free(targets->items);
+    free(targets->items);
 }
 
 static void download_targets_remove(DownloadTargets *targets,
@@ -161,13 +165,13 @@ static int download_targets_push(DownloadTargets *targets,
         else
             new_capacity = 2 * targets->capacity;
 
-        DownloadTarget *new_items = sys_malloc(new_capacity * sizeof(DownloadTarget));
+        DownloadTarget *new_items = malloc(new_capacity * sizeof(DownloadTarget));
         if (new_items == NULL)
             return -1;
 
         if (targets->capacity > 0) {
             memcpy(new_items, targets->items, targets->count * sizeof(targets->items[0]));
-            sys_free(targets->items);
+            free(targets->items);
         }
 
         targets->items = new_items;
@@ -563,7 +567,7 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     if (binary_read(&reader, NULL, 1))
         return send_error(&state->tcp, conn_idx, true, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("Invalid message"));
 
-    char *mem = sys_malloc(chunk_size);
+    char *mem = malloc(chunk_size);
     if (mem == NULL)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("Out of memory"));
 
@@ -579,7 +583,7 @@ process_client_create_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     SHA256 dummy;
     int ret = store_chunk(state, (string) { mem, chunk_size }, &dummy);
 
-    sys_free(mem);
+    free(mem);
 
     if (ret < 0)
         return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_CREATE_CHUNK_ERROR, S("I/O error"));
@@ -694,7 +698,7 @@ process_client_download_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     string slice;
     if (full == 0) {
         if (target_off >= (size_t) data.len || target_len > (size_t) data.len - target_off) {
-            sys_free(data.ptr);
+            free(data.ptr);
             return send_error(&state->tcp, conn_idx, false, MESSAGE_TYPE_DOWNLOAD_CHUNK_ERROR, S("Invalid range"));
         }
         slice = (string) { data.ptr + target_off, target_len };
@@ -710,11 +714,11 @@ process_client_download_chunk(ChunkServer *state, int conn_idx, ByteView msg)
     message_write(&writer, &target_len, sizeof(target_len));
     message_write(&writer, slice.ptr, slice.len);
     if (!message_writer_free(&writer)) {
-        sys_free(data.ptr);
+        free(data.ptr);
         return -1;
     }
 
-    sys_free(data.ptr);
+    free(data.ptr);
     return 0;
 }
 
@@ -812,8 +816,12 @@ static int send_sync_message(ChunkServer *state)
     return 0;
 }
 
-int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout)
+int chunk_server_init(void *state_, int argc, char **argv,
+    void **ctxs, struct pollfd *pdata, int pcap, int *pnum,
+    int *timeout)
 {
+    ChunkServer *state = state_;
+
     string addr        = getargs(argc, argv, "--addr", "127.0.0.1");
     int    port        = getargi(argc, argv, "--port", 8081);
     string path        = getargs(argc, argv, "--path", "chunk_server_data/");
@@ -821,34 +829,45 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     string remote_addr = getargs(argc, argv, "--remote-addr", "127.0.0.1");
     int    remote_port = getargi(argc, argv, "--remote-port", 8080);
 
-    if (port <= 0 || port >= 1<<16)
+    if (port <= 0 || port >= 1<<16) {
+        fprintf(stderr, "chunk server :: Invalid port\n");
         return -1;
+    }
 
-    if (remote_port <= 0 || remote_port >= 1<<16)
+    if (remote_port <= 0 || remote_port >= 1<<16) {
+        fprintf(stderr, "chunk server :: Invalid remote port\n");
         return -1;
+    }
 
     Time current_time = get_current_time();
-    if (current_time == INVALID_TIME)
+    if (current_time == INVALID_TIME) {
+        fprintf(stderr, "chunk server :: Couldn't read the time\n");
         return -1;
+    }
 
     state->trace = trace;
     state->reconnect_delay = 1; // 1 second
 
-    if (tcp_context_init(&state->tcp) < 0)
+    if (tcp_context_init(&state->tcp) < 0) {
+        fprintf(stderr, "chunk server :: Couldn't setup the TCP context\n");
         return -1;
+    }
 
     int ret = tcp_listen(&state->tcp, addr, port);
     if (ret < 0) {
+        fprintf(stderr, "chunk server :: Couldn't setup the TCP listener\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
 
     if (create_dir(path) && errno != EEXIST) {
+        fprintf(stderr, "chunk server :: Couldn't create chunk folder\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
 
     if (get_full_path(path, state->path) < 0) {
+        fprintf(stderr, "chunk server :: Couldn't convert path to absolute\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
@@ -861,6 +880,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
 
     char tmp[1<<10];
     if (addr.len >= (int) sizeof(tmp)) {
+        fprintf(stderr, "chunk server :: Address is too long\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
@@ -868,6 +888,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     tmp[addr.len] = '\0';
     state->local_addr.is_ipv4 = true;
     if (inet_pton(AF_INET, tmp, &state->local_addr.ipv4) != 1) {
+        fprintf(stderr, "chunk server :: Couldn't parse address\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
@@ -876,6 +897,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     // Initialize metadata server address
     // // TODO: This should also support IPv6
     if (remote_addr.len >= (int) sizeof(tmp)) {
+        fprintf(stderr, "chunk server :: Remote address is too long\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
@@ -883,6 +905,7 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     tmp[remote_addr.len] = '\0';
     state->remote_addr.is_ipv4 = true;
     if (inet_pton(AF_INET, tmp, &state->remote_addr.ipv4) != 1) {
+        fprintf(stderr, "chunk server :: Couldn't parse remote address\n");
         tcp_context_free(&state->tcp);
         return -1;
     }
@@ -904,23 +927,20 @@ int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts
     );
 
     *timeout = 0;
-    return tcp_register_events(&state->tcp, contexts, polled);
-}
-
-int chunk_server_free(ChunkServer *state)
-{
-    download_targets_free(&state->download_targets);
-    timed_hash_set_free(&state->cs_rem_list);
-    hash_set_free(&state->cs_lst_list);
-    hash_set_free(&state->cs_add_list);
-    tcp_context_free(&state->tcp);
+    if (pcap < TCP_POLL_CAPACITY) {
+        fprintf(stderr, "chunk server :: Capacity isn't large enough\n");
+        return -1;
+    }
+    *pnum = tcp_register_events(&state->tcp, ctxs, pdata);
     return 0;
 }
 
-int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout)
+int chunk_server_tick(void *state_, void **ctxs,
+    struct pollfd *pdata, int pcap, int *pnum, int *timeout)
 {
+    ChunkServer *state = state_;
     Event events[TCP_EVENT_CAPACITY];
-    int num_events = tcp_translate_events(&state->tcp, events, contexts, polled, num_polled);
+    int num_events = tcp_translate_events(&state->tcp, events, ctxs, pdata, *pnum);
 
     Time current_time = get_current_time();
     if (current_time == INVALID_TIME)
@@ -1031,5 +1051,19 @@ int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled
     }
 
     *timeout = deadline_to_timeout(deadline, current_time);
-    return tcp_register_events(&state->tcp, contexts, polled);
+    if (pcap < TCP_POLL_CAPACITY)
+        return -1;
+    *pnum = tcp_register_events(&state->tcp, ctxs, pdata);
+    return 0;
+}
+
+int chunk_server_free(void *state_)
+{
+    ChunkServer *state = state_;
+    download_targets_free(&state->download_targets);
+    timed_hash_set_free(&state->cs_rem_list);
+    hash_set_free(&state->cs_lst_list);
+    hash_set_free(&state->cs_add_list);
+    tcp_context_free(&state->tcp);
+    return 0;
 }

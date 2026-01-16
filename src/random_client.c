@@ -1,12 +1,11 @@
-#ifdef BUILD_TEST
+#ifdef MAIN_SIMULATION
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#define QUAKEY_ENABLE_MOCKS
+#include <quakey.h>
 #include <assert.h>
 
-#include "simulation_client.h"
 #include "tcp.h"
+#include "random_client.h"
 
 // Helper function to parse address and port from command line
 static bool parse_server_addr(int argc, char **argv, char **addr, uint16_t *port)
@@ -19,7 +18,18 @@ static bool parse_server_addr(int argc, char **argv, char **addr, uint16_t *port
         if (!strcmp(argv[i], "--server") || !strcmp(argv[i], "-s")) {
             *addr = argv[i + 1];
             if (i + 2 < argc) {
-                *port = (uint16_t)atoi(argv[i + 2]);
+
+                errno = 0;
+                char *end;
+                long val = strtol(argv[i+2], &end, 10);
+
+                if (end == argv[i+2] || *end != '\0' || errno == ERANGE)
+                    break;
+
+                if (val < 0 || val > UINT16_MAX)
+                    break;
+
+                *port = (uint16_t) val;
                 return true;
             }
         }
@@ -27,9 +37,12 @@ static bool parse_server_addr(int argc, char **argv, char **addr, uint16_t *port
     return true;
 }
 
-int simulation_client_init(SimulationClient *client, int argc, char **argv,
-                          void **contexts, struct pollfd *polled, int *timeout)
+int random_client_init(void *state_, int argc, char **argv,
+    void **ctxs, struct pollfd *pdata, int pcap, int *pnum,
+    int *timeout)
 {
+    RandomClient *client = state_;
+
     char *addr;
     uint16_t port;
     parse_server_addr(argc, argv, &addr, &port);
@@ -43,20 +56,26 @@ int simulation_client_init(SimulationClient *client, int argc, char **argv,
     printf("Client set up (remote=%s:%d)\n", addr, port);
 
     *timeout = 0;
-    return toasty_process_events(client->toasty, contexts, polled, 0);
+    if (pcap < TCP_POLL_CAPACITY)
+        return -1;
+    *pnum = toasty_process_events(client->toasty, ctxs, pdata, *pnum);
+    return 0;
 }
 
 static int random_in_range(int min, int max)
 {
-    uint64_t n = simulation_random_number();
+    uint64_t n = quakey_random();
     return min + n % (max - min + 1);
 }
 
-int simulation_client_step(SimulationClient *client, void **contexts,
-                          struct pollfd *polled, int num_polled, int *timeout)
+int random_client_tick(void *state_, void **ctxs,
+    struct pollfd *pdata, int pcap, int *pnum,
+    int *timeout)
 {
+    RandomClient *client = state_;
+
     // Process any pending events from the network and get new poll descriptors
-    num_polled = toasty_process_events(client->toasty, contexts, polled, num_polled);
+    *pnum = toasty_process_events(client->toasty, ctxs, pdata, *pnum);
 
     for (int i = 0; i < client->num_pending; i++) {
 
@@ -241,12 +260,19 @@ int simulation_client_step(SimulationClient *client, void **contexts,
         *timeout = 10;
     else
         *timeout = -1;
-    return toasty_process_events(client->toasty, contexts, polled, 0);
+
+    if (pcap < TCP_POLL_CAPACITY)
+        return -1;
+    *pnum = toasty_process_events(client->toasty, ctxs, pdata, 0);
+    return 0;
 }
 
-void simulation_client_free(SimulationClient *client)
+int random_client_free(void *state_)
 {
+    RandomClient *client = state_;
+
     toasty_disconnect(client->toasty);
+    return 0;
 }
 
-#endif // BUILD_TEST
+#endif // MAIN_SIMULATION

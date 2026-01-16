@@ -1,10 +1,12 @@
-#include <limits.h>
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
+
+#include <stdint.h>
 #include <assert.h>
-#include <string.h>
-#include <stdlib.h>
+#include <quakey.h>
 
 #include "basic.h"
-#include "system.h"
 #include "file_tree.h"
 
 static int parse_path(string path, string *comps, int max)
@@ -102,7 +104,7 @@ static void dir_free(Dir *d)
 {
     for (uint64_t i = 0; i < d->num_children; i++)
         entity_free(&d->children[i]);
-    sys_free(d->children);
+    free(d->children);
 }
 
 static bool gen_match(uint64_t expected_gen, uint64_t entity_gen)
@@ -158,7 +160,7 @@ static void file_init(File *f, uint64_t chunk_size)
 
 static void file_free(File *f)
 {
-    sys_free(f->chunks);
+    free(f->chunks);
     f->chunks = NULL;
 }
 
@@ -312,14 +314,14 @@ int file_tree_create_entity(FileTree *ft, string path,
         if (new_max == 0)
             new_max = 8;
 
-        Entity *p = sys_malloc(sizeof(Entity) * new_max);
+        Entity *p = malloc(sizeof(Entity) * new_max);
         if (p == NULL)
             return FILETREE_NOMEM;
 
         for (uint64_t i = 0; i < d->num_children; i++)
             p[i] = d->children[i];
 
-        sys_free(d->children);
+        free(d->children);
         d->children = p;
         d->max_children = new_max;
     }
@@ -423,13 +425,13 @@ int file_tree_write(
 
     if (last_chunk_index >= f->num_chunks) {
         uint64_t old_num_chunks = f->num_chunks;
-        SHA256 *new_chunks = sys_malloc((last_chunk_index+1) * sizeof(SHA256));
+        SHA256 *new_chunks = malloc((last_chunk_index+1) * sizeof(SHA256));
         if (new_chunks == NULL)
             return FILETREE_NOMEM;
         if (f->chunks) {
             if (f->num_chunks > 0)
                 memcpy(new_chunks, f->chunks, f->num_chunks * sizeof(SHA256));
-            sys_free(f->chunks);
+            free(f->chunks);
         }
         f->chunks = new_chunks;
         f->num_chunks = last_chunk_index+1;
@@ -678,13 +680,13 @@ int file_tree_serialize(FileTree *ft, int (*write_fn)(char*,int,void*), void *wr
     sc.write_data = write_data;
     sc.buffer_used = 0;
     sc.buffer_size = 1<<10;
-    sc.buffer = sys_malloc(sc.buffer_size);
+    sc.buffer = malloc(sc.buffer_size);
     sc.error = false;
     if (sc.buffer == NULL)
         sc.error = true;
     entity_serialize(&sc, &ft->root);
     sc_flush(&sc);
-    sys_free(sc.buffer);
+    free(sc.buffer);
     if (sc.error)
         return -1;
     return 0;
@@ -748,7 +750,7 @@ static void file_deserialize(DeserializeContext *dc, File *f)
     dc_read_u64(dc, &f->num_chunks);
     dc_read_u64(dc, &f->file_size);
 
-    f->chunks = sys_malloc(f->num_chunks * sizeof(SHA256));
+    f->chunks = malloc(f->num_chunks * sizeof(SHA256));
     if (f->chunks == NULL) {
         assert(0); // TODO
     }
@@ -764,7 +766,7 @@ static void dir_deserialize(DeserializeContext *dc, Dir *d)
     dc_read_u64(dc, &d->num_children);
 
     d->max_children = d->num_children;
-    d->children = sys_malloc(d->num_children * sizeof(Entity));
+    d->children = malloc(d->num_children * sizeof(Entity));
     if (d->children == NULL) {
         assert(0); // TODO
     }
@@ -799,13 +801,13 @@ int file_tree_deserialize(FileTree *ft, int (*read_fn)(char*,int,void*), void *r
     dc.buffer_head = 0;
     dc.buffer_used = 0;
     dc.buffer_size = 1<<10;
-    dc.buffer = sys_malloc(dc.buffer_size);
+    dc.buffer = malloc(dc.buffer_size);
     dc.error = false;
     if (dc.buffer == NULL)
         dc.error = true;
     dc.total_read = 0;
     entity_deserialize(&dc, &ft->root);
-    sys_free(dc.buffer);
+    free(dc.buffer);
     if (dc.error)
         return -1;
     if (dc.total_read > INT_MAX) {

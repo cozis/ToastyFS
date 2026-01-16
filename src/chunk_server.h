@@ -1,12 +1,6 @@
 #ifndef CHUNK_SERVER_INCLUDED
 #define CHUNK_SERVER_INCLUDED
 
-#include <limits.h>
-
-#include "basic.h"
-#include "metadata_server.h"
-#include "tcp.h"
-
 #define TAG_METADATA_SERVER 1
 #define TAG_CHUNK_SERVER    2
 
@@ -57,8 +51,16 @@ typedef struct {
 
 } ChunkServer;
 
-int chunk_server_init(ChunkServer *state, int argc, char **argv, void **contexts, struct pollfd *polled, int *timeout);
-int chunk_server_free(ChunkServer *state);
-int chunk_server_step(ChunkServer *state, void **contexts, struct pollfd *polled, int num_polled, int *timeout);
+struct pollfd;
+
+int chunk_server_init(void *state, int argc, char **argv,
+    void **ctxs, struct pollfd *pdata, int pcap, int *pnum,
+    int *timeout);
+
+int chunk_server_tick(void *state, void **ctxs,
+    struct pollfd *pdata, int pcap, int *pnum,
+    int *timeout);
+
+int chunk_server_free(void *state);
 
 #endif // CHUNK_SERVER_INCLUDED

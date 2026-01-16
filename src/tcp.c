@@ -1,8 +1,12 @@
+
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
+
+#include <quakey.h>
 #include <assert.h>
-#include <string.h>
 
 #include "tcp.h"
-#include "system.h"
 #include "message.h"
 
 bool addr_eql(Address a, Address b)
@@ -28,15 +32,15 @@ static int set_socket_blocking(SOCKET sock, bool value)
 {
 #ifdef _WIN32
     u_long mode = !value;
-    if (sys_ioctlsocket(sock, FIONBIO, &mode) == SOCKET_ERROR)
+    if (ioctlsocket(sock, FIONBIO, &mode) == SOCKET_ERROR)
         return -1;
 #else
-    int flags = sys_fcntl(sock, F_GETFL, 0);
+    int flags = fcntl(sock, F_GETFL, 0);
     if (flags < 0)
         return -1;
     if (value) flags &= ~O_NONBLOCK;
     else       flags |= O_NONBLOCK;
-    if (sys_fcntl(sock, F_SETFL, flags) < 0)
+    if (fcntl(sock, F_SETFL, flags) < 0)
         return -1;
 #endif
 
@@ -45,7 +49,7 @@ static int set_socket_blocking(SOCKET sock, bool value)
 
 static SOCKET create_listen_socket(string addr, uint16_t port)
 {
-    SOCKET fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET)
         return INVALID_SOCKET;
 
@@ -72,13 +76,13 @@ static SOCKET create_listen_socket(string addr, uint16_t port)
         return INVALID_SOCKET;
     }
 
-    if (sys_bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf))) {
+    if (bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf))) {
         CLOSE_SOCKET(fd);
         return INVALID_SOCKET;
     }
 
     int backlog = 32;
-    if (sys_listen(fd, backlog) < 0) {
+    if (listen(fd, backlog) < 0) {
         CLOSE_SOCKET(fd);
         return INVALID_SOCKET;
     }
@@ -319,7 +323,7 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
             assert(contexts[i] == NULL);
 
             if (polled[i].revents & POLLIN) {
-                SOCKET new_fd = sys_accept(tcp->listen_fd, NULL, NULL);
+                SOCKET new_fd = accept(tcp->listen_fd, NULL, NULL);
                 if (new_fd != INVALID_SOCKET) {
 
                     if (set_socket_blocking(new_fd, false) < 0)
@@ -347,7 +351,7 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
 
                     int err = 0;
                     socklen_t len = sizeof(err);
-                    if (sys_getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (void*) &err, &len) < 0 || err != 0)
+                    if (getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (void*) &err, &len) < 0 || err != 0)
                         defer_close = true;
                     else {
                         conn->connecting = false;
@@ -360,7 +364,7 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
                 if (polled[i].revents & POLLIN) {
                     byte_queue_write_setmincap(&conn->input, 1<<9);
                     ByteView buf = byte_queue_write_buf(&conn->input);
-                    int num = sys_recv(conn->fd, (char*) buf.ptr, buf.len, 0);
+                    int num = recv(conn->fd, (char*) buf.ptr, buf.len, 0);
                     if (num == 0)
                         defer_close = true;
                     else if (num < 0) {
@@ -388,7 +392,7 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
 
                 if (polled[i].revents & POLLOUT) {
                     ByteView buf = byte_queue_read_buf(&conn->output);
-                    int num = sys_send(conn->fd, (char*) buf.ptr, buf.len, 0);
+                    int num = send(conn->fd, (char*) buf.ptr, buf.len, 0);
                     if (num < 0) {
                         if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)
                             defer_close = true;
@@ -432,7 +436,7 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
         return -1;
     int conn_idx = tcp->num_conns;
 
-    SOCKET fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET)
         return -1;
 
@@ -447,13 +451,13 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
         buf.sin_family = AF_INET;
         buf.sin_port = htons(addr.port);
         memcpy(&buf.sin_addr, &addr.ipv4, sizeof(IPv4));
-        ret = sys_connect(fd, (struct sockaddr*) &buf, sizeof(buf));
+        ret = connect(fd, (struct sockaddr*) &buf, sizeof(buf));
     } else {
         struct sockaddr_in6 buf;
         buf.sin6_family = AF_INET6;
         buf.sin6_port = htons(addr.port);
         memcpy(&buf.sin6_addr, &addr.ipv6, sizeof(IPv6));
-        ret = sys_connect(fd, (struct sockaddr*) &buf, sizeof(buf));
+        ret = connect(fd, (struct sockaddr*) &buf, sizeof(buf));
     }
 
     bool connecting;

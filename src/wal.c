@@ -1,12 +1,14 @@
-#include <stddef.h>
-#include <limits.h>
+
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
+
+#include <quakey.h>
 #include <assert.h>
-#include <string.h>
 
 #include "wal.h"
 #include "file_system.h"
 #include "file_tree.h"
-#include "system.h"
 
 #define WAL_MAGIC   0xcafebebe
 #define WAL_VERSION 1
@@ -190,7 +192,7 @@ static int swap_file(WAL *wal)
     }
 
     // MOVEFILE_REPLACE_EXISTING allows atomic overwrite
-    if (!sys_MoveFileExW(temp_path_w, old_path_w, MOVEFILE_REPLACE_EXISTING)) {
+    if (!MoveFileExW(temp_path_w, old_path_w, MOVEFILE_REPLACE_EXISTING)) {
         file_unlock(temp_handle);
         file_close(temp_handle);
         remove_file_or_dir(temp_path);
@@ -267,12 +269,12 @@ static int next_entry(Handle handle, WALEntry *entry)
         return -1;
 
     // Dynamically allocate path buffer
-    char *path_buffer = sys_malloc(path_len);
+    char *path_buffer = malloc(path_len);
     if (!path_buffer)
         return -1;
 
     if (read_exact(handle, path_buffer, path_len) <= 0) {
-        sys_free(path_buffer);
+        free(path_buffer);
         return -1;
     }
 
@@ -315,13 +317,13 @@ static int next_entry(Handle handle, WALEntry *entry)
                 goto cleanup_error;
 
             // Dynamically allocate hash buffers
-            SHA256 *hashes_buffer = sys_malloc(entry->num_chunks * sizeof(SHA256));
+            SHA256 *hashes_buffer = malloc(entry->num_chunks * sizeof(SHA256));
             if (!hashes_buffer) {
                 goto cleanup_error;
             }
 
             if (read_exact(handle, (char*) hashes_buffer, entry->num_chunks * sizeof(SHA256)) <= 0) {
-                sys_free(hashes_buffer);
+                free(hashes_buffer);
                 goto cleanup_error;
             }
 
@@ -337,9 +339,9 @@ static int next_entry(Handle handle, WALEntry *entry)
 
 cleanup_error:
     if (entry->path.ptr)
-        sys_free((char*) entry->path.ptr);
+        free((char*) entry->path.ptr);
     if (entry->hashes)
-        sys_free(entry->hashes);
+        free(entry->hashes);
     return -1;
 }
 
@@ -351,7 +353,7 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
     wal->file_path.ptr = NULL;
 
     // Copy file_path since the passed string may not have the same lifetime as WAL
-    char *path_copy = sys_malloc(file_path.len);
+    char *path_copy = malloc(file_path.len);
     if (!path_copy)
         return -1;
     memcpy(path_copy, file_path.ptr, file_path.len);
@@ -482,9 +484,9 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
 
         // Free dynamically allocated fields from next_entry
         if (entry.path.ptr)
-            sys_free((char*) entry.path.ptr);
+            free((char*) entry.path.ptr);
         if (entry.hashes)
-            sys_free(entry.hashes);
+            free(entry.hashes);
 
         wal->entry_count++;
     }
@@ -499,7 +501,7 @@ int wal_open(WAL *wal, FileTree *file_tree, string file_path, int entry_limit)
     return 0;
 
 error_cleanup_path:
-    sys_free(path_copy);
+    free(path_copy);
     return -1;
 }
 
@@ -508,7 +510,7 @@ void wal_close(WAL *wal)
     file_unlock(wal->handle);
     file_close(wal->handle);
     if (wal->file_path.ptr)
-        sys_free((char*) wal->file_path.ptr);
+        free((char*) wal->file_path.ptr);
 }
 
 static int write_u8(Handle handle, uint8_t value)

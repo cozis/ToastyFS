@@ -1,0 +1,170 @@
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#else
+#define POLL_CAPACITY 1024
+#endif
+#include <stdint.h>
+#include <quakey.h>
+
+#include "metadata_server.h"
+#include "chunk_server.h"
+#include "random_client.h"
+
+#ifdef MAIN_METADATA_SERVER
+int main(int argc, char **argv)
+{
+    int ret;
+    MetadataServer state;
+
+    void*         poll_ctxs[POLL_CAPACITY];
+    struct pollfd poll_array[POLL_CAPACITY];
+    int poll_count;
+    int poll_timeout;
+
+    ret = metadata_server_init(
+        &state,
+        argc,
+        argv,
+        poll_ctxs,
+        poll_array,
+        POLL_CAPACITY,
+        &poll_count,
+        &poll_timeout
+    );
+    if (ret < 0)
+        return -1;
+
+    for (;;) {
+
+#ifdef _WIN32
+        WSAPoll(poll_array, poll_count, poll_timeout);
+#else
+        poll(poll_array, poll_count, poll_timeout);
+#endif
+
+        ret = metadata_server_tick(
+            &state,
+            poll_ctxs,
+            poll_array,
+            POLL_CAPACITY,
+            &poll_count,
+            &poll_timeout
+        );
+        if (ret < 0)
+            return -1;
+    }
+
+    metadata_server_free(&state);
+    return 0;
+}
+#endif
+
+#ifdef MAIN_CHUNK_SERVER
+int main(int argc, char **argv)
+{
+    int ret;
+    ChunkServer state;
+
+    void*         poll_ctxs[POLL_CAPACITY];
+    struct pollfd poll_array[POLL_CAPACITY];
+    int poll_count;
+    int poll_timeout;
+
+    ret = chunk_server_init(
+        &state,
+        argc,
+        argv,
+        poll_ctxs,
+        poll_array,
+        POLL_CAPACITY,
+        &poll_count,
+        &poll_timeout
+    );
+    if (ret < 0)
+        return -1;
+
+    for (;;) {
+
+#ifdef _WIN32
+        WSAPoll(poll_array, poll_count, poll_timeout);
+#else
+        poll(poll_array, poll_count, poll_timeout);
+#endif
+
+        ret = chunk_server_tick(
+            &state,
+            poll_ctxs,
+            poll_array,
+            POLL_CAPACITY,
+            &poll_count,
+            &poll_timeout
+        );
+        if (ret < 0)
+            return -1;
+    }
+
+    chunk_server_free(&state);
+    return 0;
+}
+#endif
+
+#ifdef MAIN_SIMULATION
+int main(void)
+{
+    Quakey *quakey;
+    int ret = quakey_init(&quakey, 1);
+    if (ret < 0)
+        return -1;
+
+    // Client
+    {
+        QuakeySpawn config = {
+            .state_size = sizeof(RandomClient),
+            .init_func  = random_client_init,
+            .tick_func  = random_client_tick,
+            .free_func  = random_client_free,
+            .addrs      = (char*[]) { "127.0.0.2" },
+            .num_addrs  = 1,
+            .disk_size  = 1<<20,
+            .platform   = QUAKEY_LINUX,
+        };
+        quakey_spawn(quakey, config, "cs --addr 127.0.0.2");
+    }
+
+    // Metadata Server
+    {
+        QuakeySpawn config = {
+            .state_size = sizeof(MetadataServer),
+            .init_func  = metadata_server_init,
+            .tick_func  = metadata_server_tick,
+            .free_func  = metadata_server_free,
+            .addrs      = (char*[]) { "127.0.0.3" },
+            .num_addrs  = 1,
+            .disk_size  = 1<<20,
+            .platform   = QUAKEY_LINUX,
+        };
+        quakey_spawn(quakey, config, "ms --addr 127.0.0.3");
+    }
+
+    // Chunk Server
+    {
+        QuakeySpawn config = {
+            .state_size = sizeof(ChunkServer),
+            .init_func  = chunk_server_init,
+            .tick_func  = chunk_server_tick,
+            .free_func  = chunk_server_free,
+            .addrs      = (char*[]) { "127.0.0.4" },
+            .num_addrs  = 1,
+            .disk_size  = 1<<20,
+            .platform   = QUAKEY_LINUX,
+        };
+        quakey_spawn(quakey, config, "cs --addr 127.0.0.4");
+    }
+
+    for (;;)
+        quakey_schedule_one(quakey);
+
+    quakey_free(quakey);
+    return 0;
+}
+#endif // MAIN_SIMULATION

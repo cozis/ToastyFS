@@ -1,15 +1,23 @@
 #ifndef TCP_INCLUDED
 #define TCP_INCLUDED
 
-#include <stdbool.h>
+#ifdef MAIN_SIMULATION
+#   define QUAKEY_ENABLE_MOCKS
+#   include <quakey.h>
+#else
+#   ifdef _WIN32
+#       include <winsock2.h>
+#   endif
+#endif
 
-#include "system.h"
 #include "byte_queue.h"
 
 #ifdef _WIN32
-#define CLOSE_SOCKET sys_closesocket
+#define CLOSE_SOCKET closesocket
 #else
-#define CLOSE_SOCKET sys_close
+#define SOCKET int
+#define INVALID_SOCKET -1
+#define CLOSE_SOCKET close
 #endif
 
 #ifndef TCP_CONNECTION_LIMIT

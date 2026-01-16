@@ -1,14 +1,12 @@
 #ifndef FILE_SYSTEM_INCLUDED
 #define FILE_SYSTEM_INCLUDED
 
-#include "basic.h"
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <dirent.h>
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
 #endif
+#include <stdint.h>
+#include <quakey.h>
+#include "basic.h"
 
 typedef struct {
     uint64_t data;

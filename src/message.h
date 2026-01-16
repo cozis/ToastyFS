@@ -1,9 +1,11 @@
 #ifndef MESSAGE_INCLUDED
 #define MESSAGE_INCLUDED
 
-#include <stdio.h>
-#include <stdbool.h>
-
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
+#include <stdint.h>
+#include <quakey.h>
 #include "basic.h"
 #include "byte_queue.h"
 

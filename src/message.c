@@ -1,11 +1,8 @@
-#include <string.h>
-
-#ifdef _WIN32
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h> // inet_ntop
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
 #endif
-
+#include <stdint.h>
+#include <quakey.h>
 #include "message.h"
 
 bool binary_read(BinaryReader *reader, void *dst, int len)
