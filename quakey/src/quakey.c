@@ -1153,9 +1153,8 @@ static void set_revents_in_poll_array(Host *host)
         int fd = host->poll_array[i].fd;
         int events = host->poll_array[i].events;
 
-        if (!is_desc_idx_valid(host, fd)) {
-            assert(0); // TODO
-        }
+        if (!is_desc_idx_valid(host, fd))
+            continue; // TODO: is this ok?
         Desc *desc = &host->desc[fd];
 
         int revents = 0;
@@ -1347,9 +1346,10 @@ static int host_close(Host *host, int desc_idx, bool expect_socket)
             return HOST_ERROR_NOTSOCK;
     }
 
-    desc_free(&host->desc[desc_idx], &host->lfs, false);
-    time_event_disconnect(host->sim, 10000000, &host->desc[desc_idx], false);
+    if (host->desc[desc_idx].type == DESC_SOCKET_C)
+        time_event_disconnect(host->sim, 10000000, &host->desc[desc_idx], false);
 
+    desc_free(&host->desc[desc_idx], &host->lfs, false);
     host->num_desc--;
     return 0;
 }
@@ -1612,7 +1612,9 @@ static int host_open_file(Host *host, char *path, int flags)
 
     int ret = lfs_file_open(&host->lfs, &desc->file, path, flags);
     if (ret < 0) {
-        TODO;
+        if (ret == LFS_ERR_NOENT)
+            return HOST_ERROR_NOENT;
+        return HOST_ERROR_IO;
     }
 
     desc->type = DESC_FILE;
@@ -2020,6 +2022,9 @@ static void time_event_disconnect(Sim *sim, Nanos time, Desc *desc, b32 rst)
     if (remove_connect_event(sim, desc))
         return;
 
+    if (desc->peer == NULL)
+        return;
+
     TimeEvent event = {
         .type = EVENT_TYPE_DISCONNECT,
         .time = time,
@@ -2223,7 +2228,7 @@ static void process_events_at_current_time(Sim *sim)
     }
 }
 
-static int find_ready_host(Sim *sim)
+static int find_first_ready_host(Sim *sim)
 {
     int i = 0;
     while (i < sim->num_hosts && !host_ready(sim->hosts[i]))
@@ -2231,6 +2236,16 @@ static int find_ready_host(Sim *sim)
     if (i == sim->num_hosts)
         return -1;
     return i;
+}
+
+static void move_host_to_last(Sim *sim, int idx)
+{
+    assert(idx > -1 && idx < sim->num_hosts);
+
+    Host *host = sim->hosts[idx];
+    for (int i = idx; i < sim->num_hosts-1; i++)
+        sim->hosts[i] = sim->hosts[i+1];
+    sim->hosts[sim->num_hosts-1] = host;
 }
 
 static b32 sim_update(Sim *sim)
@@ -2246,7 +2261,7 @@ static b32 sim_update(Sim *sim)
         // If all host are waiting, advance the time to the
         // next timed event and try again.
 
-        host_idx = find_ready_host(sim);
+        host_idx = find_first_ready_host(sim);
         if (host_idx > -1)
             break;
 
@@ -2257,7 +2272,8 @@ static b32 sim_update(Sim *sim)
         process_events_at_current_time(sim);
     }
 
-    host_update(sim->hosts[host_idx]);
+    move_host_to_last(sim, host_idx);
+    host_update(sim->hosts[sim->num_hosts-1]);
     return true;
 }
 

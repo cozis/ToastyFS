@@ -140,7 +140,7 @@ int main(void)
             .disk_size  = 1<<20,
             .platform   = QUAKEY_LINUX,
         };
-        quakey_spawn(quakey, config, "cs --addr 127.0.0.2");
+        quakey_spawn(quakey, config, "cli --server 127.0.0.3 8080");
     }
 
     // Metadata Server
@@ -155,7 +155,7 @@ int main(void)
             .disk_size  = 1<<20,
             .platform   = QUAKEY_LINUX,
         };
-        quakey_spawn(quakey, config, "ms --addr 127.0.0.3");
+        quakey_spawn(quakey, config, "ms --addr 127.0.0.3 --port 8080");
     }
 
     // Chunk Server
@@ -170,7 +170,7 @@ int main(void)
             .disk_size  = 1<<20,
             .platform   = QUAKEY_LINUX,
         };
-        quakey_spawn(quakey, config, "cs --addr 127.0.0.4");
+        quakey_spawn(quakey, config, "cs --addr 127.0.0.4 --port 8081 --remote-addr 127.0.0.3 --remote-port 8080");
     }
 
     while (simulation_running)
