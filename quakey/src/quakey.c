@@ -369,6 +369,7 @@ static void time_event_wakeup(Sim *sim, Nanos time, Host *host);
 static void time_event_connect(Sim *sim, Nanos time, Desc *desc);
 static void time_event_disconnect(Sim *sim, Nanos time, Desc *desc, b32 rst);
 static void time_event_send_data(Sim *sim, Nanos time, Desc *desc);
+static void remove_events_targeting_desc(Sim *sim, Desc *desc);
 
 /////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////
@@ -776,7 +777,7 @@ static bool accept_queue_empty(AcceptQueue *queue)
 // If the descriptor is a connection socket and rst=true,
 // the peer connection will be marked as "reset" instead
 // of simply closed.
-static void desc_free(Desc *desc, bool rst)
+static void desc_free(Sim *sim, Desc *desc, bool rst)
 {
     switch (desc->type) {
     case DESC_EMPTY:
@@ -793,6 +794,9 @@ static void desc_free(Desc *desc, bool rst)
         accept_queue_free(&desc->accept_queue);
         break;
     case DESC_SOCKET_C:
+        // Remove any pending events targeting this descriptor before freeing it
+        if (sim)
+            remove_events_targeting_desc(sim, desc);
         if (desc->peer) {
             // A connection was previously established.
             // We need to update the other end of the connection.
@@ -989,7 +993,7 @@ static void host_free(Host *host)
 
     for (int i = 0; i < HOST_DESC_LIMIT; i++) {
         if (host->desc[i].type != DESC_EMPTY)
-            desc_free(&host->desc[i], true);
+            desc_free(host->sim, &host->desc[i], true);
     }
 
     free(host->state);
@@ -1285,7 +1289,7 @@ static int host_close(Host *host, int desc_idx, bool expect_socket)
     if (host->desc[desc_idx].type == DESC_SOCKET_C)
         time_event_disconnect(host->sim, host->sim->current_time + 10000000, &host->desc[desc_idx], false);
 
-    desc_free(&host->desc[desc_idx], false);
+    desc_free(host->sim, &host->desc[desc_idx], false);
     host->num_desc--;
     return 0;
 }
@@ -1932,6 +1936,26 @@ static b32 remove_connect_event(Sim *sim, Desc *desc)
 
     sim->events[i] = sim->events[--sim->num_events];
     return true;
+}
+
+// Remove all events that target a specific descriptor (DISCONNECT and DATA events)
+static void remove_events_targeting_desc(Sim *sim, Desc *desc)
+{
+    int i = 0;
+    while (i < sim->num_events) {
+        TimeEvent *event = &sim->events[i];
+        if (event->dst_desc == desc) {
+            // Free any resources associated with the event
+            if (event->type == EVENT_TYPE_DATA && event->data_queue) {
+                socket_queue_unref(event->data_queue);
+            }
+            // Remove by swapping with last element
+            sim->events[i] = sim->events[--sim->num_events];
+            // Don't increment i - need to check the swapped element
+        } else {
+            i++;
+        }
+    }
 }
 
 static void time_event_disconnect(Sim *sim, Nanos time, Desc *desc, b32 rst)
