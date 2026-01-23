@@ -9,7 +9,7 @@ echo "=== Step 1: Building simulation with coverage instrumentation ==="
 gcc src/sha256.c src/basic.c src/file_system.c src/byte_queue.c src/file_tree.c \
     src/message.c src/tcp.c src/wal.c src/hash_set.c src/client.c \
     src/metadata_server.c src/chunk_server.c src/random_client.c src/main.c \
-    quakey/src/lfs.c quakey/src/lfs_util.c quakey/src/quakey.c \
+    quakey/src/mockfs.c quakey/src/quakey.c \
     -o "$SIMULATION_BINARY" \
     -Iquakey/include -Iinclude \
     -Wall -Wextra -ggdb -O0 \

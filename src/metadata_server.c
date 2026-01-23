@@ -9,7 +9,8 @@
 #include "message.h"
 #include "metadata_server.h"
 
-#define MS_TRACE(fmt, ...) fprintf(stderr, "MS: " fmt "\n", ##__VA_ARGS__);
+#define MS_TRACE(fmt, ...) {}
+//#define MS_TRACE(fmt, ...) fprintf(stderr, "MS: " fmt "\n", ##__VA_ARGS__);
 
 static void chunk_server_peer_init(ChunkServerPeer *chunk_server, Time current_time)
 {

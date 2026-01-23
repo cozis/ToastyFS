@@ -40,6 +40,10 @@ typedef enum {
 
 typedef struct {
 
+    // Label associated to the process for debugging
+    // The string must have global lifetime
+    char *name;
+
     // Size of the opaque state struct
     int state_size;
 

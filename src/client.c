@@ -36,7 +36,8 @@ typedef pthread_mutex_t Mutex;
 
 #define PARALLEL_LIMIT 5
 
-#define CLIENT_TRACE(fmt, ...) fprintf(stderr, "CLIENT: " fmt "\n", ##__VA_ARGS__);
+#define CLIENT_TRACE(fmt, ...) {}
+//#define CLIENT_TRACE(fmt, ...) fprintf(stderr, "CLIENT: " fmt "\n", ##__VA_ARGS__);
 
 typedef struct {
     SHA256   hash;

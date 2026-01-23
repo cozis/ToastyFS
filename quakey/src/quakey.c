@@ -235,6 +235,8 @@ struct Host {
     // Pointer to the parent simulation object
     Sim *sim;
 
+    char *name;
+
     // Platform used by this host
     QuakeyPlatform platform;
 
@@ -275,6 +277,7 @@ struct Host {
     int           poll_timeout;
 
     b32 timedout;
+    b32 blocked;
 
     // Current error number set by system call mocks
     int errno_;
@@ -886,6 +889,7 @@ static int split_args(char *arg, char **argv, int max_argc)
 static void host_init(Host *host, Sim *sim, QuakeySpawn config, char *arg)
 {
     host->sim = sim;
+    host->name = config.name;
     host->platform = config.platform;
     host->next_ephemeral_port = FIRST_EPHEMERAL_PORT;
 
@@ -943,6 +947,7 @@ static void host_init(Host *host, Sim *sim, QuakeySpawn config, char *arg)
     }
 
     host->timedout = false;
+    host->blocked = false;
     host->poll_count = 0;
     host->poll_timeout = -1;
 
@@ -1019,6 +1024,9 @@ static bool is_desc_idx_valid(Host *host, int desc_idx);
 
 static bool host_ready(Host *host)
 {
+    if (host->blocked)
+        return false;
+
     if (host->timedout)
         return true;
 
@@ -2170,15 +2178,20 @@ static b32 sim_update(Sim *sim)
         if (host_idx > -1)
             break;
 
-        if (sim->num_events == 0)
-            __builtin_trap(); // TODO: remove me
+        for (int i = 0; i < sim->num_hosts; i++)
+            sim->hosts[i]->blocked = false;
 
         advance_time_to_next_event(sim);
         process_events_at_current_time(sim);
     }
 
     move_host_to_last(sim, host_idx);
-    host_update(sim->hosts[sim->num_hosts-1]);
+
+    Host *host = sim->hosts[sim->num_hosts-1];
+    host_update(host);
+    if (host_ready(host))
+        host->blocked = true;
+
     return true;
 }
 

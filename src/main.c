@@ -131,6 +131,7 @@ int main(void)
     // Client
     {
         QuakeySpawn config = {
+            .name       = "client",
             .state_size = sizeof(RandomClient),
             .init_func  = random_client_init,
             .tick_func  = random_client_tick,
@@ -146,6 +147,7 @@ int main(void)
     // Metadata Server
     {
         QuakeySpawn config = {
+            .name       = "ms",
             .state_size = sizeof(MetadataServer),
             .init_func  = metadata_server_init,
             .tick_func  = metadata_server_tick,
@@ -161,6 +163,7 @@ int main(void)
     // Chunk Server
     {
         QuakeySpawn config = {
+            .name       = "cs",
             .state_size = sizeof(ChunkServer),
             .init_func  = chunk_server_init,
             .tick_func  = chunk_server_tick,
