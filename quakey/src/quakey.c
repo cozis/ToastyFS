@@ -969,8 +969,10 @@ static void host_init(Host *host, Sim *sim, QuakeySpawn config, char *arg)
         TODO;
     }
 
-    if (host->poll_timeout > -1)
+    if (host->poll_timeout > 0)
         time_event_wakeup(host->sim, host->sim->current_time + (Nanos)host->poll_timeout * 1000000ULL, host);
+    else if (host->poll_timeout == 0)
+        host->timedout = true;  // Immediate timeout, don't create event at current_time
 }
 
 static void host_free(Host *host)
@@ -1158,8 +1160,10 @@ static void host_update(Host *host)
         TODO;
     }
 
-    if (host->poll_timeout > -1)
+    if (host->poll_timeout > 0)
         time_event_wakeup(host->sim, host->sim->current_time + (Nanos)host->poll_timeout * 1000000ULL, host);
+    else if (host->poll_timeout == 0)
+        host->timedout = true;  // Immediate timeout, don't create event at current_time
 }
 
 static bool host_has_addr(Host *host, Addr addr)
@@ -1279,7 +1283,7 @@ static int host_close(Host *host, int desc_idx, bool expect_socket)
     }
 
     if (host->desc[desc_idx].type == DESC_SOCKET_C)
-        time_event_disconnect(host->sim, 10000000, &host->desc[desc_idx], false);
+        time_event_disconnect(host->sim, host->sim->current_time + 10000000, &host->desc[desc_idx], false);
 
     desc_free(&host->desc[desc_idx], false);
     host->num_desc--;
@@ -1505,7 +1509,7 @@ static int host_connect(Host *host, int desc_idx,
 
     // TODO: some percent of times connect() should resolve immediately
 
-    time_event_connect(host->sim, 100000000, desc);
+    time_event_connect(host->sim, host->sim->current_time + 100000000, desc);
 
     desc->connect_addr = addr;
     desc->connect_port = port;
@@ -1658,7 +1662,7 @@ static int send_inner(Desc *desc, char *src, int len)
     if (ret == 0)
         return HOST_ERROR_WOULDBLOCK;
 
-    time_event_send_data(desc->host->sim, 10000000, desc);
+    time_event_send_data(desc->host->sim, desc->host->sim->current_time + 10000000, desc);
     return ret;
 }
 
@@ -2035,6 +2039,8 @@ static b32 time_event_process(TimeEvent *event, Sim *sim)
             if (event->data_count == 0) {
                 socket_queue_unref(event->data_queue);
             } else {
+                // Reschedule to future time so time can advance
+                event->time = sim->current_time + 10000000;
                 consumed = false;
             }
         }
@@ -2188,6 +2194,7 @@ static b32 sim_update(Sim *sim)
     move_host_to_last(sim, host_idx);
 
     Host *host = sim->hosts[sim->num_hosts-1];
+
     host_update(host);
     if (host_ready(host))
         host->blocked = true;
