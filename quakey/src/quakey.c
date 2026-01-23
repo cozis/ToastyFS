@@ -1,8 +1,10 @@
 /////////////////////////////////////////////////////////////////
 // Includes
 
-#include "lfs.h"
+#include "mockfs.h"
 #include <quakey.h>
+#include <stdint.h>
+#include <assert.h>
 
 /////////////////////////////////////////////////////////////////
 // Utilities
@@ -170,12 +172,12 @@ struct Desc {
     /////////////////////////////////////////
     // File fields
 
-    lfs_file_t file;
+    MockFS_OpenFile file;
 
     /////////////////////////////////////////
     // Directory fields
 
-    lfs_dir_t dir;
+    MockFS_OpenDir dir;
 
     /////////////////////////////////////////
 };
@@ -210,6 +212,11 @@ enum {
     HOST_ERROR_NOTEMPTY = -18,
     HOST_ERROR_EXIST    = -19,
     HOST_ERROR_EXISTS   = -19,  // Alias for HOST_ERROR_EXIST
+    HOST_ERROR_PERM     = -20,
+    HOST_ERROR_NOTDIR   = -21,
+    HOST_ERROR_NOSPC    = -22,
+    HOST_ERROR_BUSY     = -23,
+    HOST_ERROR_BADF     = -24,
 };
 
 // lseek whence values for host_lseek
@@ -276,9 +283,8 @@ struct Host {
     int   disk_size;
     char *disk_data;
 
-    // LittleFS instance managing the disk bytes
-    lfs_t lfs;
-    struct lfs_config lfs_cfg;
+    // MockFS instance managing the disk bytes
+    MockFS *mfs;
 };
 
 typedef struct {
@@ -767,7 +773,7 @@ static bool accept_queue_empty(AcceptQueue *queue)
 // If the descriptor is a connection socket and rst=true,
 // the peer connection will be marked as "reset" instead
 // of simply closed.
-static void desc_free(Desc *desc, lfs_t *lfs, bool rst)
+static void desc_free(Desc *desc, bool rst)
 {
     switch (desc->type) {
     case DESC_EMPTY:
@@ -801,10 +807,10 @@ static void desc_free(Desc *desc, lfs_t *lfs, bool rst)
         socket_queue_unref(desc->output);
         break;
     case DESC_FILE:
-        lfs_file_close(lfs, &desc->file);
+        mockfs_close_file(&desc->file);
         break;
     case DESC_DIRECTORY:
-        lfs_dir_close(lfs, &desc->dir);
+        mockfs_close_dir(&desc->dir);
         break;
     default:
         UNREACHABLE;
@@ -877,64 +883,6 @@ static int split_args(char *arg, char **argv, int max_argc)
     return argc;
 }
 
-static int block_device_read(const struct lfs_config *c,
-    lfs_block_t block, lfs_off_t off, void *buffer, lfs_size_t size)
-{
-    Host *host = c->context;
-
-    // Block offset
-    lfs_off_t abs_off = block * c->block_size + off;
-
-    // Bounds check
-    if (abs_off + size > (lfs_size_t) host->disk_size)
-        return LFS_ERR_IO;
-
-    // Copy data from disk to buffer
-    memcpy(buffer, host->disk_data + abs_off, size);
-    return LFS_ERR_OK;
-}
-
-static int block_device_prog(const struct lfs_config *c,
-    lfs_block_t block, lfs_off_t off, const void *buffer, lfs_size_t size)
-{
-    Host *host = c->context;
-
-    // Block offset
-    lfs_off_t abs_off = block * c->block_size + off;
-
-    // Bounds check
-    if (abs_off + size > (lfs_size_t) host->disk_size)
-        return LFS_ERR_IO;
-
-    // Copy data from buffer to disk
-    memcpy(host->disk_data + abs_off, buffer, size);
-    return LFS_ERR_OK;
-}
-
-static int block_device_erase(const struct lfs_config *c,
-    lfs_block_t block)
-{
-    Host *host = c->context;
-
-    // Block offset
-    lfs_off_t abs_off = block * c->block_size;
-
-    // Bounds check
-    if (abs_off + c->block_size > (lfs_size_t) host->disk_size)
-        return LFS_ERR_IO;
-
-    // Erase the block by setting all bytes to 0xFF (typical erased flash state)
-    memset(host->disk_data + abs_off, 0xFF, c->block_size);
-    return LFS_ERR_OK;
-}
-
-static int block_device_sync(const struct lfs_config *c)
-{
-    // No-op for in-memory storage - nothing to flush
-    (void) c;
-    return LFS_ERR_OK;
-}
-
 static void host_init(Host *host, Sim *sim, QuakeySpawn config, char *arg)
 {
     host->sim = sim;
@@ -989,33 +937,9 @@ static void host_init(Host *host, Sim *sim, QuakeySpawn config, char *arg)
     // Zero out memory to make sure operations are deterministic
     memset(host->disk_data, 0, config.disk_size);
 
-    host->lfs_cfg = (struct lfs_config) {
-
-        .context = host,
-
-        // block device operations
-        .read  = block_device_read,
-        .prog  = block_device_prog,
-        .erase = block_device_erase,
-        .sync  = block_device_sync,
-
-        // block device configuration
-        .read_size = 16,
-        .prog_size = 16,
-        .block_size = 4096,
-        .block_count = 128,
-        .cache_size = 16,
-        .lookahead_size = 16,
-        .block_cycles = 500,
-    };
-
-    int ret = lfs_mount(&host->lfs, &host->lfs_cfg);
-    if (ret) {
-        lfs_format(&host->lfs, &host->lfs_cfg); // TODO: can this fail?
-        ret = lfs_mount(&host->lfs, &host->lfs_cfg);
-        if (ret) {
-            TODO;
-        }
+    int ret = mockfs_init(&host->mfs, host->disk_data, config.disk_size);
+    if (ret < 0) {
+        TODO;
     }
 
     host->timedout = false;
@@ -1053,12 +977,12 @@ static void host_free(Host *host)
         TODO;
     }
 
-    lfs_unmount(&host->lfs);
+    mockfs_free(host->mfs);
     free(host->disk_data);
 
     for (int i = 0; i < HOST_DESC_LIMIT; i++) {
         if (host->desc[i].type != DESC_EMPTY)
-            desc_free(&host->desc[i], &host->lfs, true);
+            desc_free(&host->desc[i], true);
     }
 
     free(host->state);
@@ -1349,7 +1273,7 @@ static int host_close(Host *host, int desc_idx, bool expect_socket)
     if (host->desc[desc_idx].type == DESC_SOCKET_C)
         time_event_disconnect(host->sim, 10000000, &host->desc[desc_idx], false);
 
-    desc_free(&host->desc[desc_idx], &host->lfs, false);
+    desc_free(&host->desc[desc_idx], false);
     host->num_desc--;
     return 0;
 }
@@ -1603,6 +1527,27 @@ static int host_connect_status(Host *host, int desc_idx, ConnectStatus *status)
     return 0;
 }
 
+static int mockfs_to_quakey_error(int err)
+{
+    switch (err) {
+        case 0: return 0;
+        case MOCKFS_ERRNO_NOENT : return HOST_ERROR_NOENT;
+        case MOCKFS_ERRNO_PERM  : return HOST_ERROR_PERM;
+        case MOCKFS_ERRNO_NOMEM : return HOST_ERROR_NOMEM;
+        case MOCKFS_ERRNO_NOTDIR: return HOST_ERROR_NOTDIR;
+        case MOCKFS_ERRNO_ISDIR : return HOST_ERROR_ISDIR;
+        case MOCKFS_ERRNO_INVAL : return HOST_ERROR_BADARG;
+        case MOCKFS_ERRNO_NOTEMPTY: return HOST_ERROR_NOTEMPTY;
+        case MOCKFS_ERRNO_NOSPC : return HOST_ERROR_NOSPC;
+        case MOCKFS_ERRNO_EXIST : return HOST_ERROR_EXIST;
+        case MOCKFS_ERRNO_BUSY  : return HOST_ERROR_BUSY;
+        case MOCKFS_ERRNO_BADF  : return HOST_ERROR_BADF;
+        default:
+        printf("Unexpected mockfs errno %d\n", err);
+        assert(0);
+    }
+}
+
 static int host_open_file(Host *host, char *path, int flags)
 {
     int desc_idx = find_empty_desc_struct(host);
@@ -1610,12 +1555,9 @@ static int host_open_file(Host *host, char *path, int flags)
         return HOST_ERROR_FULL;
     Desc *desc = &host->desc[desc_idx];
 
-    int ret = lfs_file_open(&host->lfs, &desc->file, path, flags);
-    if (ret < 0) {
-        if (ret == LFS_ERR_NOENT)
-            return HOST_ERROR_NOENT;
-        return HOST_ERROR_IO;
-    }
+    int ret = mockfs_open(host->mfs, path, strlen(path), flags, &desc->file);
+    if (ret < 0)
+        return mockfs_to_quakey_error(ret);
 
     desc->type = DESC_FILE;
     desc->non_blocking = false;
@@ -1631,15 +1573,9 @@ static int host_open_dir(Host *host, char *path)
         return HOST_ERROR_FULL;
     Desc *desc = &host->desc[desc_idx];
 
-    int ret = lfs_dir_open(&host->lfs, &desc->dir, path);
-    if (ret < 0) {
-        switch (ret) {
-        case LFS_ERR_NOENT:
-            return HOST_ERROR_NOENT;
-        default:
-            return HOST_ERROR_IO;
-        }
-    }
+    int ret = mockfs_open_dir(host->mfs, path, strlen(path), &desc->dir);
+    if (ret < 0)
+        return mockfs_to_quakey_error(ret);
 
     desc->type = DESC_DIRECTORY;
     desc->non_blocking = false;
@@ -1657,23 +1593,22 @@ static int host_read_dir(Host *host, int desc_idx, DirEntry *entry)
     if (desc->type != DESC_DIRECTORY)
         return HOST_ERROR_BADARG;
 
-    struct lfs_info info;
-    int ret = lfs_dir_read(&host->lfs, &desc->dir, &info);
-    if (ret < 0)
-        return HOST_ERROR_IO;
-
-    if (ret == 0)
-        return 0; // End of directory
+    MockFS_Dirent buf;
+    int ret = mockfs_read_dir(&desc->dir, &buf);
+    if (ret < 0) {
+        if (ret == MOCKFS_ERRNO_NOENT)
+            return 0;
+        return mockfs_to_quakey_error(ret);
+    }
 
     // Copy entry information
-    // LFS_NAME_MAX is typically 255, and our name buffer is 256
     int i = 0;
-    while (info.name[i] != '\0' && i < 255) {
-        entry->name[i] = info.name[i];
+    while (i < buf.name_len && i < 255) {
+        entry->name[i] = buf.name[i];
         i++;
     }
     entry->name[i] = '\0';
-    entry->is_dir = (info.type == LFS_TYPE_DIR);
+    entry->is_dir = buf.is_dir;
 
     return 1;
 }
@@ -1729,10 +1664,9 @@ static int host_read(Host *host, int desc_idx, char *dst, int len)
     if (desc->type == DESC_SOCKET_C) {
         num = recv_inner(desc, dst, len);
     } else if (desc->type == DESC_FILE) {
-        // TODO: what if the file wasn't open for reading?
-        lfs_ssize_t ret = lfs_file_read(&host->lfs, &desc->file, dst, len);
+        int ret = mockfs_read(&desc->file, dst, len);
         if (ret < 0)
-            return HOST_ERROR_IO;
+            return mockfs_to_quakey_error(ret);
         num = ret;
     } else {
         if (desc->type == DESC_DIRECTORY)
@@ -1753,10 +1687,9 @@ static int host_write(Host *host, int desc_idx, char *src, int len)
     if (desc->type == DESC_SOCKET_C) {
         num = send_inner(desc, src, len);
     } else if (desc->type == DESC_FILE) {
-        // TODO: what if the file wasn't open for writing?
-        lfs_ssize_t ret = lfs_file_write(&host->lfs, &desc->file, src, len);
+        int ret = mockfs_write(&desc->file, src, len);
         if (ret < 0)
-            return HOST_ERROR_IO; // TODO: this may be imprecise
+            return mockfs_to_quakey_error(ret);
         num = ret;
     } else {
         return HOST_ERROR_BADIDX;
@@ -1801,53 +1734,25 @@ static int host_send(Host *host, int desc_idx, char *src, int len)
 
 static int host_mkdir(Host *host, char *path)
 {
-    int ret = lfs_mkdir(&host->lfs, path);
-    if (ret < 0) {
-        switch (ret) {
-        case LFS_ERR_EXIST:
-            return HOST_ERROR_EXISTS;
-        case LFS_ERR_NOENT:
-            return HOST_ERROR_NOENT;
-        default:
-            return HOST_ERROR_IO;
-        }
-    }
+    int ret = mockfs_mkdir(host->mfs, path, strlen(path));
+    if (ret < 0)
+        return mockfs_to_quakey_error(ret);
     return 0;
 }
 
 static int host_remove(Host *host, char *path)
 {
-    int ret = lfs_remove(&host->lfs, path);
-    if (ret < 0) {
-        switch (ret) {
-        case LFS_ERR_NOENT:
-            return HOST_ERROR_NOENT;
-        case LFS_ERR_NOTEMPTY:
-            return HOST_ERROR_NOTEMPTY;
-        default:
-            return HOST_ERROR_IO;
-        }
-    }
+    int ret = mockfs_remove(host->mfs, path, strlen(path), false);
+    if (ret < 0)
+        return mockfs_to_quakey_error(ret);
     return 0;
 }
 
 static int host_rename(Host *host, char *oldpath, char *newpath)
 {
-    int ret = lfs_rename(&host->lfs, oldpath, newpath);
-    if (ret < 0) {
-        switch (ret) {
-        case LFS_ERR_NOENT:
-            return HOST_ERROR_NOENT;
-        case LFS_ERR_EXIST:
-            return HOST_ERROR_EXIST;
-        case LFS_ERR_NOTEMPTY:
-            return HOST_ERROR_NOTEMPTY;
-        case LFS_ERR_ISDIR:
-            return HOST_ERROR_ISDIR;
-        default:
-            return HOST_ERROR_IO;
-        }
-    }
+    int ret = mockfs_rename(host->mfs, oldpath, strlen(oldpath), newpath, strlen(newpath));
+    if (ret < 0)
+        return mockfs_to_quakey_error(ret);
     return 0;
 }
 
@@ -1860,7 +1765,7 @@ static int host_fileinfo(Host *host, int desc_idx, FileInfo *info)
     switch (desc->type) {
     case DESC_FILE:
         {
-            lfs_soff_t size = lfs_file_size(&host->lfs, &desc->file);
+            int size = mockfs_file_size(&desc->file);
             if (size < 0)
                 return HOST_ERROR_IO;
             info->size = size;
@@ -1892,19 +1797,19 @@ static int host_lseek(Host *host, int desc_idx, int64_t offset, int whence)
     int lfs_whence;
     switch (whence) {
     case HOST_SEEK_SET:
-        lfs_whence = LFS_SEEK_SET;
+        lfs_whence = MOCKFS_SEEK_SET;
         break;
     case HOST_SEEK_CUR:
-        lfs_whence = LFS_SEEK_CUR;
+        lfs_whence = MOCKFS_SEEK_CUR;
         break;
     case HOST_SEEK_END:
-        lfs_whence = LFS_SEEK_END;
+        lfs_whence = MOCKFS_SEEK_END;
         break;
     default:
         return HOST_ERROR_BADARG;
     }
 
-    lfs_soff_t ret = lfs_file_seek(&host->lfs, &desc->file, (lfs_soff_t) offset, lfs_whence);
+    int ret = mockfs_lseek(&desc->file, offset, lfs_whence);
     if (ret < 0)
         return HOST_ERROR_BADARG;
 
@@ -1920,9 +1825,9 @@ static int host_fsync(Host *host, int desc_idx)
     if (desc->type != DESC_FILE)
         return HOST_ERROR_BADIDX;
 
-    int ret = lfs_file_sync(&host->lfs, &desc->file);
+    int ret = mockfs_sync(&desc->file);
     if (ret < 0)
-        return HOST_ERROR_IO;
+        return mockfs_to_quakey_error(ret);
 
     return 0;
 }
@@ -2571,25 +2476,23 @@ int mock_connect(int fd, void *addr, unsigned long addr_len)
     return -1;
 }
 
-static int convert_linux_open_flags_to_lfs(int flags)
+static int convert_linux_open_flags_to_mockfs(int flags)
 {
     int lfs_flags = 0;
 
-    // Convert access mode (lowest 2 bits)
-    // Linux: O_RDONLY=0, O_WRONLY=1, O_RDWR=2
-    // LFS:   LFS_O_RDONLY=1, LFS_O_WRONLY=2, LFS_O_RDWR=3
-    int access_mode = flags & 3;
-    lfs_flags = access_mode + 1;
-
     // Convert other flags
+    if (flags & O_RDWR)
+        lfs_flags |= MOCKFS_O_RDWR;
+    if (flags & O_WRONLY)
+        lfs_flags |= MOCKFS_O_WRONLY;
     if (flags & O_CREAT)
-        lfs_flags |= LFS_O_CREAT;
+        lfs_flags |= MOCKFS_O_CREAT;
     if (flags & O_EXCL)
-        lfs_flags |= LFS_O_EXCL;
+        lfs_flags |= MOCKFS_O_EXCL;
     if (flags & O_TRUNC)
-        lfs_flags |= LFS_O_TRUNC;
+        lfs_flags |= MOCKFS_O_TRUNC;
     if (flags & O_APPEND)
-        lfs_flags |= LFS_O_APPEND;
+        lfs_flags |= MOCKFS_O_APPEND;
 
     return lfs_flags;
 }
@@ -2603,7 +2506,7 @@ int mock_open(char *path, int flags, int mode)
     if (!host_is_linux(host))
         abort_("Call to mock_open() not from Linux\n");
 
-    int converted_flags = convert_linux_open_flags_to_lfs(flags);
+    int converted_flags = convert_linux_open_flags_to_mockfs(flags);
 
     int ret = host_open_file(host, path, converted_flags);
     if (ret < 0) {
@@ -3153,7 +3056,7 @@ char *mock_realpath(char *path, char *dst)
 
     // Unlike _fullpath, realpath requires the path to exist
     // Try to open as file first, then as directory
-    int fd = host_open_file(host, result, LFS_O_RDONLY);
+    int fd = host_open_file(host, result, MOCKFS_O_RDONLY);
     if (fd >= 0) {
         host_close(host, fd, false);
     } else {

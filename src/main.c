@@ -137,7 +137,7 @@ int main(void)
             .free_func  = random_client_free,
             .addrs      = (char*[]) { "127.0.0.2" },
             .num_addrs  = 1,
-            .disk_size  = 1<<20,
+            .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
         quakey_spawn(quakey, config, "cli --server 127.0.0.3 8080");
@@ -152,7 +152,7 @@ int main(void)
             .free_func  = metadata_server_free,
             .addrs      = (char*[]) { "127.0.0.3" },
             .num_addrs  = 1,
-            .disk_size  = 1<<20,
+            .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
         quakey_spawn(quakey, config, "ms --addr 127.0.0.3 --port 8080");
@@ -167,7 +167,7 @@ int main(void)
             .free_func  = chunk_server_free,
             .addrs      = (char*[]) { "127.0.0.4" },
             .num_addrs  = 1,
-            .disk_size  = 1<<20,
+            .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
         quakey_spawn(quakey, config, "cs --addr 127.0.0.4 --port 8081 --remote-addr 127.0.0.3 --remote-port 8080");
