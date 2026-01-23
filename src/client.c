@@ -2233,8 +2233,19 @@ int toasty_process_events(ToastyFS *toasty, void **contexts, struct pollfd *poll
 
                 RequestQueue *reqs = NULL;
 
-                int tag = tcp_get_tag(&toasty->tcp, conn_idx);
+                int tag = events[i].tag;
                 CLIENT_TRACE("TCP EVENT: DISCONNECT (tag=%d)", tag);
+
+#ifdef MAIN_SIMULATION
+                if (toasty->metadata_server.used) {
+                    int conn_idx = tcp_index_from_tag(&toasty->tcp, TAG_METADATA_SERVER);
+                    if (tag == TAG_METADATA_SERVER) {
+                        assert(conn_idx == -1);
+                    } else {
+                        assert(conn_idx > -1);
+                    }
+                }
+#endif
 
                 if (tag == TAG_METADATA_SERVER) {
                     reqs = &toasty->metadata_server.reqs;
