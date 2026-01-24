@@ -4335,15 +4335,32 @@ BOOL mock_MoveFileExW(WCHAR *lpExistingFileName, WCHAR *lpNewFileName, DWORD dwF
 
 void *mock_malloc(size_t size)
 {
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_malloc() with no node scheduled\n");
+#ifdef FAULT_INJECTION
+    if ((sim_random(host->sim) % 1000) == 0)
+        return NULL;
+#endif
     return malloc(size);
 }
 
 void *mock_realloc(void *ptr, size_t size)
 {
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_realloc() with no node scheduled\n");
+#ifdef FAULT_INJECTION
+    if ((sim_random(host->sim) % 1000) == 0)
+        return NULL;
+#endif
     return realloc(ptr, size);
 }
 
 void mock_free(void *ptr)
 {
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_free() with no node scheduled\n");
     free(ptr);
 }
