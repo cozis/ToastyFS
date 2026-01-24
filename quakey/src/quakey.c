@@ -841,6 +841,8 @@ static Host *host___;
 
 int errno___;
 
+static uint64_t sim_random(Sim *sim);
+
 static void abort_(char *str)
 {
 #ifdef _WIN32
@@ -1666,7 +1668,14 @@ static int send_inner(Desc *desc, char *src, int len)
     if (ret == 0)
         return HOST_ERROR_WOULDBLOCK;
 
-    time_event_send_data(desc->host->sim, desc->host->sim->current_time + 10000000, desc);
+    Nanos latency = 10000000;
+#ifdef FAULT_INJECTION
+    Sim *sim = desc->host->sim;
+    uint64_t rng = sim_random(sim);
+    latency = 1000000 + (rng % 99000000); // between 1ms and 100ms
+#endif
+    time_event_send_data(desc->host->sim, desc->host->sim->current_time + latency, desc);
+
     return ret;
 }
 
@@ -1675,6 +1684,12 @@ static int host_read(Host *host, int desc_idx, char *dst, int len)
     if (!is_desc_idx_valid(host, desc_idx))
         return HOST_ERROR_BADIDX;
     Desc *desc = &host->desc[desc_idx];
+
+#ifdef FAULT_INJECTION
+    Sim *sim = desc->host->sim;
+    uint64_t rng = sim_random(sim);
+    len = 1 + (rng % len);
+#endif
 
     int num = 0;
     if (desc->type == DESC_SOCKET_C) {
@@ -1699,6 +1714,12 @@ static int host_write(Host *host, int desc_idx, char *src, int len)
         return HOST_ERROR_BADIDX;
     Desc *desc = &host->desc[desc_idx];
 
+#ifdef FAULT_INJECTION
+    Sim *sim = desc->host->sim;
+    uint64_t rng = sim_random(sim);
+    len = 1 + (rng % len);
+#endif
+
     int num = 0;
     if (desc->type == DESC_SOCKET_C) {
         num = send_inner(desc, src, len);
@@ -1720,6 +1741,12 @@ static int host_recv(Host *host, int desc_idx, char *dst, int len)
         return HOST_ERROR_BADIDX;
     Desc *desc = &host->desc[desc_idx];
 
+#ifdef FAULT_INJECTION
+    Sim *sim = desc->host->sim;
+    uint64_t rng = sim_random(sim);
+    len = 1 + (rng % len);
+#endif
+
     int num = 0;
     if (desc->type == DESC_SOCKET_C) {
         num = recv_inner(desc, dst, len);
@@ -1737,6 +1764,12 @@ static int host_send(Host *host, int desc_idx, char *src, int len)
     if (!is_desc_idx_valid(host, desc_idx))
         return HOST_ERROR_BADIDX;
     Desc *desc = &host->desc[desc_idx];
+
+#ifdef FAULT_INJECTION
+    Sim *sim = desc->host->sim;
+    uint64_t rng = sim_random(sim);
+    len = 1 + (rng % len);
+#endif
 
     int num = 0;
     if (desc->type == DESC_SOCKET_C) {
