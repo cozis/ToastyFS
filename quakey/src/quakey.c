@@ -1695,6 +1695,10 @@ static int host_read(Host *host, int desc_idx, char *dst, int len)
     if (desc->type == DESC_SOCKET_C) {
         num = recv_inner(desc, dst, len);
     } else if (desc->type == DESC_FILE) {
+#ifdef FAULT_INJECTION
+        uint64_t roll = sim_random(host->sim) % 1000;
+        if (roll == 0) return HOST_ERROR_IO;
+#endif
         int ret = mockfs_read(&desc->file, dst, len);
         if (ret < 0)
             return mockfs_to_quakey_error(ret);
@@ -1724,6 +1728,12 @@ static int host_write(Host *host, int desc_idx, char *src, int len)
     if (desc->type == DESC_SOCKET_C) {
         num = send_inner(desc, src, len);
     } else if (desc->type == DESC_FILE) {
+#ifdef FAULT_INJECTION
+        uint64_t roll = sim_random(host->sim) % 1000;
+        if (roll == 0) return HOST_ERROR_IO;
+        if (roll == 1) return HOST_ERROR_NOSPC;
+        // TODO: inject corruptions
+#endif
         int ret = mockfs_write(&desc->file, src, len);
         if (ret < 0)
             return mockfs_to_quakey_error(ret);
@@ -1873,6 +1883,12 @@ static int host_fsync(Host *host, int desc_idx)
 
     if (desc->type != DESC_FILE)
         return HOST_ERROR_BADIDX;
+
+#ifdef FAULT_INJECTION
+    uint64_t roll = sim_random(host->sim) % 100;
+    if (roll == 0)
+        return HOST_ERROR_IO;
+#endif
 
     int ret = mockfs_sync(&desc->file);
     if (ret < 0)
