@@ -1538,8 +1538,9 @@ static void process_event_for_write(ToastyFS *toasty,
         toasty->operations[opidx].num_chunks = num_all_hasehs;
         toasty->operations[opidx].num_hashes = num_hashes; // TODO: overflow
         toasty->operations[opidx].hashes = malloc(num_hashes * sizeof(SHA256));
-        if (toasty->operations[opidx].hashes == NULL) {
-            assert(0); // TODO
+        if (toasty->operations[opidx].hashes == NULL && num_hashes > 0) {
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+            return;
         }
 
         toasty->operations[opidx].uploads = NULL;
@@ -1880,19 +1881,19 @@ static void process_event_for_write(ToastyFS *toasty,
 
         // version
         if (!binary_read(&reader, NULL, sizeof(uint16_t))) {
-            assert(0); // TODO
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         uint16_t type;
         if (!binary_read(&reader, &type, sizeof(uint16_t))) {
-            assert(0); // TODO
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
         // length
         if (!binary_read(&reader, NULL, sizeof(uint32_t))) {
-            assert(0); // TODO
+            toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
 
@@ -1909,13 +1910,13 @@ static void process_event_for_write(ToastyFS *toasty,
 
             SHA256 hash;
             if (!binary_read(&reader, &hash, sizeof(hash))) {
-                assert(0); // TODO
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
             // Check that there is nothing else to read
             if (binary_read(&reader, NULL, 1)) {
-                assert(0); // TODO
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
                 return;
             }
 
@@ -1961,8 +1962,9 @@ static void process_event_for_write(ToastyFS *toasty,
 
             int num_upload_results = toasty->operations[opidx].num_chunks;
             ChunkUploadResult *upload_results = malloc(num_upload_results * sizeof(ChunkUploadResult));
-            if (upload_results == NULL) {
-                assert(0); // TODO
+            if (upload_results == NULL && num_upload_results > 0) {
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
             }
 
             for (int i = 0; i < num_upload_results; i++) {
@@ -2008,7 +2010,9 @@ static void process_event_for_write(ToastyFS *toasty,
             uint32_t     flags  = toasty->operations[opidx].flags;
 
             if (path.len > UINT16_MAX) {
-                assert(0); // TODO
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                free(upload_results);
+                return;
             }
             uint16_t path_len = path.len;
             uint64_t expect_gen = toasty->operations[opidx].expect_gen;
@@ -2046,7 +2050,8 @@ static void process_event_for_write(ToastyFS *toasty,
             free(upload_results);
 
             if (metadata_server_request_end(toasty, &writer, opidx, TAG_COMMIT_WRITE) < 0) {
-                assert(0); // TODO
+                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_WRITE_ERROR, .user=toasty->operations[opidx].user };
+                return;
             }
         }
 

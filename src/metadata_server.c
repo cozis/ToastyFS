@@ -185,7 +185,7 @@ process_client_create(MetadataServer *state, int conn_idx, ByteView msg)
         return -1;
 
     if (wal_append_create(&state->wal, path, is_dir, chunk_size) < 0) {
-        assert(0); // TODO
+        return -1;
     }
 
     uint64_t gen;
@@ -253,7 +253,7 @@ process_client_delete(MetadataServer *state, int conn_idx, ByteView msg)
         return -1;
 
     if (wal_append_delete(&state->wal, path, expect_gen) < 0) {
-        assert(0); // TODO
+        return -1;
     }
 
     // TODO: return unused hashes and add them to the ms_rem_list of holder chunk servers
@@ -659,7 +659,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
         new_hashes[i] = results[i].hash;
 
     if (wal_append_write(&state->wal, path, offset, length, num_chunks, expect_gen, new_hashes) < 0) {
-        assert(0); // TODO
+        return -1;
     }
 
     // Extract flag values
@@ -682,7 +682,7 @@ process_client_write(MetadataServer *state, int conn_idx, ByteView msg)
 
         // Log the creation in the WAL
         if (wal_append_create(&state->wal, path, false, chunk_size) < 0) {
-            assert(0); // TODO
+            return -1;
         }
 
         uint64_t create_gen;
@@ -859,7 +859,7 @@ static int process_chunk_server_auth(MetadataServer *state,
     //       of this chunk server. If we do, tell it.
 
     if (!message_writer_free(&writer)) {
-        assert(0); // TODO
+        return -1;
     }
     return 0;
 }
@@ -905,7 +905,7 @@ static int process_chunk_server_sync(MetadataServer *state,
 
         if (num_holders <= state->replication_factor) {
             if (hash_set_insert(&chunk_server->ms_add_list, hash) < 0) {
-                assert(0); // TODO
+                return -1;
             }
             continue;
         }
@@ -1115,7 +1115,8 @@ int metadata_server_init(void *state_, int argc, char **argv,
 
     if (wal_open(&state->wal, &state->file_tree, wal_file, wal_limit) < 0) {
         fprintf(stderr, "metadata server :: Couldn't setup WAL\n");
-        assert(0); // TODO
+        tcp_context_free(&state->tcp);
+        return -1;
     }
 
     printf("Metadata server set up (local=%.*s:%d)\n",
@@ -1251,7 +1252,9 @@ int metadata_server_tick(void *state_, void **ctxs,
 
         Time response_timeout = chunk_server->last_response_time + (Time) RESPONSE_TIME_LIMIT * 1000000000;
         if (current_time > response_timeout) {
-            assert(0); // TODO: drop the chunk server
+            // Drop unresponsive chunk server
+            chunk_server->used = false;
+            state->num_chunk_servers--;
             continue;
         }
         nearest_deadline(&next_wakeup, response_timeout);
