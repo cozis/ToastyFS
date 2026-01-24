@@ -1515,7 +1515,14 @@ static int host_connect(Host *host, int desc_idx,
 
     // TODO: some percent of times connect() should resolve immediately
 
-    time_event_connect(host->sim, host->sim->current_time + 100000000, desc);
+    Nanos latency = 10000000;
+#ifdef FAULT_INJECTION
+    Sim *sim = desc->host->sim;
+    uint64_t rng = sim_random(sim);
+    latency = 1000000 + (rng % 99000000); // between 1ms and 100ms
+#endif
+
+    time_event_connect(host->sim, host->sim->current_time + latency, desc);
 
     desc->connect_addr = addr;
     desc->connect_port = port;
@@ -1702,6 +1709,16 @@ static int host_read(Host *host, int desc_idx, char *dst, int len)
         int ret = mockfs_read(&desc->file, dst, len);
         if (ret < 0)
             return mockfs_to_quakey_error(ret);
+#ifdef FAULT_INJECTION
+        if (ret > 0) {
+            // 1 in 10,000 reads gets a bit flip
+            if ((sim_random(host->sim) % 10000) == 0) {
+                int byte_idx = sim_random(host->sim) % ret;
+                int bit_idx = sim_random(host->sim) % 8;
+                dst[byte_idx] ^= (1 << bit_idx);
+            }
+        }
+#endif
         num = ret;
     } else {
         if (desc->type == DESC_DIRECTORY)
@@ -1732,9 +1749,25 @@ static int host_write(Host *host, int desc_idx, char *src, int len)
         uint64_t roll = sim_random(host->sim) % 1000;
         if (roll == 0) return HOST_ERROR_IO;
         if (roll == 1) return HOST_ERROR_NOSPC;
-        // TODO: inject corruptions
+#endif
+#ifdef FAULT_INJECTION
+        int byte_idx = -1;
+        int bit_idx;
+        if (len > 0) {
+            // 1 in 100,000 reads gets a bit flip
+            if ((sim_random(host->sim) % 100000) == 0) {
+                byte_idx = sim_random(host->sim) % len;
+                bit_idx = sim_random(host->sim) % 8;
+                src[byte_idx] ^= (1 << bit_idx);
+            }
+        }
 #endif
         int ret = mockfs_write(&desc->file, src, len);
+#ifdef FAULT_INJECTION
+        if (byte_idx > -1) {
+            src[byte_idx] ^= (1 << bit_idx);
+        }
+#endif
         if (ret < 0)
             return mockfs_to_quakey_error(ret);
         num = ret;
