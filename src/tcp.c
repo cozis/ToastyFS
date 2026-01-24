@@ -1,5 +1,5 @@
 
-#ifdef MAIN_SIMULATION
+#if defined(MAIN_SIMULATION) || defined(MAIN_TEST)
 #define QUAKEY_ENABLE_MOCKS
 #endif
 

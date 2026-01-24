@@ -1,5 +1,6 @@
 toasty_metadata_server
 toasty_chunk_server
+toasty_test
 toasty_simulation
 toasty_simulation_coverage
 *.gcno
