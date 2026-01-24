@@ -1547,17 +1547,17 @@ static int mockfs_to_quakey_error(int err)
 {
     switch (err) {
         case 0: return 0;
-        case MOCKFS_ERRNO_NOENT : return HOST_ERROR_NOENT;
-        case MOCKFS_ERRNO_PERM  : return HOST_ERROR_PERM;
-        case MOCKFS_ERRNO_NOMEM : return HOST_ERROR_NOMEM;
-        case MOCKFS_ERRNO_NOTDIR: return HOST_ERROR_NOTDIR;
-        case MOCKFS_ERRNO_ISDIR : return HOST_ERROR_ISDIR;
-        case MOCKFS_ERRNO_INVAL : return HOST_ERROR_BADARG;
-        case MOCKFS_ERRNO_NOTEMPTY: return HOST_ERROR_NOTEMPTY;
-        case MOCKFS_ERRNO_NOSPC : return HOST_ERROR_NOSPC;
-        case MOCKFS_ERRNO_EXIST : return HOST_ERROR_EXIST;
-        case MOCKFS_ERRNO_BUSY  : return HOST_ERROR_BUSY;
-        case MOCKFS_ERRNO_BADF  : return HOST_ERROR_BADF;
+        case MOCKFS_ERRNO_NOENT    : return HOST_ERROR_NOENT;
+        case MOCKFS_ERRNO_PERM     : return HOST_ERROR_PERM;
+        case MOCKFS_ERRNO_NOMEM    : return HOST_ERROR_NOMEM;
+        case MOCKFS_ERRNO_NOTDIR   : return HOST_ERROR_NOTDIR;
+        case MOCKFS_ERRNO_ISDIR    : return HOST_ERROR_ISDIR;
+        case MOCKFS_ERRNO_INVAL    : return HOST_ERROR_BADARG;
+        case MOCKFS_ERRNO_NOTEMPTY : return HOST_ERROR_NOTEMPTY;
+        case MOCKFS_ERRNO_NOSPC    : return HOST_ERROR_NOSPC;
+        case MOCKFS_ERRNO_EXIST    : return HOST_ERROR_EXIST;
+        case MOCKFS_ERRNO_BUSY     : return HOST_ERROR_BUSY;
+        case MOCKFS_ERRNO_BADF     : return HOST_ERROR_BADF;
         default:
         printf("Unexpected mockfs errno %d\n", err);
         assert(0);

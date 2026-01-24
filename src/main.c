@@ -128,10 +128,10 @@ int main(void)
     if (ret < 0)
         return -1;
 
-    // Client
+    // Client 1
     {
         QuakeySpawn config = {
-            .name       = "client",
+            .name       = "client 1",
             .state_size = sizeof(RandomClient),
             .init_func  = random_client_init,
             .tick_func  = random_client_tick,
@@ -141,7 +141,23 @@ int main(void)
             .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
-        quakey_spawn(quakey, config, "cli --server 127.0.0.3 8080");
+        quakey_spawn(quakey, config, "cli --server 127.0.0.4 8080");
+    }
+
+    // Client 2
+    {
+        QuakeySpawn config = {
+            .name       = "client 2",
+            .state_size = sizeof(RandomClient),
+            .init_func  = random_client_init,
+            .tick_func  = random_client_tick,
+            .free_func  = random_client_free,
+            .addrs      = (char*[]) { "127.0.0.3" },
+            .num_addrs  = 1,
+            .disk_size  = 10<<20,
+            .platform   = QUAKEY_LINUX,
+        };
+        quakey_spawn(quakey, config, "cli --server 127.0.0.4 8080");
     }
 
     // Metadata Server
@@ -152,12 +168,12 @@ int main(void)
             .init_func  = metadata_server_init,
             .tick_func  = metadata_server_tick,
             .free_func  = metadata_server_free,
-            .addrs      = (char*[]) { "127.0.0.3" },
+            .addrs      = (char*[]) { "127.0.0.4" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
-        quakey_spawn(quakey, config, "ms --addr 127.0.0.3 --port 8080");
+        quakey_spawn(quakey, config, "ms --addr 127.0.0.4 --port 8080");
     }
 
     // Chunk Server 1
@@ -168,12 +184,12 @@ int main(void)
             .init_func  = chunk_server_init,
             .tick_func  = chunk_server_tick,
             .free_func  = chunk_server_free,
-            .addrs      = (char*[]) { "127.0.0.4" },
+            .addrs      = (char*[]) { "127.0.0.5" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
-        quakey_spawn(quakey, config, "cs --addr 127.0.0.4 --port 8081 --remote-addr 127.0.0.3 --remote-port 8080");
+        quakey_spawn(quakey, config, "cs --addr 127.0.0.5 --port 8081 --remote-addr 127.0.0.4 --remote-port 8080");
     }
 
     // Chunk Server 2
@@ -184,12 +200,12 @@ int main(void)
             .init_func  = chunk_server_init,
             .tick_func  = chunk_server_tick,
             .free_func  = chunk_server_free,
-            .addrs      = (char*[]) { "127.0.0.5" },
+            .addrs      = (char*[]) { "127.0.0.6" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
-        quakey_spawn(quakey, config, "cs --addr 127.0.0.5 --port 8082 --remote-addr 127.0.0.3 --remote-port 8080");
+        quakey_spawn(quakey, config, "cs --addr 127.0.0.6 --port 8082 --remote-addr 127.0.0.4 --remote-port 8080");
     }
 
     // Chunk Server 3
@@ -200,12 +216,12 @@ int main(void)
             .init_func  = chunk_server_init,
             .tick_func  = chunk_server_tick,
             .free_func  = chunk_server_free,
-            .addrs      = (char*[]) { "127.0.0.6" },
+            .addrs      = (char*[]) { "127.0.0.7" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
-        quakey_spawn(quakey, config, "cs --addr 127.0.0.6 --port 8083 --remote-addr 127.0.0.3 --remote-port 8080");
+        quakey_spawn(quakey, config, "cs --addr 127.0.0.7 --port 8083 --remote-addr 127.0.0.4 --remote-port 8080");
     }
 
     while (simulation_running)
