@@ -32,7 +32,7 @@ typedef pthread_mutex_t Mutex;
 #define TAG_COMMIT_WRITE 3
 
 #define TAG_UPLOAD_CHUNK_MIN 1000
-#define TAG_UPLOAD_CHUNK_MAX 2000
+#define TAG_UPLOAD_CHUNK_MAX 100000
 
 #define PARALLEL_LIMIT 5
 
