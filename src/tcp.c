@@ -308,6 +308,8 @@ int tcp_register_events(TCP *tcp, void **contexts, struct pollfd *polled)
 int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd *polled, int num_polled)
 {
     bool removed[TCP_POLL_CAPACITY];
+    for (int i = 0; i < TCP_POLL_CAPACITY; i++)
+        removed[i] = false;
 
     int num_events = 0;
     for (int i = 1; i < num_polled; i++) {
