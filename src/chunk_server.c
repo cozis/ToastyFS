@@ -711,7 +711,8 @@ process_client_download_chunk(ChunkServer *state, int conn_idx, ByteView msg)
 
     MessageWriter writer;
     message_writer_init(&writer, output, MESSAGE_TYPE_DOWNLOAD_CHUNK_SUCCESS);
-    message_write(&writer, &target_len, sizeof(target_len));
+    uint32_t data_len = slice.len;
+    message_write(&writer, &data_len, sizeof(data_len));
     message_write(&writer, slice.ptr, slice.len);
     if (!message_writer_free(&writer)) {
         free(data.ptr);
