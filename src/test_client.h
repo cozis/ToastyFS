@@ -3,8 +3,18 @@
 
 #include "ToastyFS.h"
 
+typedef enum {
+    TEST_CLIENT_STATE_0,
+    TEST_CLIENT_STATE_1,
+    TEST_CLIENT_STATE_2,
+    TEST_CLIENT_STATE_3,
+} TestClientState;
+
 typedef struct {
-    ToastyFS *toasty;
+    ToastyFS*       toasty;
+    ToastyHandle    handle;
+    TestClientState state;
+    char buf[1<<10];
 } TestClient;
 
 struct pollfd;

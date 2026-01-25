@@ -9,8 +9,8 @@
 #include "message.h"
 #include "metadata_server.h"
 
-#define MS_TRACE(fmt, ...) {}
-//#define MS_TRACE(fmt, ...) fprintf(stderr, "MS: " fmt "\n", ##__VA_ARGS__);
+//#define MS_TRACE(fmt, ...) {}
+#define MS_TRACE(fmt, ...) fprintf(stderr, "MS: " fmt "\n", ##__VA_ARGS__);
 
 static void chunk_server_peer_init(ChunkServerPeer *chunk_server, Time current_time)
 {
@@ -1174,6 +1174,8 @@ int metadata_server_tick(void *state_, void **ctxs,
 
             case EVENT_MESSAGE:
             {
+                MS_TRACE("TCP EVENT: message");
+
                 // We don't trace message events from chunk servers
                 // as it would become very verbose
                 for (;;) {

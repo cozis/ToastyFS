@@ -316,9 +316,11 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
 
         if (polled[i].fd == tcp->wait_fd) {
 
-            char buf[100];
-            recv(tcp->wait_fd, buf, sizeof(buf), 0); // TODO: Make sure all bytes are consumed
-            events[num_events++] = (Event) { EVENT_WAKEUP, -1, -1 };
+            if (polled[i].revents & POLLIN) {
+                char buf[100];
+                recv(tcp->wait_fd, buf, sizeof(buf), 0); // TODO: Make sure all bytes are consumed
+                events[num_events++] = (Event) { EVENT_WAKEUP, -1, -1 };
+            }
 
         } else if (polled[i].fd == tcp->listen_fd) {
 

@@ -51,6 +51,8 @@ int test_client_init(void *state_, int argc, char **argv,
     if (client->toasty == NULL)
         return -1;
 
+    client->state = TEST_CLIENT_STATE_0;
+
     printf("Client set up (remote=%s:%d)\n", addr, port);
 
     *timeout = 0;
@@ -75,7 +77,92 @@ int test_client_tick(void *state_, void **ctxs,
     // Process any pending events from the network and get new poll descriptors
     *pnum = toasty_process_events(client->toasty, ctxs, pdata, *pnum);
 
-    assert(0); // TODO
+    // This must be static as write operations will refer to this data
+    // after the function has returned
+    static char msg[] =
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do "
+        "eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut "
+        "enim ad minim veniam, quis nostrud exercitation ullamco laboris "
+        "nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor "
+        "in reprehenderit in voluptate velit esse cillum dolore eu fugiat "
+        "nulla pariatur. Excepteur sint occaecat cupidatat non proident, "
+        "sunt in culpa qui officia deserunt mollit anim id est laborum.";
+
+    ToastyString file_path = TOASTY_STR("some_file.txt");
+
+    switch (client->state) {
+        int ret;
+        ToastyResult result;
+    case TEST_CLIENT_STATE_0:
+        client->handle = toasty_begin_create_file(client->toasty, file_path, 128);
+        if (client->handle == TOASTY_INVALID) {
+            assert(0); // TODO
+        }
+        printf(">>> Create started <<<<<<<<<<<<\n");
+        client->state = TEST_CLIENT_STATE_1;
+        break;
+    case TEST_CLIENT_STATE_1:
+        ret = toasty_get_result(client->toasty, client->handle, &result);
+        if (ret < 0) {
+            assert(0); // TODO
+        }
+        if (ret == 1) {
+            break;
+        }
+        printf(">>> Create completed <<<<<<<<<<<<\n");
+        assert(ret == 0);
+        if (result.type != TOASTY_RESULT_CREATE_SUCCESS) {
+            assert(0); // TODO
+        }
+        client->handle = toasty_begin_write(client->toasty, file_path, 0, msg, sizeof(msg)-1, TOASTY_VERSION_TAG_EMPTY, 0);
+        if (client->handle == TOASTY_INVALID) {
+            assert(0); // TODO
+        }
+        printf(">>> Write started <<<<<<<<<<<<\n");
+        client->state = TEST_CLIENT_STATE_2;
+        break;
+    case TEST_CLIENT_STATE_2:
+        ret = toasty_get_result(client->toasty, client->handle, &result);
+        if (ret < 0) {
+            assert(0); // TODO
+        }
+        if (ret == 1) {
+            break;
+        }
+        printf(">>> Write completed <<<<<<<<<<<<\n");
+        assert(ret == 0);
+        if (result.type != TOASTY_RESULT_WRITE_SUCCESS) {
+            assert(0); // TODO
+        }
+        client->handle = toasty_begin_read(client->toasty, file_path, 0, client->buf, sizeof(client->buf), TOASTY_VERSION_TAG_EMPTY);
+        if (client->handle == TOASTY_INVALID) {
+            assert(0); // TODO
+        }
+        printf(">>> Read started <<<<<<<<<<<<\n");
+        client->state = TEST_CLIENT_STATE_3;
+        break;
+    case TEST_CLIENT_STATE_3:
+        ret = toasty_get_result(client->toasty, client->handle, &result);
+        if (ret < 0) {
+            assert(0); // TODO
+        }
+        if (ret == 1) {
+            break;
+        }
+        printf(">>> Read completed <<<<<<<<<<<<\n");
+        assert(ret == 0);
+        if (result.type != TOASTY_RESULT_READ_SUCCESS) {
+            assert(0); // TODO
+        }
+        if (result.bytes_read != sizeof(msg)-1) {
+            assert(0); // TODO
+        }
+        if (memcmp(client->buf, msg, sizeof(msg)-1)) {
+            assert(0); // TODO
+        }
+        assert(0); // TODO
+        break;
+    }
 
     *timeout = -1;
     if (pcap < TCP_POLL_CAPACITY)
