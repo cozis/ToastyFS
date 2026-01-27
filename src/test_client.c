@@ -52,10 +52,11 @@ int test_client_init(void *state_, int argc, char **argv,
         return -1;
 
     client->state = TEST_CLIENT_STATE_0;
+    client->tick  = 0;
 
     printf("Client set up (remote=%s:%d)\n", addr, port);
 
-    *timeout = 0;
+    *timeout = -1;
     if (pcap < TCP_POLL_CAPACITY)
         return -1;
     *pnum = toasty_process_events(client->toasty, ctxs, pdata, *pnum);
@@ -94,11 +95,16 @@ int test_client_tick(void *state_, void **ctxs,
         int ret;
         ToastyResult result;
     case TEST_CLIENT_STATE_0:
+        if (client->tick < 10) {
+            *timeout = 0;
+            client->tick++;
+            return 0;
+        }
         client->handle = toasty_begin_create_file(client->toasty, file_path, 128);
         if (client->handle == TOASTY_INVALID) {
             assert(0); // TODO
         }
-        printf(">>> Create started <<<<<<<<<<<<\n");
+        printf("Create started\n");
         client->state = TEST_CLIENT_STATE_1;
         break;
     case TEST_CLIENT_STATE_1:
@@ -109,7 +115,7 @@ int test_client_tick(void *state_, void **ctxs,
         if (ret == 1) {
             break;
         }
-        printf(">>> Create completed <<<<<<<<<<<<\n");
+        printf("Create completed\n");
         assert(ret == 0);
         if (result.type != TOASTY_RESULT_CREATE_SUCCESS) {
             assert(0); // TODO
@@ -118,7 +124,7 @@ int test_client_tick(void *state_, void **ctxs,
         if (client->handle == TOASTY_INVALID) {
             assert(0); // TODO
         }
-        printf(">>> Write started <<<<<<<<<<<<\n");
+        printf("Write started\n");
         client->state = TEST_CLIENT_STATE_2;
         break;
     case TEST_CLIENT_STATE_2:
@@ -129,7 +135,7 @@ int test_client_tick(void *state_, void **ctxs,
         if (ret == 1) {
             break;
         }
-        printf(">>> Write completed <<<<<<<<<<<<\n");
+        printf("Write completed\n");
         assert(ret == 0);
         if (result.type != TOASTY_RESULT_WRITE_SUCCESS) {
             assert(0); // TODO
@@ -138,7 +144,7 @@ int test_client_tick(void *state_, void **ctxs,
         if (client->handle == TOASTY_INVALID) {
             assert(0); // TODO
         }
-        printf(">>> Read started <<<<<<<<<<<<\n");
+        printf("Read started\n");
         client->state = TEST_CLIENT_STATE_3;
         break;
     case TEST_CLIENT_STATE_3:
@@ -149,7 +155,7 @@ int test_client_tick(void *state_, void **ctxs,
         if (ret == 1) {
             break;
         }
-        printf(">>> Read completed <<<<<<<<<<<<\n");
+        printf("Read completed\n");
         assert(ret == 0);
         if (result.type != TOASTY_RESULT_READ_SUCCESS) {
             assert(0); // TODO

@@ -9,8 +9,8 @@
 #include "message.h"
 #include "metadata_server.h"
 
-//#define MS_TRACE(fmt, ...) {}
-#define MS_TRACE(fmt, ...) fprintf(stderr, "MS: " fmt "\n", ##__VA_ARGS__);
+#define MS_TRACE(fmt, ...) {}
+//#define MS_TRACE(fmt, ...) fprintf(stderr, "MS: " fmt "\n", ##__VA_ARGS__);
 
 static void chunk_server_peer_init(ChunkServerPeer *chunk_server, Time current_time)
 {
@@ -1226,6 +1226,7 @@ int metadata_server_tick(void *state_, void **ctxs,
                         MS_TRACE("Message from client");
                         ret = process_client_message(state, conn_idx, msg_type, msg);
                     } else {
+                        MS_TRACE("Message from CS (conn_idx=%d)", conn_idx);
                         state->chunk_servers[tag].last_response_time = current_time;
                         ret = process_chunk_server_message(state, conn_idx, msg_type, msg);
                     }

@@ -110,6 +110,7 @@ int   mock_connect(int fd, void *addr, unsigned long addr_len);
 int   mock_getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen);
 int   mock_listen(int fd, int backlog);
 int   mock_accept(int fd, void *addr, socklen_t *addr_len);
+int   mock_pipe(int *fds);
 int   mock_recv(int fd, char *dst, int len, int flags);
 int   mock_send(int fd, char *src, int len, int flags);
 int   mock_clock_gettime(clockid_t clockid, struct timespec *tp);
@@ -152,6 +153,7 @@ void  mock_free(void *ptr);
 #define getsockopt       mock_getsockopt
 #define listen           mock_listen
 #define accept           mock_accept
+#define pipe             mock_pipe
 #define recv             mock_recv
 #define send             mock_send
 #define clock_gettime    mock_clock_gettime

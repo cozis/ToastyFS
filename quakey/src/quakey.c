@@ -101,6 +101,8 @@ typedef enum {
 
     // The Desc represent an open directory
     DESC_DIRECTORY,
+
+    DESC_PIPE,
 } DescType;
 
 typedef enum {
@@ -148,12 +150,13 @@ struct Desc {
     AcceptQueue accept_queue;
 
     /////////////////////////////////////////
-    // Connection socket fields
+    // Pipe or Connection socket fields
 
     // Status code of the connecting process
     ConnectStatus connect_status;
 
     // These are used when the socket is still connecting
+    // (only used by sockets, not pipes)
     Addr connect_addr;
     u16  connect_port;
 
@@ -793,6 +796,7 @@ static void desc_free(Sim *sim, Desc *desc, bool rst)
         }
         accept_queue_free(&desc->accept_queue);
         break;
+    case DESC_PIPE:
     case DESC_SOCKET_C:
         // Remove any pending events targeting this descriptor before freeing it
         if (sim)
@@ -805,7 +809,7 @@ static void desc_free(Sim *sim, Desc *desc, bool rst)
                 // Connection was waiting to be accepted
                 accept_queue_remove(&peer->accept_queue, desc);
             } else {
-                ASSERT(peer->type == DESC_SOCKET_C);
+                ASSERT(peer->type == DESC_SOCKET_C || peer->type == DESC_PIPE);
                 peer->peer = NULL;
                 peer->connect_status = rst ? CONNECT_STATUS_RESET : CONNECT_STATUS_CLOSE;
             }
@@ -1056,6 +1060,7 @@ static bool host_ready(Host *host)
                     return true;
             }
             break;
+        case DESC_PIPE:
         case DESC_SOCKET_C:
             if (desc->connect_status == CONNECT_STATUS_NOHOST ||
                 desc->connect_status == CONNECT_STATUS_RESET)
@@ -1108,20 +1113,22 @@ static void set_revents_in_poll_array(Host *host)
                     revents = POLLIN;
             }
             break;
+        case DESC_PIPE:
         case DESC_SOCKET_C:
             if (desc->connect_status == CONNECT_STATUS_NOHOST ||
                 desc->connect_status == CONNECT_STATUS_RESET)
                 revents |= POLLERR;
             if (events & POLLIN) {
                 // TODO: should report prover events when hup and rst are set
-                if (!socket_queue_empty(desc->input) || desc->connect_status == CONNECT_STATUS_CLOSE)
+                if (!socket_queue_empty(desc->input))
+                    revents |= POLLIN;
+                if (desc->connect_status == CONNECT_STATUS_RESET ||
+                    desc->connect_status == CONNECT_STATUS_CLOSE)
                     revents |= POLLIN;
             }
             if (events & POLLOUT) {
-                if (!socket_queue_full(desc->output)) {
-                    if (is_connected_and_accepted(desc))
-                        revents |= POLLOUT;
-                }
+                if (!socket_queue_full(desc->output) && is_connected_and_accepted(desc))
+                    revents |= POLLOUT;
             }
             break;
         case DESC_FILE:
@@ -1256,6 +1263,39 @@ static int host_create_socket(Host *host, AddrFamily family)
 
     host->num_desc++;
     return desc_idx;
+}
+
+static int host_create_pipe(Host *host, int *desc_idxs)
+{
+    int desc_idx_1 = find_empty_desc_struct(host);
+    if (desc_idx_1 < 0)
+        return HOST_ERROR_FULL;
+    Desc *desc_1 = &host->desc[desc_idx_1];
+
+    int desc_idx_2 = find_empty_desc_struct(host);
+    if (desc_idx_2 < 0)
+        return HOST_ERROR_FULL;
+    Desc *desc_2 = &host->desc[desc_idx_2];
+
+    desc_1->type = DESC_PIPE;
+    desc_1->non_blocking = false;
+    desc_1->connect_status = CONNECT_STATUS_DONE;
+    desc_1->peer = desc_2;
+    desc_1->input = socket_queue_init(1<<12);
+    desc_1->output = socket_queue_init(1<<12);
+
+    desc_2->type = DESC_PIPE;
+    desc_2->non_blocking = false;
+    desc_2->connect_status = CONNECT_STATUS_DONE;
+    desc_2->peer = desc_1;
+    desc_2->input = socket_queue_init(1<<12);
+    desc_2->output = socket_queue_init(1<<12);
+
+    desc_idxs[0] = desc_idx_1;
+    desc_idxs[1] = desc_idx_2;
+
+    host->num_desc += 2;
+    return 0;
 }
 
 static bool is_desc_idx_valid(Host *host, int desc_idx)
@@ -1699,7 +1739,8 @@ static int host_read(Host *host, int desc_idx, char *dst, int len)
 #endif
 
     int num = 0;
-    if (desc->type == DESC_SOCKET_C) {
+    if (desc->type == DESC_SOCKET_C ||
+        desc->type == DESC_PIPE) {
         num = recv_inner(desc, dst, len);
     } else if (desc->type == DESC_FILE) {
 #ifdef FAULT_INJECTION
@@ -1742,7 +1783,8 @@ static int host_write(Host *host, int desc_idx, char *src, int len)
 #endif
 
     int num = 0;
-    if (desc->type == DESC_SOCKET_C) {
+    if (desc->type == DESC_SOCKET_C ||
+        desc->type == DESC_PIPE) {
         num = send_inner(desc, src, len);
     } else if (desc->type == DESC_FILE) {
 #ifdef FAULT_INJECTION
@@ -2600,6 +2642,19 @@ int mock_connect(int fd, void *addr, unsigned long addr_len)
 
     *host_errno_ptr(host) = EINPROGRESS;
     return -1;
+}
+
+int mock_pipe(int *fds)
+{
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_pipe() with no node scheduled\n");
+
+    int ret = host_create_pipe(host, fds);
+    if (ret < 0)
+        return EIO;
+
+    return 0;
 }
 
 static int convert_linux_open_flags_to_mockfs(int flags)

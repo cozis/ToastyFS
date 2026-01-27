@@ -36,8 +36,8 @@ typedef pthread_mutex_t Mutex;
 
 #define PARALLEL_LIMIT 5
 
-//#define CLIENT_TRACE(fmt, ...) {}
-#define CLIENT_TRACE(fmt, ...) fprintf(stderr, "CLIENT: " fmt "\n", ##__VA_ARGS__);
+#define CLIENT_TRACE(fmt, ...) {}
+//#define CLIENT_TRACE(fmt, ...) fprintf(stderr, "CLIENT: " fmt "\n", ##__VA_ARGS__);
 
 typedef struct {
     SHA256   hash;
@@ -1555,6 +1555,8 @@ static void process_event_for_write(ToastyFS *toasty,
 
         int next_server_lid = 0;
         toasty->operations[opidx].num_uploads = 0;
+
+        // This loop is for chunks that already exist in the file
         for (uint32_t i = 0; i < num_hashes; i++) {
 
             char *src = full_ptr + relative_off;

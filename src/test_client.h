@@ -14,6 +14,7 @@ typedef struct {
     ToastyFS*       toasty;
     ToastyHandle    handle;
     TestClientState state;
+    int  tick;
     char buf[1<<10];
 } TestClient;
 
