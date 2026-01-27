@@ -27,9 +27,9 @@ typedef pthread_mutex_t Mutex;
 
 #define TAG_METADATA_SERVER -2
 
-#define TAG_RETRIEVE_METADATA_FOR_READ  1
-#define TAG_RETRIEVE_METADATA_FOR_WRITE 2
-#define TAG_COMMIT_WRITE 3
+#define TAG_RETRIEVE_METADATA_FOR_READ  -1
+#define TAG_RETRIEVE_METADATA_FOR_WRITE -3
+#define TAG_COMMIT_WRITE -4
 
 #define TAG_UPLOAD_CHUNK_MIN 1000
 #define TAG_UPLOAD_CHUNK_MAX 100000
@@ -1065,7 +1065,6 @@ static void process_event_for_read(ToastyFS *toasty,
             toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
             return;
         }
-
         // Store actual_bytes for later use
         toasty->operations[opidx].actual_bytes = actual_bytes;
 
@@ -1120,48 +1119,51 @@ static void process_event_for_read(ToastyFS *toasty,
                 return;
             }
 
-            // Parse IPv4 addresses
-            uint32_t num_ipv4;
-            if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
-                free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
-                return;
-            }
-
             Address server_addr = {0};
             bool found = false;
 
-            // Get first IPv4 address
-            for (uint32_t j = 0; j < num_ipv4; j++) {
-                IPv4 ipv4;
-                uint16_t port;
-                if (!binary_read(&reader, &ipv4, sizeof(ipv4)) ||
-                    !binary_read(&reader, &port, sizeof(port))) {
+            // Parse each server's address list (use first one, skip the rest)
+            for (uint32_t s = 0; s < num_servers; s++) {
+                // Parse IPv4 addresses
+                uint32_t num_ipv4;
+                if (!binary_read(&reader, &num_ipv4, sizeof(num_ipv4))) {
                     free(ranges);
                     toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                     return;
                 }
-                if (!found) {
-                    server_addr.is_ipv4 = true;
-                    server_addr.ipv4 = ipv4;
-                    server_addr.port = port;
-                    found = true;
-                }
-            }
 
-            // Skip IPv6 addresses
-            uint32_t num_ipv6;
-            if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
-                free(ranges);
-                toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
-                return;
-            }
-            for (uint32_t j = 0; j < num_ipv6; j++) {
-                if (!binary_read(&reader, NULL, sizeof(IPv6)) ||
-                    !binary_read(&reader, NULL, sizeof(uint16_t))) {
+                // Get first IPv4 address from first server
+                for (uint32_t j = 0; j < num_ipv4; j++) {
+                    IPv4 ipv4;
+                    uint16_t port;
+                    if (!binary_read(&reader, &ipv4, sizeof(ipv4)) ||
+                        !binary_read(&reader, &port, sizeof(port))) {
+                        free(ranges);
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
+                        return;
+                    }
+                    if (!found) {
+                        server_addr.is_ipv4 = true;
+                        server_addr.ipv4 = ipv4;
+                        server_addr.port = port;
+                        found = true;
+                    }
+                }
+
+                // Skip IPv6 addresses
+                uint32_t num_ipv6;
+                if (!binary_read(&reader, &num_ipv6, sizeof(num_ipv6))) {
                     free(ranges);
                     toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
                     return;
+                }
+                for (uint32_t j = 0; j < num_ipv6; j++) {
+                    if (!binary_read(&reader, NULL, sizeof(IPv6)) ||
+                        !binary_read(&reader, NULL, sizeof(uint16_t))) {
+                        free(ranges);
+                        toasty->operations[opidx].result = (ToastyResult) { .type=TOASTY_RESULT_READ_ERROR, .user=toasty->operations[opidx].user };
+                        return;
+                    }
                 }
             }
 

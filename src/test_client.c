@@ -166,8 +166,8 @@ int test_client_tick(void *state_, void **ctxs,
         if (memcmp(client->buf, msg, sizeof(msg)-1)) {
             assert(0); // TODO
         }
-        assert(0); // TODO
-        break;
+        printf("Test PASSED: Read data matches written data\n");
+        exit(0); // Test completed successfully
     }
 
     *timeout = -1;
