@@ -1,0 +1,177 @@
+note that:
+    MS = metadata server
+    CS = chunk server
+    CLI = client
+
+=========================================================
+=== METADATA SERVER PROCESS =============================
+=========================================================
+
+metadata_server_init:
+    Start a TCP server at the interface and port specified using options --addr and --port (default 127.0.0.1 and 8080)
+
+    Initialize the file tree as empty
+
+    Initialize the WAL and, if it exists already, replay its contents into the file tree
+
+metadata_server_free:
+    Free resources associated to the MS
+
+metadata_server_tick:
+    for each network event:
+        if connection established:
+            mark the connection as UNKNOWN
+
+        if disconnect:
+            if the connection was marked as CS:
+                Free the information associated to it
+
+        if message received:
+            if the connection is marked as UNKNOWN:
+                if the message is from a CS:
+                    mark the connection as CS and associated to it a struct for the information associated to it.
+                else
+                    mark the connection as CLI
+
+            if the peer is a client:
+                if the message has type CREATE:
+                    TODO
+                if the message has type DELETE:
+                    TODO
+                if the message has type LIST:
+                    TODO
+                if the message has type READ:
+                    TODO
+                if the message has type WRITE:
+                    TODO
+
+            if the peer is a CS:
+                if the message has type AUTH:
+                    Add all IPv4/port and IPv6/port pairs to the data associated to this connection.
+                    Then, respond with a AUTH_RESPONSE message.
+                if the message has type SYNC:
+                    For each hash received:
+                        If it's not in use by the file tree:
+                            ignore it
+                        If less than REPLICATION_FACTOR CS are holding it:
+                            Add this hash to this CS's add_list
+                    Respond with a SYNC_2 message containing the add_list and the rem_list.
+                if the message has type SYNC_3:
+                    Create an empty tmp_list
+                    For each hash received:
+                        We expect the hash not to be in the add_list or the old_list. Only hashes that were actually expected to be in on the server should be recovered.
+                        Add the hash to tmp_list.
+                        For each CS holding this hash in their old_list or add_list:
+                            Write its address to the output message
+                    Merge add_list into old_list
+                    Remove elements in tmp_list from old_list
+                    Set old_list equal to tmp_list
+                    Send the message as SYNC_4
+
+    For each chunk server:
+        If its last response was more than RESPONSE_TIME_LIMIT seconds ago:
+            Drop the connection
+
+    Set the current timeout to the next most imminent event
+
+=========================================================
+=== CHUNK SERVER PROCESS ================================
+=========================================================
+
+chunk_server_init:
+    Start a TCP server at the interface and port specified using options --addr and --port (default 127.0.0.1 and 8081)
+
+    Create a directory for chunk files at path specified using option --path (default "chunk_server_data")
+
+    Connect to MS using the remote address and port specified using options --remote-addr and --remote-port (default 127.0.0.1, 8080) and send an AUTH message containing the list of local IPv4/port and IPv6/port pairs.
+
+chunk_server_free:
+    free all resources
+
+start_download:
+    if not downloading already:
+        get a descriptor from the download_targets array and send DOWNLOAD_CHUNK message with the specified hash.
+
+chunk_server_tick:
+
+    for each network event:
+        if connection established:
+            do nothing
+
+        if disconnect:
+            if the connection was to MS:
+                disconnect_time = current_time
+
+            if the connection was to a CS:
+                downloading = false
+
+        if message received:
+            if from MS:
+                if tagged as AUTH_RESPONSE:
+                    Read all chunk file names from the data directory and convert them into hashes by decoding them as hexadecimal. Add all of these hashes to the add_list.
+                    No message is sent back to MS in response.
+                if tagged as SYNC_2:
+                    For each hash in the first list received by MS:
+                        If no chunk file is associated to it:
+                            add it to a tmp_list
+                        else:
+                            remove it from the rem_list and from the add_list.
+                    For each hash still in the add_list:
+                        Add it to the rem_list
+                    Mark the add_list as empty
+
+                    For each hash in the second list received by MS:
+                        Add it to rem_list
+
+                    Send SYNC_3 message with a list of hashes made by those in tmp_list and lst_list.
+
+                if tagged as SYNC_4:
+                    At this point MS knows which chunks this CS is missing, so it sent back information for where to download them.
+                    For each element in the list:
+                        Add a download descrptor to download_targets list.
+                    start_download()
+
+                (other cases are not allowed)
+
+            if from CS:
+
+                We may get messages from other CS when trying to download a chunk from it that was lost locally.
+
+                if tagged DOWNLOAD_CHUNK_ERROR:
+                    Start the next download
+
+                if tagged DOWNLOAD_CHUNK_SUCCESS:
+                    Create a chunk file with the received data, then add its hash to the add_list.
+                    start_download()
+
+            if from CLI:
+
+                if tagged CREATE_CHUNK:
+                    Take the received data and make a chunk file for it, then add its hash to the add_list.
+                    Respond with a CREATE_CHUNK_SUCCESS message.
+
+                if tagged UPLOAD_CHUNK:
+                    Load the chunk referred by the client and patch it with the data it sent at the specified offset, then calculate its hash and store it as a new chunk.
+                    Add its hash to the add_list.
+                    Respond with a UPLOAD_CHUNK_SUCCESS message.
+
+                if tagged DOWNLOAD_CHUNK:
+                    Load the chunk referred by the client and respond with its data in a DOWNLOAD_CHUNK_SUCCESS message.
+
+    For each expired item in rem_list:
+        Delete its associated chunk file
+
+    If the connection to MS is intact and more than SYNC_INTERVAL seconds elapsed since the last sync:
+        Send a SYNC message containing all add_list items.
+
+    start_download()
+
+    If there is no connection to MS and more than RECONNECT_DELAY seconds passed:
+        Connect to the metadata server and send a message of type AUTH containing the list of our IPv4s/port pairs and IPv6/port pairs.
+
+    Set the current timeout to the earliest time, considering the next reconnect attempt timeto MS if disconnected and the most imminent rem_list deadline.
+
+=========================================================
+=== CLIENT LIBRARY ======================================
+=========================================================
+
