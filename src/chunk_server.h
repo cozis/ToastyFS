@@ -1,6 +1,10 @@
 #ifndef CHUNK_SERVER_INCLUDED
 #define CHUNK_SERVER_INCLUDED
 
+#include "tcp.h"
+#include "basic.h"
+#include "hash_set.h"
+
 #define TAG_METADATA_SERVER 1
 #define TAG_CHUNK_SERVER    2
 

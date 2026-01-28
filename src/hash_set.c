@@ -1,8 +1,10 @@
 #if defined(MAIN_SIMULATION) || defined(MAIN_TEST)
 #define QUAKEY_ENABLE_MOCKS
 #endif
+
 #include <stdint.h>
 #include <quakey.h>
+
 #include "hash_set.h"
 
 void hash_set_init(HashSet *set)

@@ -7,8 +7,8 @@
 #include <assert.h>
 
 #include "wal.h"
-#include "file_system.h"
 #include "file_tree.h"
+#include "file_system.h"
 
 #define WAL_MAGIC   0xcafebebe
 #define WAL_VERSION 1

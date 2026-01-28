@@ -3,12 +3,13 @@
 #else
 #define POLL_CAPACITY 1024
 #endif
+
 #include <stdint.h>
 #include <quakey.h>
 
-#include "metadata_server.h"
 #include "chunk_server.h"
 #include "random_client.h"
+#include "metadata_server.h"
 
 #ifdef MAIN_METADATA_SERVER
 int main(int argc, char **argv)

@@ -6,13 +6,13 @@
 #include <assert.h>
 #include <stdint.h>
 
-#include "sha256.h"
-#include "file_system.h"
-#include "hash_set.h"
-#include "config.h"
 #include "tcp.h"
+#include "sha256.h"
+#include "config.h"
 #include "message.h"
+#include "hash_set.h"
 #include "byte_queue.h"
+#include "file_system.h"
 #include "chunk_server.h"
 
 static string hash2path(ChunkServer *state, SHA256 hash, char *out)
