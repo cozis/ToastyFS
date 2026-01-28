@@ -81,6 +81,14 @@ int quakey_schedule_one(Quakey *quakey);
 // Generate a random u64
 QuakeyUInt64 quakey_random(void);
 
+typedef struct {
+    char name[32];
+    int  name_len;
+} QuakeySignal;
+
+void quakey_signal(char *name);
+int  quakey_get_signal(Quakey *quakey, QuakeySignal *signal);
+
 int *mock_errno_ptr(void);
 
 #ifdef _WIN32
@@ -139,6 +147,8 @@ void  mock_free(void *ptr);
 
 #ifdef QUAKEY_ENABLE_MOCKS
 
+#define QUAKEY_SIGNAL(name) quakey_signal(name)
+
 #undef errno
 #define errno (*mock_errno_ptr())
 
@@ -191,6 +201,11 @@ void  mock_free(void *ptr);
 #define FindFirstFileA   mock_FindFirstFileA
 #define FindNextFileA    mock_FindNextFileA
 #define FindClose        mock_FindClose
+
+#else
+
+#define QUAKEY_SIGNAL(name) ((void) (name))
+
 #endif
 
 #endif // QUAKEY_INCLUDED

@@ -334,8 +334,17 @@ int main(void)
         quakey_spawn(quakey, config, "cs --addr 127.0.0.6 --port 8083 --remote-addr 127.0.0.3 --remote-port 8080");
     }
 
-    while (simulation_running)
+    while (simulation_running) {
+
         quakey_schedule_one(quakey);
+
+        QuakeySignal signal;
+        while (quakey_get_signal(quakey, &signal)) {
+
+            if (!strcmp(signal.name, "exit"))
+                simulation_running = false;
+        }
+    }
 
     quakey_free(quakey);
     return 0;

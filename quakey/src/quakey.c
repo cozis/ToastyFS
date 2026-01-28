@@ -347,6 +347,8 @@ typedef struct {
     b32 rst;
 } TimeEvent;
 
+#define SIM_SIGNAL_LIMIT 8
+
 struct Sim {
 
     uint64_t seed;
@@ -366,6 +368,10 @@ struct Sim {
     int num_events;
     int max_events;
     TimeEvent *events;
+
+    int num_signals;
+    int head_signal;
+    QuakeySignal signals[SIM_SIGNAL_LIMIT];
 };
 
 static void time_event_wakeup(Sim *sim, Nanos time, Host *host);
@@ -2213,6 +2219,8 @@ static void sim_init(Sim *sim, uint64_t seed)
     sim->num_events = 0;
     sim->max_events = 0;
     sim->events = NULL;
+    sim->num_signals = 0;
+    sim->head_signal = 0;
 }
 
 static void sim_free(Sim *sim)
@@ -2360,6 +2368,33 @@ static uint64_t sim_random(Sim *sim)
     return x;
 }
 
+static void sim_signal(Sim *sim, char *name)
+{
+    int tail_signal = (sim->head_signal + sim->num_signals) % SIM_SIGNAL_LIMIT;
+    QuakeySignal *signal = &sim->signals[tail_signal];
+
+    int name_len = strlen(name);
+    if (name_len > (int) sizeof(sim->signals[sim->num_signals].name))
+        abort_("Signal name array is too small");
+
+    memcpy(signal->name, name, name_len);
+    signal->name_len = name_len;
+
+    sim->num_signals++;
+}
+
+static int sim_get_signal(Sim *sim, QuakeySignal *out)
+{
+    if (sim->num_signals == 0)
+        return 0;
+
+    *out = sim->signals[sim->head_signal];
+
+    sim->head_signal = (sim->head_signal + 1) % SIM_SIGNAL_LIMIT;
+    sim->num_signals--;
+    return 1;
+}
+
 /////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////
@@ -2405,8 +2440,26 @@ QuakeyUInt64 quakey_random(void)
 {
     Host *host = host___;
     if (host == NULL)
-        abort_("Call to mock_errno_ptr() with no node scheduled\n");
+        abort_("Call to quakey_random() with no node scheduled\n");
     return sim_random(host->sim);
+}
+
+void quakey_signal(char *name)
+{
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to quakey_signal() with no node scheduled\n");
+
+    Sim *sim = host->sim;
+    if (sim->num_signals == SIM_SIGNAL_LIMIT)
+        abort_("Signal array is too small");
+
+    sim_signal(sim, name);
+}
+
+int quakey_get_signal(Quakey *quakey, QuakeySignal *signal)
+{
+    return sim_get_signal((Sim*) quakey, signal);
 }
 
 /////////////////////////////////////////////////////////////////

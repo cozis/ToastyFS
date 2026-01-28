@@ -619,7 +619,7 @@ int test_client_tick(void *state_, void **ctxs,
         printf("\n========================================\n");
         printf("All %d tests PASSED!\n", client->tests_passed);
         printf("========================================\n");
-        exit(0);
+        QUAKEY_SIGNAL("exit");
     }
 
     *timeout = -1;

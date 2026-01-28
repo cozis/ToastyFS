@@ -29,7 +29,6 @@ static string hash2path(ChunkServer *state, SHA256 hash, char *out)
     return (string) { out, strlen(out) };
 }
 
-// TODO: return an error when bitrot
 static int load_chunk(ChunkServer *state, SHA256 hash, string *data)
 {
     char buf[PATH_MAX];
