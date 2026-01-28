@@ -1,0 +1,233 @@
+Architecture
+  A ToastyFS instance is composed by a metadata server, a number
+  of chunk servers, and a number of clients.
+
+  The metadata server stores the full file system hieararchy,
+  except instead of storing the file contents, it stores an
+  array of hashes of the chunks of each file. A "chunk" is a
+  file range that is fixed for a single file but may vary
+  between files. Chunk servers hold an array of chunks that
+  are identified by their hash. The metadata server keeps
+  track of which chunks each chunk server is holding.
+
+  Clients are users of the file system that can read and
+  write metadata and files. They are assumed to behave
+  correctly.
+
+  Any read and write operation that doesn't involve file
+  contents can be performed by clients by talking to the
+  metadata server directly. Such operations include creating
+  an empty file or a directory, deleting a file or directory,
+  listing files.
+
+  If a client wants to read a range of bytes from a file,
+  it sends the metadata server the file name and range.
+  The metadata server responds with the chunk size of that
+  file, the list of hashes for the chunks involved in the
+  read, and the IP addresses of the chunk servers that hold
+  each chunk. The metadata server also adds the IP addresses
+  of three chunk servers any new chunks should be written
+  to. The client can then download the chunks from the chunk
+  servers and reassemble the result.
+
+  If a client wants to write at a range of bytes of a file,
+  it starts by reading that range from the metadata server,
+  getting the list of hashes it will modify, their locations,
+  and locations for any new chunks. The client then modifies
+  the chunk by sending to each chunk server the hash to modify
+  and the patch (a range of bytes within a chunk plus the new
+  data). The chunk server creates a new modified chunk and
+  keeps the old version, then returns the new hash. If all
+  modifications are successful, the client holds the set of
+  old hashes and new hashes for that file range. It completes
+  the write by telling the metadata server to swap the old
+  hashes with the new ones (optionally including write flags
+  such as TOASTY_WRITE_CREATE_IF_MISSING). If the old hashes
+  don't match, another write succeded in the mean time and
+  touched that range, therefore the write fails. If the old
+  hashes match, the write succeded. If the client fails to
+  modify any chunks, it doesn't commit the write with the
+  metadata server.
+
+  If the file doesn't exist and the TOASTY_WRITE_CREATE_IF_MISSING
+  flag is set, the metadata server atomically creates the file
+  with a default chunk size (4096 bytes) and retries the write.
+  This operation is logged to the WAL to ensure crash consistency.
+
+  If the TOASTY_WRITE_TRUNCATE_AFTER flag is set, the file is
+  truncated after the write, setting its size to exactly offset+length
+  and discarding any data beyond that point. This is useful for HTTP
+  PUT semantics where the entire file content should be replaced.
+
+  Note that write failures may cause chunks to be orphaned
+  on chunk servers. This is solved by a garbage collection
+  algorithm implemented by the synchronization messages
+  between metadata and chunk server.
+
+  Note that clients may cache chunks and index them by their
+  hash. When they read a file and receive its hashes, they may
+  avoid reaching for the chunk servers if they already cached
+  the chunks with those hashes. This allows reading files with
+  only one round trip at no cost of correctness. If getting
+  the up-to-date contents is not a concern, clients may also
+  cache file metadata.
+
+Metadata and chunk server exchange:
+
+  The metadata server is only aware of each chunk server
+  as long as they have a TCP connection. When a chunk server
+  first connects to the metadata server, it authenticates
+  itself and sends its own IP addresses. If the server is
+  authentic, the metadata server requests the full list
+  of chunks the chunk server is holding. Upon receiving the
+  state of chunk server, the metadata server adds all useful
+  chunks to the "old_list" and all useless chunks to the
+  "rem_list", then sends the rem_list to the chunk server
+  which removes those chunks.
+
+  When writes are committed to the metadata server involving
+  new chunks to a chunk server, the metadata server adds those
+  hashes to an "add_list" and any hashes that are not useful
+  anymore to the rem_list.
+
+  Periodically, the metadata server sends the add_list and
+  rem_list to the chunk server. These list tell the chunk
+  server the ideal state it should have from the point of
+  view of the metadata server. Elements in the add_list should
+  already be in the chunk servers, and elements from the
+  rem_list are to be removed. A chunk server marks any chunk
+  in the rem_list as to be removed and checks that hashes
+  in the add list are present. If a chunk in the add list
+  is marked as to be removed, it is unmarked. When a chunk
+  is marked as to be removed for a certain amount of time,
+  it is permanently deleted. When the synchronization is
+  complete, the metadata server merges the add_list into
+  the old_list and clears the rem_list. If chunks in the
+  add_list are not present in the chunk server, it responds
+  with an error message containing the list of missing chunks.
+  The metadata server then responds with a list of chunk
+  server addresses where the chunk server with the missing
+  chunk can download it from. Each chunk server goes
+  through its download list one at the time downloading
+  the missing chunks.
+
+  Note that if the chunk server finds that its holding some
+  chunks that are not in the hash list of the metadata server,
+  that does not mean they are orphaned. It's possible that
+  some writes are being performed by clients that have uploaded
+  chunks to that chunk server but didn't yet acknowledge it
+  to the metadata server. If all goes well and the write
+  succeded, the metadata server will add those hashes to the
+  hash list. Chunk servers should only drop chunks if they
+  are not referenced by the metadata server for a period of
+  time (say, 30 minutes).
+
+Security
+  All nodes of the system share a secret key and use it to
+  authenticate each other and encrypt messages. This allows
+  the server to accept new chunk servers and clients with
+  no prior setup
+
+Reliability
+  The metadata server is a single point of failure. To reduce
+  the impact of crashes, the metadata server stores all write
+  operations into a write-ahead log that is replayed any time
+  the process goes online.
+
+Chunk Management:
+    Chunks are added to the system when:
+        1. A chunk server connects
+        2. A write operation on metadata occurs (adding chunks)
+
+    They are removed when:
+        1. A chunk server disconnects
+        2. A write operation on metadata occurs (overwriting old chunks)
+        3. A delete operation on metadata occurs
+        4. A chunk is corrupted or removed forcefully from the chunk server
+
+    The system must make sure that chunks are not over-replicated
+    or under-replicated. If they are over-replicated, some chunk
+    servers need to forget some copies. If they are under-replicated,
+    some chunk servers need to copy chunks from elsewhere.
+
+    Metadata server variables for a chunk server:
+        ms_old_list: List of chunks that are known to be held by CS
+        ms_add_list: List of chunks that should be held by CS
+        ms_rem_list: List of chunks that may be held by CS but should removed from it
+
+    Chunk server variables:
+        cs_add_list: List of chunks added since the last update
+        cs_rem_list: List of chunks marked for removal after a timeout
+        cs_lst_list: List of chunks that were lost due to errors or forceful removals of chunk files
+
+    Metadata change for write:
+        When clients commit a write by adding new hashes to the metadata,
+        MS adds those hashes to the ms_add_list for the CS where the client
+        uploaded the chunks. If a hash was overwritten and became useless,
+        that hash is added to the ms_rem_list for all CS holding it.
+
+    Metadata change for delete:
+        All hashes that are no longer reachable by the file tree are added
+        to the ms_rem_list of their holders
+
+    Chunk upload:
+        When a chunk is uploaded to a chunk server, its hash is added to
+        the cs_add_list.
+
+    Periodically on the chunk server:
+        Elements in the cs_rem_list have a 30 minute timeout after which they are deleted
+        permanently.
+
+    Periodically:
+        CS sends cs_add_list to MS
+        MS may add a subset of cs_add_list to ms_add_list based on the chunk replication and distribution policy
+        MS sends ms_add_list and ms_rem_list to CS
+        CS (1) Adds all elements from ms_rem_list to cs_rem_list
+           (2) Elements in ms_add_list that are not held by the chunk server are added to
+               a temporary list tmp_list
+           (3) Removes elements in ms_add_list from cs_add_list and cs_rem_list, then merges cs_add_list into cs_rem_list and clears cs_add_list.
+           (4) Elements in cs_lst_list are added to tmp_list, then cs_lst_list is cleared.
+           (6) tmp_list is sent to MS
+           (7) cs_add_list is cleared
+        MS (1) Receives tmp_list and sends download locations to CS for those chunks
+           (2) Merges ms_add_list into ms_old_list, then removes all items in tmp_list from ms_old_list
+           (3) Sets ms_add_list equal to tmp_list
+
+    Chunk replication and distribution policy:
+        During an update, when CS reports a new chunk to MS, MS has to decide whether
+        to allow the CS to keep it or not.
+
+        There are 4 cases:
+            - The chunk is useless (not referenced by any file)
+            - The chunk is under-replicated even counting the new copy
+            - The chunk is properly replicated with the new copy
+            - The chunk is over-replicated with the new copy
+
+        If the chunk is not referenced by the file tree, do nothing.
+
+        If the chunk is properly replicated or under-replicated, add it to the ms_add_list.
+
+        If the chunk is over-replicated, either don't add it to the ms_add_list or add it to the ms_rem_list of some other holder.
+
+    TODO: The way chunk servers tell about the chunks they are holding
+          recently changed. Now instead of sending a full chunk list when
+          connecting, they send batches of chunks to the metadata server
+          during state updates. It also changed that now chunk servers
+          initiate updates.
+
+    When a chunk server connects (and authenticates)
+    it sends alongside the auth message the hash of
+    the hash list of all chunks. The metadata server
+    then replies with a message saying whether it
+    already cached that chunk list or not. If it didn't, the chunk server sends the entire list
+    in chunks during state updates, with an increased
+    update frequency.
+
+Metadata Persistence & Crash Recovery:
+    The metadata server uses a write-ahead log (WAL) file to store its state on disk.
+
+    Log files start with a full snapshot of the metadata and continues with operation
+    log entries.
+
+    When a file gets too big, the metadata server creates a new WAL file by writing
+    a snapshot to it and continuing logging there.

@@ -35,15 +35,94 @@ metadata_server_tick:
 
             if the peer is a client:
                 if the message has type CREATE:
-                    TODO
+                    Read path_len, path, and is_dir from the message
+                    If is_dir is false:
+                        Read chunk_size from message
+                    Else:
+                        Set chunk_size to 0
+
+                    Append the create operation to the WAL
+                    Attempt to create entity in the file_tree
+
+                    If file_tree creation fails:
+                        Send CREATE_ERROR with the error description
+                    Else:
+                        Send CREATE_SUCCESS containing the new generation number
+
                 if the message has type DELETE:
-                    TODO
+                    Read expect_gen, path_len, and path from message
+                    Append delete operation to the WAL
+                    Attempt to delete entity in the file_tree
+
+                    If file_tree deletion fails:
+                        Send DELETE_ERROR with the error description
+                    Else:
+                        Send DELETE_SUCCESS (no payload)
+
                 if the message has type LIST:
-                    TODO
+                    Read expect_gen, path_len, and path from message
+                    Attempt to list directory contents from file_tree
+
+                    If listing fails:
+                        Send LIST_ERROR with error description
+                    Else:
+                        Send LIST_SUCCESS containing:
+                            - Directory generation
+                            - Truncated flag (if results exceed MAX_LIST_SIZE)
+                            - Item count
+                            - List of items (generation, is_dir, name_len, name)
+
                 if the message has type READ:
-                    TODO
+                    Read expect_gen, path_len, path, offset, and length
+                    Attempt to read file info from file_tree
+
+                    If read fails:
+                        Send READ_ERROR containing:
+                            - Error description
+                            - A list of suggested chunk server addresses for writing (load balanced)
+                            NOTE: Providing write locations on read error allows clients to handle
+                            "missing file" scenarios by immediately writing if desired.
+                    Else:
+                        Send READ_SUCCESS containing:
+                            - File generation
+                            - Chunk size
+                            - Actual bytes available (may be less than requested length)
+                            - Number of chunks
+                            - List of chunks, where each contains:
+                                - SHA256 Hash
+                                - List of chunk servers holding this chunk (holders)
+                            - A list of suggested chunk server addresses for writing new chunks
+                              (load balanced via choose_servers_for_write)
+
                 if the message has type WRITE:
-                    TODO
+                    Read expect_gen, flags, path_len, path
+                    Read offset, length, num_chunks
+
+                    For each chunk in num_chunks:
+                        Read the hash and the list of Chunk Server addresses (locations) that hold it
+                        (This implies the client has already uploaded the data to these servers)
+
+                    Append write operation to WAL
+
+                    Attempt to apply write to file_tree (returns new_gen and a list of removed_hashes)
+
+                    If result is NOENT (File Not Found) AND flags has TOASTY_WRITE_CREATE_IF_MISSING:
+                        - Append create operation (default chunk_size 4096) to WAL
+                        - Create entity in file_tree
+                        - Retry the write operation to file_tree
+
+                    If write fails:
+                        Send WRITE_ERROR with error description
+                    Else:
+                        For each new chunk hash provided in the message:
+                            Find the chunk servers associated with that hash in the message
+                            Add the hash to those servers' ms_add_list
+
+                        For each removed_hash returned by the file_tree:
+                            Find all chunk servers currently holding this hash
+                            Add the hash to their ms_rem_list (marking it for deletion)
+
+                        Send WRITE_SUCCESS containing the new generation number
 
             if the peer is a CS:
                 if the message has type AUTH:
@@ -175,3 +254,229 @@ chunk_server_tick:
 === CLIENT LIBRARY ======================================
 =========================================================
 
+# ------------------------------------------------------------------------------
+# 1. DATA STRUCTURES
+# ------------------------------------------------------------------------------
+
+class ToastyClient:
+    metadata_server_conn: Connection
+    chunk_server_pool: Map<Address, Connection>
+    pending_operations: Map<OpID, Operation>
+
+class Operation:
+    id: Integer
+    type: Enum(READ, WRITE, CREATE, DELETE, LIST)
+    status: Enum(PENDING, COMPLETED, FAILED)
+
+    # Context
+    path: String
+    user_buffer: Byte[]
+    offset: Integer
+    length: Integer
+    flags: Bitmask
+    expected_generation: Integer
+
+    # Internal State
+    chunks_to_process: List<ChunkTask>
+    bytes_transferred: Integer
+    result_data: Any
+
+class ChunkTask:
+    # Used for tracking individual chunk uploads/downloads
+    chunk_index: Integer
+    hash: String
+    target_servers: List<Address>
+    status: Enum(WAITING, IN_PROGRESS, DONE)
+    final_hash: String # Returned by CS after upload/patch
+
+# ------------------------------------------------------------------------------
+# 2. PUBLIC BLOCKING API (User Facing)
+# ------------------------------------------------------------------------------
+
+function toasty_connect(address, port):
+    client = new ToastyClient()
+    client.metadata_server_conn = tcp_connect(address, port)
+    return client
+
+function toasty_read(client, path, offset, length):
+    op_handle = begin_read_op(client, path, offset, length)
+    return wait_for_result(client, op_handle)
+
+function toasty_write(client, path, data, offset, flags):
+    op_handle = begin_write_op(client, path, data, offset, flags)
+    return wait_for_result(client, op_handle)
+
+# (Create, Delete, and List follow the same pattern: begin_op -> wait_for_result)
+
+# ------------------------------------------------------------------------------
+# 3. INTERNAL ASYNCHRONOUS LOGIC
+# ------------------------------------------------------------------------------
+
+# --- READ LOGIC ---
+
+function begin_read_op(client, path, offset, length):
+    op = new Operation(type=READ, path, offset, length)
+
+    # Step 1: Ask Metadata Server (MS) for the file layout
+    send_message(client.metadata_server_conn,
+                 type=READ_REQUEST,
+                 path=path, range=(offset, length))
+
+    return register_operation(client, op)
+
+function handle_read_metadata_response(op, msg):
+    if msg.type == ERROR:
+        op.status = FAILED
+        return
+
+    # Step 2: Calculate chunk plan
+    chunk_size = msg.chunk_size
+    op.chunks_to_process = calculate_required_chunks(op.offset, op.length, chunk_size)
+
+    # Step 3: Queue downloads from Chunk Servers (CS)
+    for chunk in op.chunks_to_process:
+        # MS returns a list of holders for each chunk hash
+        best_cs = load_balance_select(chunk.holders)
+        conn = get_cs_connection(best_cs)
+
+        send_message(conn,
+                     type=DOWNLOAD_CHUNK,
+                     hash=chunk.hash)
+
+function handle_chunk_download_success(op, msg):
+    # Step 4: Assemble data
+    copy_bytes(src=msg.data, dest=op.user_buffer, at_offset=msg.chunk_index)
+
+    mark_task_complete(op, msg.chunk_index)
+
+    if all_tasks_complete(op):
+        op.status = COMPLETED
+
+# --- WRITE LOGIC (The Complex Part) ---
+
+function begin_write_op(client, path, data, offset, flags):
+    op = new Operation(type=WRITE, path, data, offset, flags)
+
+    # Step 1: Send READ to MS first.
+    # We need the current generation number and existing chunk hashes to perform
+    # patches or ensure consistency, even if we are overwriting.
+    send_message(client.metadata_server_conn,
+                 type=READ_REQUEST,
+                 path=path, range=(offset, len(data)))
+
+    return register_operation(client, op)
+
+function handle_write_metadata_ready(op, msg):
+    # Step 2: Prepare Upload Tasks
+    # If file missing & CREATE_IF_MISSING flag is set, we use defaults (size 0, gen 0).
+    current_generation = msg.generation
+    chunk_size = msg.chunk_size
+    write_targets = msg.write_locations # Recommended CS IPs from MS
+
+    # Slice user data into chunks
+    sliced_chunks = split_into_chunks(op.user_buffer, chunk_size)
+
+    for slice in sliced_chunks:
+        task = new ChunkTask()
+        task.target_servers = write_targets # We must replicate to 3 servers
+
+        # Determine if this is a Create (New) or Update (Patch)
+        if slice.index >= len(msg.existing_hashes):
+            task.type = NEW_CHUNK
+        else:
+            task.type = PATCH_CHUNK
+            task.base_hash = msg.existing_hashes[slice.index]
+
+        op.chunks_to_process.add(task)
+
+    # Step 3: Start Uploads (Parallel up to limit)
+    pump_upload_queue(op)
+
+function pump_upload_queue(op):
+    while active_uploads(op) < MAX_PARALLEL_UPLOADS:
+        task = get_next_waiting_task(op)
+        if not task: break
+
+        # We must upload to N replicas (usually 3)
+        for replica_addr in task.target_servers:
+            conn = get_cs_connection(replica_addr)
+
+            if task.type == NEW_CHUNK:
+                # Full upload
+                send_message(conn, type=CREATE_CHUNK, data=task.data)
+            else:
+                # Differential patch (Rsync-style or offset-based)
+                send_message(conn, type=UPLOAD_CHUNK,
+                             base_hash=task.base_hash,
+                             patch_data=task.data)
+
+function handle_upload_ack(op, msg):
+    # Step 4: Collect new hashes
+    task = get_task(op, msg.task_id)
+
+    # The CS computes the new SHA256 after applying the patch/data
+    task.final_hash = msg.new_hash
+    task.replicas_confirmed++
+
+    if task.replicas_confirmed >= REQUIRED_REPLICATION:
+        task.status = DONE
+
+    if all_tasks_complete(op):
+        commit_write(op)
+    else:
+        pump_upload_queue(op) # Start next batch
+
+function commit_write(op):
+    # Step 5: Atomic Commit at Metadata Server
+    commit_msg = new Message(type=WRITE_REQUEST)
+    commit_msg.path = op.path
+    commit_msg.expected_generation = op.expected_generation # Optimistic Locking
+    commit_msg.flags = op.flags
+
+    # Map the linear chunk index to the new Hash + Location list
+    commit_msg.chunks = map_chunks_to_hashes_and_locations(op.chunks_to_process)
+
+    send_message(client.metadata_server_conn, commit_msg)
+
+function handle_commit_response(op, msg):
+    if msg.type == WRITE_SUCCESS:
+        op.status = COMPLETED
+        op.result_data = msg.new_generation
+    elif msg.type == ERROR and msg.code == GENERATION_MISMATCH:
+        # Optimistic concurrency failed (someone else wrote).
+        # Retry the whole operation from Step 1 (READ).
+        reset_and_retry(op)
+    else:
+        op.status = FAILED
+
+# ------------------------------------------------------------------------------
+# 4. EVENT LOOP (Driver)
+# ------------------------------------------------------------------------------
+
+function wait_for_result(client, op_handle):
+    while get_op_status(op_handle) == PENDING:
+        # Wait for network activity (Poll/Select)
+        events = wait_for_network_events(timeout=DEFAULT_TIMEOUT)
+
+        for event in events:
+            if event.type == DISCONNECT:
+                handle_disconnect(client, event.conn)
+                continue
+
+            # Route message to the specific Operation ID embedded in the packet tag
+            op = client.pending_operations[event.tag.op_id]
+            msg = read_message(event.conn)
+
+            # Dispatcher
+            switch (op.type, msg.type):
+                case (READ, READ_SUCCESS):    handle_read_metadata_response(op, msg)
+                case (READ, CHUNK_DATA):      handle_chunk_download_success(op, msg)
+
+                case (WRITE, READ_SUCCESS):   handle_write_metadata_ready(op, msg)
+                case (WRITE, UPLOAD_ACK):     handle_upload_ack(op, msg)
+                case (WRITE, WRITE_SUCCESS):  handle_commit_response(op, msg)
+
+                case (_, ERROR):              handle_error(op, msg)
+
+    return get_op_result(op_handle)
+}
