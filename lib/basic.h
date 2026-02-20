@@ -36,6 +36,7 @@ typedef uint64_t Time;
 #define S(X) ((string) { (X), (int) sizeof(X)-1 })
 
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
+#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
 #define UNREACHABLE __builtin_trap();
 
@@ -50,5 +51,11 @@ string getargs(int argc, char **argv, char *name, char *fallback);
 int    getargi(int argc, char **argv, char *name, int fallback);
 
 void append_hex_as_str(char *out, SHA256 hash);
+
+bool addr_eql(Address a, Address b);
+bool addr_lower(Address a, Address b);
+
+int parse_addr_arg(char *arg, Address *out);
+void addr_sort(Address *addrs, int count);
 
 #endif // BASIC_INCLUDED

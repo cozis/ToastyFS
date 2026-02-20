@@ -1,11 +1,9 @@
-toasty_metadata_server
-toasty_chunk_server
-toasty_test
-toasty_test_coverage
-toasty_simulation
-toasty_simulation_coverage
+toastyfs
+toastyfs_client
+toastyfs_simulation
 *.gcno
 *.gcda
 *.gcov
 *.info
 coverage_html/
+*.log

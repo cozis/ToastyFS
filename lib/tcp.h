@@ -69,12 +69,11 @@ typedef struct {
     Connection conns[TCP_CONNECTION_LIMIT];
 } TCP;
 
-bool addr_eql(Address a, Address b);
 int  tcp_context_init(TCP *tcp);
 void tcp_context_free(TCP *tcp);
 int  tcp_wakeup(TCP *tcp);
 int  tcp_index_from_tag(TCP *tcp, int tag);
-int  tcp_listen(TCP *tcp, string addr, uint16_t port);
+int  tcp_listen(TCP *tcp, Address addr);
 int  tcp_next_message(TCP *tcp, int conn_idx, ByteView *msg, uint16_t *type);
 void tcp_consume_message(TCP *tcp, int conn_idx);
 int  tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd *polled, int num_polled);

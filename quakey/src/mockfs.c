@@ -657,6 +657,63 @@ int mockfs_lseek(MockFS_OpenFile *open_file, int offset, int whence)
     return new_offset;
 }
 
+static void byte_buffer_truncate(ByteBuffer *byte_buffer, int new_size, ByteChunk **free_list)
+{
+    if (new_size == 0) {
+        byte_buffer_free(byte_buffer, free_list);
+        byte_buffer_init(byte_buffer);
+        return;
+    }
+
+    // Walk through chunks to find the one containing the new end
+    int remaining = new_size;
+    ByteChunk *chunk = byte_buffer->head;
+    while (chunk) {
+        int chunk_used = (chunk->next ? BYTE_CHUNK_SIZE : byte_buffer->tail_used);
+        if (remaining <= chunk_used) {
+            // This chunk becomes the new tail
+            // Free all subsequent chunks
+            ByteChunk *to_free = chunk->next;
+            if (to_free) {
+                // Find end of chain to free
+                ByteChunk *last = to_free;
+                while (last->next)
+                    last = last->next;
+                last->next = *free_list;
+                *free_list = to_free;
+            }
+            chunk->next = NULL;
+            byte_buffer->tail = chunk;
+            byte_buffer->tail_used = remaining;
+            return;
+        }
+        remaining -= BYTE_CHUNK_SIZE;
+        chunk = chunk->next;
+    }
+}
+
+int mockfs_ftruncate(MockFS_OpenFile *open_file, int new_size)
+{
+    if (new_size < 0)
+        return MOCKFS_ERRNO_INVAL;
+
+    if (!(open_file->flags & (MOCKFS_O_WRONLY | MOCKFS_O_RDWR)))
+        return MOCKFS_ERRNO_BADF;
+
+    ByteBuffer *bb = &open_file->entity->byte_buffer;
+    int current_size = byte_buffer_size(bb);
+
+    if (new_size < current_size) {
+        byte_buffer_truncate(bb, new_size, &open_file->mfs->chunk_free_list);
+    } else if (new_size > current_size) {
+        int ret = byte_buffer_extend(bb, new_size, open_file->mfs);
+        if (ret < 0)
+            return ret;
+    }
+
+    return 0;
+}
+
 static int remove_inner(MockFS *mfs, MockFS_Entity *entity, bool recursive)
 {
     if (entity->parent == NULL)

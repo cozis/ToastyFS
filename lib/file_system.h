@@ -29,8 +29,10 @@ typedef struct {
 } DirectoryScanner;
 #endif
 
+bool file_exists(string path);
 int  file_open(string path, Handle *fd);
 void file_close(Handle fd);
+int  file_truncate(Handle fd, size_t new_size);
 int  file_set_offset(Handle fd, int off);
 int  file_get_offset(Handle fd, int *off);
 int  file_lock(Handle fd);
@@ -49,5 +51,8 @@ int  file_read_all(string path, string *data);
 int  directory_scanner_init(DirectoryScanner *scanner, string path);
 int  directory_scanner_next(DirectoryScanner *scanner, string *name);
 void directory_scanner_free(DirectoryScanner *scanner);
+
+int file_read_exact(Handle handle, char *dst, int len);
+int file_write_exact(Handle handle, char *src, int len);
 
 #endif // FILE_SYSTEM_INCLUDED

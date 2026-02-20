@@ -9,6 +9,24 @@
 
 int rename_file_or_dir(string oldpath, string newpath);
 
+bool file_exists(string path)
+{
+    char zt[1<<10];
+    if (path.len >= (int) sizeof(zt))
+        return false;
+    memcpy(zt, path.ptr, path.len);
+    zt[path.len] = '\0';
+
+#ifdef __linux__
+    return access(zt, F_OK) == 0;
+#endif
+
+#ifdef _WIN32
+    DWORD attrs = GetFileAttributesA(zt);
+    return attrs != INVALID_FILE_ATTRIBUTES;
+#endif
+}
+
 int file_open(string path, Handle *fd)
 {
 #ifdef __linux__
@@ -18,7 +36,7 @@ int file_open(string path, Handle *fd)
     memcpy(zt, path.ptr, path.len);
     zt[path.len] = '\0';
 
-    int ret = open(zt, O_RDWR | O_CREAT | O_APPEND, 0644);
+    int ret = open(zt, O_RDWR | O_CREAT, 0644);
     if (ret < 0)
         return -1;
 
@@ -56,6 +74,19 @@ void file_close(Handle fd)
 
 #ifdef _WIN32
     CloseHandle((HANDLE) fd.data);
+#endif
+}
+
+int file_truncate(Handle fd, size_t new_size)
+{
+#ifdef __linux__
+    if (ftruncate((int) fd.data, new_size) < 0)
+        return -1;
+    return 0;
+#endif
+
+#ifdef _WIN32
+    return -1; // TODO: Not implemented
 #endif
 }
 
@@ -400,3 +431,29 @@ void directory_scanner_free(DirectoryScanner *scanner)
 }
 
 #endif
+
+int file_read_exact(Handle handle, char *dst, int len)
+{
+    int copied = 0;
+    while (copied < len) {
+        int ret = file_read(handle, dst + copied, len - copied);
+        if (ret < 0)
+            return -1;
+        if (ret == 0)
+            return 0; // EOF
+        copied += ret;
+    }
+    return copied;
+}
+
+int file_write_exact(Handle handle, char *src, int len)
+{
+    int copied = 0;
+    while (copied < len) {
+        int ret = file_write(handle, src + copied, len - copied);
+        if (ret < 0)
+            return -1;
+        copied += ret;
+    }
+    return 0;
+}

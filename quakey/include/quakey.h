@@ -26,6 +26,8 @@
 #include <pthread.h>
 #endif
 
+#include <stdbool.h>
+
 typedef struct {} Quakey;
 
 // Function pointers to a simulated program's code
@@ -72,11 +74,18 @@ int quakey_init(Quakey **quakey, QuakeyUInt64 seed);
 // Stop a simulation
 void quakey_free(Quakey *quakey);
 
+typedef unsigned long long QuakeyNode;
+
 // Add a program to the simulation
-void quakey_spawn(Quakey *quakey, QuakeySpawn config, char *arg);
+QuakeyNode quakey_spawn(Quakey *quakey, QuakeySpawn config, char *arg);
+
+void *quakey_node_state(QuakeyNode node);
 
 // Schedule and executes one program until it would block, then returns
 int quakey_schedule_one(Quakey *quakey);
+
+// Get the current simulated time in nanoseconds
+QuakeyUInt64 quakey_current_time(Quakey *quakey);
 
 // Generate a random u64
 QuakeyUInt64 quakey_random(void);
@@ -88,6 +97,25 @@ typedef struct {
 
 void quakey_signal(char *name);
 int  quakey_get_signal(Quakey *quakey, QuakeySignal *signal);
+
+// Limit the number of hosts that can be crashed at the same time.
+// Set to 0 for no limit (default).
+void quakey_set_max_crashes(Quakey *quakey, int max_crashes);
+
+void quakey_network_partitioning(Quakey *quakey, bool enable);
+
+// Access spawned host information
+int         quakey_num_hosts(Quakey *quakey);
+void       *quakey_host_state(Quakey *quakey, int idx);  // Returns NULL if host is dead
+int         quakey_host_is_dead(Quakey *quakey, int idx);
+const char *quakey_host_name(Quakey *quakey, int idx);
+
+// Enter/leave a host's context so that mock_xxx functions (file I/O,
+// etc.) operate on that host's resources. Use from code that runs
+// outside of the normal init/tick/free callbacks (e.g. invariant
+// checkers).
+void quakey_enter_host(QuakeyNode node);
+void quakey_leave_host(void);
 
 int *mock_errno_ptr(void);
 
@@ -125,6 +153,8 @@ int   mock_clock_gettime(clockid_t clockid, struct timespec *tp);
 int   mock_open(char *path, int flags, int mode);
 int   mock_fcntl(int fd, int cmd, int flags);
 int   mock_close(int fd);
+int   mock_access(const char *path, int mode);
+int   mock_ftruncate(int fd, size_t new_size);
 int   mock_fstat(int fd, struct stat *buf);
 int   mock_read(int fd, char *dst, int len);
 int   mock_write(int fd, char *src, int len);
@@ -172,6 +202,8 @@ void  mock_free(void *ptr);
 #define open             mock_open
 #define fcntl            mock_fcntl
 #define close            mock_close
+#define access           mock_access
+#define ftruncate        mock_ftruncate
 #define CreateFileW      mock_CreateFileW
 #define CloseHandle      mock_CloseHandle
 #define ReadFile         mock_ReadFile

@@ -99,6 +99,7 @@ int mockfs_read_dir(MockFS_OpenDir *open_dir, MockFS_Dirent *dirent);
 
 int mockfs_sync(MockFS_OpenFile *open_file);
 int mockfs_lseek(MockFS_OpenFile *open_file, int offset, int whence);
+int mockfs_ftruncate(MockFS_OpenFile *open_file, int new_size);
 
 int mockfs_remove(MockFS *mfs, char *path, int path_len, bool recursive);
 

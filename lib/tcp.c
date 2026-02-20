@@ -8,25 +8,6 @@
 #include "tcp.h"
 #include "message.h"
 
-bool addr_eql(Address a, Address b)
-{
-    if (a.is_ipv4 != b.is_ipv4)
-        return false;
-
-    if (a.port != b.port)
-        return false;
-
-    if (a.is_ipv4) {
-        if (memcmp(&a.ipv4, &b.ipv4, sizeof(a.ipv4)))
-            return false;
-    } else {
-        if (memcmp(&a.ipv6, &b.ipv6, sizeof(a.ipv6)))
-            return false;
-    }
-
-    return true;
-}
-
 static int set_socket_blocking(SOCKET sock, bool value)
 {
 #ifdef _WIN32
@@ -46,7 +27,7 @@ static int set_socket_blocking(SOCKET sock, bool value)
     return 0;
 }
 
-static SOCKET create_listen_socket(string addr, uint16_t port)
+static SOCKET create_listen_socket(Address addr)
 {
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET)
@@ -59,22 +40,14 @@ static SOCKET create_listen_socket(string addr, uint16_t port)
 
     // TODO: mark address as reusable in debug builds
 
-    char tmp[1<<10];
-    if (addr.len >= (int) sizeof(tmp)) {
-        CLOSE_SOCKET(fd);
-        return INVALID_SOCKET;
+    if (!addr.is_ipv4) {
+        assert(0); // TODO
     }
-    memcpy(tmp, addr.ptr, addr.len);
-    tmp[addr.len] = '\0';
 
     struct sockaddr_in bind_buf;
     bind_buf.sin_family = AF_INET;
-    bind_buf.sin_port   = htons(port);
-    if (inet_pton(AF_INET, tmp, &bind_buf.sin_addr) != 1) {
-        CLOSE_SOCKET(fd);
-        return INVALID_SOCKET;
-    }
-
+    bind_buf.sin_port   = htons(addr.port);
+    memcpy(&bind_buf.sin_addr, &addr.ipv4, sizeof(IPv4));
     if (bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf))) {
         CLOSE_SOCKET(fd);
         return INVALID_SOCKET;
@@ -155,8 +128,8 @@ static void conn_init(Connection *conn, SOCKET fd, bool connecting)
     conn->connecting = connecting;
     conn->closing = false;
     conn->msglen = 0;
-    byte_queue_init(&conn->input, 1<<20);
-    byte_queue_init(&conn->output, 1<<20);
+    byte_queue_init(&conn->input, 1<<30);
+    byte_queue_init(&conn->output, 1<<30);
 }
 
 static void conn_free(Connection *conn)
@@ -225,9 +198,9 @@ int tcp_index_from_tag(TCP *tcp, int tag)
     return -1;
 }
 
-int tcp_listen(TCP *tcp, string addr, uint16_t port)
+int tcp_listen(TCP *tcp, Address addr)
 {
-    SOCKET listen_fd = create_listen_socket(addr, port);
+    SOCKET listen_fd = create_listen_socket(addr);
     if (listen_fd == INVALID_SOCKET)
         return -1;
 
@@ -420,8 +393,22 @@ int tcp_translate_events(TCP *tcp, Event *events, void **contexts, struct pollfd
         if (removed[i]) {
             Connection *conn = contexts[i];
             assert(conn);
+            int removed_idx = conn - tcp->conns;
             conn_free(conn);
-            *conn = tcp->conns[--tcp->num_conns];
+            int last_idx = --tcp->num_conns;
+            if (removed_idx != last_idx) {
+                *conn = tcp->conns[last_idx];
+                // Update event conn_idx values to reflect the swap
+                for (int j = 0; j < num_events; j++) {
+                    if (events[j].conn_idx == last_idx)
+                        events[j].conn_idx = removed_idx;
+                }
+                // Update contexts pointers for remaining iterations
+                for (int j = i + 1; j < num_polled; j++) {
+                    if (contexts[j] == &tcp->conns[last_idx])
+                        contexts[j] = conn;
+                }
+            }
         }
     }
 
@@ -491,6 +478,7 @@ int tcp_connect(TCP *tcp, Address addr, int tag, ByteQueue **output)
 void tcp_close(TCP *tcp, int conn_idx)
 {
     tcp->conns[conn_idx].closing = true;
+    tcp->conns[conn_idx].tag = -1; // Clear tag so new sends create a fresh connection
     // TODO: if no event will be triggered, the connection will not be closed
     //       if the output buffer is empty, the connection should be closed here.
 }
