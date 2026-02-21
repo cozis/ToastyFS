@@ -1,10 +1,9 @@
 #ifndef NODE_INCLUDED
 #define NODE_INCLUDED
 
-#include <lib/tcp.h>
-#include <lib/basic.h>
-#include <lib/message.h>
-
+#include "tcp.h"
+#include "basic.h"
+#include "message.h"
 #include "log.h"
 #include "config.h"
 #include "metadata.h"
