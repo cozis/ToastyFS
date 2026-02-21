@@ -24,8 +24,7 @@ typedef struct {
 
 typedef struct ToastyFS ToastyFS;
 
-ToastyFS *toastyfs_alloc(void);
-int  toastyfs_init(ToastyFS *tfs, uint64_t client_id, char **addrs, int num_addrs);
+ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs);
 void toastyfs_free(ToastyFS *tfs);
 
 void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pnum);

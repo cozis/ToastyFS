@@ -39,12 +39,9 @@ int random_client_init(void *state_, int argc, char **argv,
         }
     }
 
-    state->tfs = toastyfs_alloc();
-    if (state->tfs == NULL)
-        return -1;
-
     uint64_t client_id = next_random_client_id++;
-    if (toastyfs_init(state->tfs, client_id, addrs, num_addrs) < 0)
+    state->tfs = toastyfs_init(client_id, addrs, num_addrs);
+    if (state->tfs == NULL)
         return -1;
 
     *timeout = 0;

@@ -55,13 +55,12 @@ struct ToastyFS {
 
     Step step;
     ToastyFS_Error error;
-    Time phase_time;
+    Time step_time;
 
     char     bucket[META_BUCKET_MAX];
     char     key[META_KEY_MAX];
     uint64_t blob_size;
     SHA256   content_hash;
-    uint64_t file_size;
 
     Transfer transfers[META_CHUNKS_MAX * REPLICATION_FACTOR];
     int num_transfers;
@@ -70,29 +69,32 @@ struct ToastyFS {
     int num_chunks;
 };
 
-ToastyFS *toastyfs_alloc(void)
+ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
 {
-    return malloc(sizeof(ToastyFS));
-}
+    ToastyFS *tfs = malloc(sizeof(ToastyFS));
+    if (tfs == NULL)
+        return NULL;
 
-int toastyfs_init(ToastyFS *tfs, uint64_t client_id, char **addrs, int num_addrs)
-{
     tfs->view_number = 0;
     tfs->client_id   = client_id;
     tfs->request_id  = 0;
 
     for (int i = 0; i < num_addrs; i++) {
-        if (parse_addr_arg(addrs[i], &tfs->server_addrs[i]) < 0)
-            return -1;
+        if (parse_addr_arg(addrs[i], &tfs->server_addrs[i]) < 0) {
+            free(tfs);
+            return NULL;
+        }
     }
     tfs->num_servers = num_addrs;
     addr_sort(tfs->server_addrs, tfs->num_servers);
 
-    if (tcp_context_init(&tfs->tcp) < 0)
-        return -1;
+    if (tcp_context_init(&tfs->tcp) < 0) {
+        free(tfs);
+        return NULL;
+    }
 
     tfs->step = STEP_IDLE;
-    return 0;
+    return tfs;
 }
 
 void toastyfs_free(ToastyFS *tfs)
@@ -165,7 +167,7 @@ static int begin_transfers(ToastyFS *tfs)
                 .hash = tfs->transfers[i].hash,
                 .sender_idx = -1, // Client (not a peer server)
             };
-            send_message_to_server(tfs, tfs->transfers[i].location, (MessageHeader*)&msg);
+            send_message_to_server(tfs, tfs->transfers[i].location, &msg.base);
 
             tfs->transfers[i].state = TRANSFER_STARTED;
             num++;
@@ -213,7 +215,7 @@ static int process_message(ToastyFS *tfs,
                 int transfer_idx = find_started_transfer_by_hash(tfs, resp.hash);
                 assert(transfer_idx > -1);
 
-                if (!resp.size) {
+                if (resp.size == 0) {
                     tfs->transfers[transfer_idx].state = TRANSFER_ABORTED;
                     break;
                 }
@@ -283,7 +285,7 @@ static int process_message(ToastyFS *tfs,
                             msg.oper.chunks[i].hash = tfs->chunks[i];
                             msg.oper.chunks[i].size = xxx;
                         }
-                        send_message_to_server(tfs, leader_idx(tfs), (MessageHeader*)&msg);
+                        send_message_to_server(tfs, leader_idx(tfs), &msg.base);
                         tfs->step = STEP_COMMIT;
 
                     } else {
@@ -427,7 +429,7 @@ static int process_message(ToastyFS *tfs,
                         tfs->chunks[i] = resp.chunks[i].hash;
                     }
                     tfs->num_chunks = resp.num_chunks;
-                    tfs->file_size = resp.size;
+                    tfs->blob_size = resp.size;
 
                     if (begin_transfers(tfs) == 0) {
                         tfs->error = TOASTYFS_ERROR_XXX;
@@ -500,7 +502,7 @@ int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
 
     // TODO: Add timeout for the current operation
     if (tfs->step != STEP_IDLE) {
-        nearest_deadline(&deadline, tfs->phase_time + PRIMARY_DEATH_TIMEOUT_SEC * 1000000000ULL);
+        nearest_deadline(&deadline, tfs->step_time + PRIMARY_DEATH_TIMEOUT_SEC * 1000000000ULL);
     }
 
     (void) deadline_to_timeout(deadline, now);
@@ -559,7 +561,7 @@ int toastyfs_async_get(ToastyFS *tfs, char *key, int key_len)
     memcpy(msg.bucket, tfs->bucket, META_BUCKET_MAX);
     memcpy(msg.key, tfs->key, META_KEY_MAX);
 
-    send_message_to_server(tfs, xxx, (MessageHeader*)&msg);
+    send_message_to_server(tfs, xxx, &msg.base);
     return 0;
 }
 
@@ -583,7 +585,7 @@ int toastyfs_async_delete(ToastyFS *tfs, char *key, int key_len)
     memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
     memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
 
-    send_message_to_server(tfs, leader_idx(tfs), (MessageHeader*)&msg);
+    send_message_to_server(tfs, leader_idx(tfs), &msg.base);
     return 0;
 }
 
@@ -611,8 +613,8 @@ static void get_result(ToastyFS *tfs, ToastyFS_Result *result)
         return;
     }
 
-    int blob_size = tfs->file_size;
-    char *blob_data = malloc(tfs->file_size);
+    int blob_size = tfs->blob_size;
+    char *blob_data = malloc(tfs->blob_size);
     if (blob_data == NULL) {
         result->type  = TOASTYFS_RESULT_GET;
         result->error = TOASTYFS_ERROR_XXX;
