@@ -1,0 +1,52 @@
+services:
+  node1:
+    build: .
+    command:
+      - "--addr"
+      - "172.20.0.11:8080"
+      - "--peer"
+      - "172.20.0.12:8080"
+      - "--peer"
+      - "172.20.0.13:8080"
+    networks:
+      cluster:
+        ipv4_address: 172.20.0.11
+    ports:
+      - "8081:8080"
+
+  node2:
+    build: .
+    command:
+      - "--addr"
+      - "172.20.0.12:8080"
+      - "--peer"
+      - "172.20.0.11:8080"
+      - "--peer"
+      - "172.20.0.13:8080"
+    networks:
+      cluster:
+        ipv4_address: 172.20.0.12
+    ports:
+      - "8082:8080"
+
+  node3:
+    build: .
+    command:
+      - "--addr"
+      - "172.20.0.13:8080"
+      - "--peer"
+      - "172.20.0.11:8080"
+      - "--peer"
+      - "172.20.0.12:8080"
+    networks:
+      cluster:
+        ipv4_address: 172.20.0.13
+    ports:
+      - "8083:8080"
+
+networks:
+  cluster:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
