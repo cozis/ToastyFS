@@ -54,11 +54,13 @@ int main(void)
     ToastyFS_Result res;
     int ret;
 
-    /* ---- PUT ---- */
+    ////////////////////////////////////////////////////////////////////
+    // PUT
+
     char key[]  = "hello";
     char data[] = "world";
-    printf("PUT key=\"%s\" data=\"%s\" (%d bytes)\n",
-        key, data, (int)strlen(data));
+
+    printf("PUT key=\"%s\" data=\"%s\" (%d bytes)\n", key, data, (int)strlen(data));
 
     ret = toastyfs_put(tfs, key, strlen(key), data, strlen(data), &res);
     if (ret < 0) {
@@ -68,8 +70,11 @@ int main(void)
     }
     printf("  result: %s\n", error_name(res.error));
 
-    /* ---- GET ---- */
+    ////////////////////////////////////////////////////////////////////
+    // GET
+
     printf("GET key=\"%s\"\n", key);
+
     ret = toastyfs_get(tfs, key, strlen(key), &res);
     if (ret < 0) {
         fprintf(stderr, "toastyfs_get returned %d\n", ret);
@@ -77,6 +82,7 @@ int main(void)
         return 1;
     }
     printf("  result: %s\n", error_name(res.error));
+
     if (res.error == TOASTYFS_ERROR_VOID && res.data) {
         printf("  data:   \"%.*s\" (%d bytes)\n", res.size, res.data, res.size);
         if (res.size == (int)strlen(data) &&
@@ -88,8 +94,11 @@ int main(void)
         free(res.data);
     }
 
-    /* ---- DELETE ---- */
+    ////////////////////////////////////////////////////////////////////
+    // DELETE
+
     printf("DELETE key=\"%s\"\n", key);
+
     ret = toastyfs_delete(tfs, key, strlen(key), &res);
     if (ret < 0) {
         fprintf(stderr, "toastyfs_delete returned %d\n", ret);
@@ -98,14 +107,18 @@ int main(void)
     }
     printf("  result: %s\n", error_name(res.error));
 
-    /* ---- GET after DELETE (expect NOT_FOUND) ---- */
+    ////////////////////////////////////////////////////////////////////
+    // GET (2)
+
     printf("GET key=\"%s\" (after delete)\n", key);
+
     ret = toastyfs_get(tfs, key, strlen(key), &res);
     if (ret < 0) {
         fprintf(stderr, "toastyfs_get returned %d\n", ret);
         toastyfs_free(tfs);
         return 1;
     }
+
     printf("  result: %s\n", error_name(res.error));
     if (res.error == TOASTYFS_ERROR_NOT_FOUND) {
         printf("  PASS - key not found as expected\n");
@@ -114,7 +127,11 @@ int main(void)
         free(res.data);
     }
 
-    toastyfs_free(tfs);
+    ////////////////////////////////////////////////////////////////////
+    // DONE
+
     printf("Done.\n");
+
+    toastyfs_free(tfs);
     return 0;
 }
