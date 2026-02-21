@@ -33,7 +33,7 @@ ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs);
 void toastyfs_free(ToastyFS *tfs);
 
 void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pnum);
-int  toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pcap);
+int  toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pcap, int *timeout);
 
 int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
     char *data, int data_len);

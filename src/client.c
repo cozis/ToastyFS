@@ -570,6 +570,13 @@ static int process_message(ToastyFS *tfs,
                     break;
                 }
 
+                if (reply.result.type == META_RESULT_NOT_FOUND) {
+                    client_log_simple(tfs, "RECV REPLY NOT_FOUND");
+                    tfs->error = TOASTYFS_ERROR_NOT_FOUND;
+                    tfs->step = STEP_DELETE_DONE;
+                    break;
+                }
+
                 assert(reply.result.type == META_RESULT_OK);
                 client_log_simple(tfs, "RECV REPLY OK");
                 tfs->error = TOASTYFS_ERROR_VOID;
@@ -688,12 +695,44 @@ void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
             tcp_consume_message(&tfs->tcp, conn_idx);
         }
     }
+
+    // Check for operation timeout — retry the current operation if the
+    // deadline has passed (handles initial sends that were dropped because
+    // the TCP connection wasn't established yet, and unresponsive servers).
+    if (tfs->step != STEP_IDLE
+        && tfs->step != STEP_PUT_DONE
+        && tfs->step != STEP_GET_DONE
+        && tfs->step != STEP_DELETE_DONE) {
+        Time now = get_current_time();
+        Time deadline = tfs->step_time + PRIMARY_DEATH_TIMEOUT_SEC * 1000000000ULL;
+        if (now >= deadline) {
+            client_log_simple(tfs, "TIMEOUT RETRY");
+            switch (tfs->step) {
+            case STEP_STORE_CHUNK:
+            case STEP_FETCH_CHUNK:
+                for (int i = 0; i < tfs->num_transfers; i++) {
+                    if (tfs->transfers[i].state == TRANSFER_STARTED)
+                        tfs->transfers[i].state = TRANSFER_PENDING;
+                }
+                tfs->step_time = now;
+                begin_transfers(tfs);
+                break;
+            case STEP_COMMIT:
+            case STEP_DELETE:
+            case STEP_GET:
+                replay_request(tfs);
+                break;
+            default:
+                break;
+            }
+        }
+    }
 }
 
 // TODO: The toastyfs client needs to determine a timeout based on the
 //       pending operation status, not just use PRIMARY_DEATH_TIMEOUT_SEC
 //       for everything.
-int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pcap)
+int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pcap, int *timeout)
 {
     Time now = get_current_time(); // TODO: Handle INVALID_TIME error
     Time deadline = INVALID_TIME;
@@ -702,7 +741,7 @@ int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
         nearest_deadline(&deadline, tfs->step_time + PRIMARY_DEATH_TIMEOUT_SEC * 1000000000ULL);
     }
 
-    (void) deadline_to_timeout(deadline, now);
+    *timeout = deadline_to_timeout(deadline, now);
     if (pcap < TCP_POLL_CAPACITY)
         return -1;
     return tcp_register_events(&tfs->tcp, ctxs, pdata);
@@ -1019,11 +1058,12 @@ static int wait_until_result(ToastyFS *tfs, ToastyFS_Result *res)
     for (;;) {
         void *ctxs[TCP_POLL_CAPACITY];
         struct pollfd arr[TCP_POLL_CAPACITY];
-        int num = toastyfs_register_events(tfs, ctxs, arr, TCP_POLL_CAPACITY);
+        int poll_timeout;
+        int num = toastyfs_register_events(tfs, ctxs, arr, TCP_POLL_CAPACITY, &poll_timeout);
         if (num < 0)
             return num;
 
-        poll(arr, num, -1); // TODO: use computed timeout
+        poll(arr, num, poll_timeout);
 
         toastyfs_process_events(tfs, ctxs, arr, num);
         *res = toastyfs_get_result(tfs);
