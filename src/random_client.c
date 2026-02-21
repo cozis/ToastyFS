@@ -3,11 +3,12 @@
 #endif
 
 #include <quakey.h>
+#include <toastyfs.h>
 #include <stdint.h>
 #include <assert.h>
 
 #include "server.h"
-#include "randm_client.h"
+#include "random_client.h"
 
 static uint64_t next_random_client_id = 100;
 
@@ -31,23 +32,27 @@ int random_client_init(void *state_, int argc, char **argv,
                 fprintf(stderr, "Node limit reached\n");
                 return -1;
             }
-            addrs[i] = argv[i];
+            addrs[num_addrs] = argv[i];
             num_addrs++;
         } else {
             // Ignore unknown options
         }
     }
 
-    ToastyFS *tfs = toastyfs_init(addrs, num_addrs);
-    if (tfs == NULL)
+    state->tfs = toastyfs_alloc();
+    if (state->tfs == NULL)
+        return -1;
+
+    uint64_t client_id = next_random_client_id++;
+    if (toastyfs_init(state->tfs, client_id, addrs, num_addrs) < 0)
         return -1;
 
     *timeout = 0;
     if (pcap < TCP_POLL_CAPACITY) {
-        fprintf(stderr, "Blob client :: Not enough poll capacity\n");
+        fprintf(stderr, "Random client :: Not enough poll capacity\n");
         return -1;
     }
-    *pnum = tcp_register_events(&state->tcp, ctxs, pdata);
+    *pnum = toastyfs_register_events(state->tfs, ctxs, pdata, pcap);
     return 0;
 }
 
@@ -90,7 +95,7 @@ int random_client_tick(void *state_, void **ctxs,
         break;
     }
 
-    *pnum = toastyfs_register_events(tfs, ctxs, pdata, pcap, timeout);
+    *pnum = toastyfs_register_events(state->tfs, ctxs, pdata, pcap);
     return 0;
 }
 

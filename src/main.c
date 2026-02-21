@@ -7,8 +7,7 @@
 #include <assert.h>
 
 #include "server.h"
-#include "client.h"
-#include "blob_client.h"
+#include "random_client.h"
 
 static volatile int simulation_running = 1;
 
@@ -46,10 +45,10 @@ int main(int argc, char **argv)
     {
         QuakeySpawn config = {
             .name       = "rndcli1",
-            .state_size = sizeof(ClientState),
-            .init_func  = client_init,
-            .tick_func  = client_tick,
-            .free_func  = client_free,
+            .state_size = sizeof(RandomClient),
+            .init_func  = random_client_init,
+            .tick_func  = random_client_tick,
+            .free_func  = random_client_free,
             .addrs      = (char*[]) { "127.0.0.2" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
@@ -62,10 +61,10 @@ int main(int argc, char **argv)
     {
         QuakeySpawn config = {
             .name       = "rndcli2",
-            .state_size = sizeof(ClientState),
-            .init_func  = client_init,
-            .tick_func  = client_tick,
-            .free_func  = client_free,
+            .state_size = sizeof(RandomClient),
+            .init_func  = random_client_init,
+            .tick_func  = random_client_tick,
+            .free_func  = random_client_free,
             .addrs      = (char*[]) { "127.0.0.3" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
@@ -74,20 +73,20 @@ int main(int argc, char **argv)
         (void) quakey_spawn(quakey, config, "cli --server 127.0.0.4:8080 --server 127.0.0.5:8080 --server 127.0.0.6:8080");
     }
 
-    // Blob Client
+    // Client 3
     {
         QuakeySpawn config = {
-            .name       = "blobcli",
-            .state_size = sizeof(BlobClientState),
-            .init_func  = blob_client_init,
-            .tick_func  = blob_client_tick,
-            .free_func  = blob_client_free,
+            .name       = "rndcli3",
+            .state_size = sizeof(RandomClient),
+            .init_func  = random_client_init,
+            .tick_func  = random_client_tick,
+            .free_func  = random_client_free,
             .addrs      = (char*[]) { "127.0.0.7" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
             .platform   = QUAKEY_LINUX,
         };
-        (void) quakey_spawn(quakey, config, "blob --server 127.0.0.4:8080 --server 127.0.0.5:8080 --server 127.0.0.6:8080");
+        (void) quakey_spawn(quakey, config, "cli --server 127.0.0.4:8080 --server 127.0.0.5:8080 --server 127.0.0.6:8080");
     }
 
     // Node 1
@@ -188,7 +187,7 @@ int main(int argc, char **argv)
 #include <time.h>
 #include <unistd.h>
 
-#include "client.h"
+#include "random_client.h"
 
 #define POLL_CAPACITY 1024
 
@@ -197,14 +196,14 @@ int main(int argc, char **argv)
     srand((unsigned)time(NULL) ^ (unsigned)getpid());
 
     int ret;
-    ClientState state;
+    RandomClient state;
 
     void*         poll_ctxs[POLL_CAPACITY];
     struct pollfd poll_array[POLL_CAPACITY];
     int poll_count;
     int poll_timeout;
 
-    ret = client_init(
+    ret = random_client_init(
         &state,
         argc,
         argv,
@@ -225,7 +224,7 @@ int main(int argc, char **argv)
         poll(poll_array, poll_count, poll_timeout);
 #endif
 
-        ret = client_tick(
+        ret = random_client_tick(
             &state,
             poll_ctxs,
             poll_array,
@@ -237,7 +236,7 @@ int main(int argc, char **argv)
             return -1;
     }
 
-    client_free(&state);
+    random_client_free(&state);
     return 0;
 }
 

@@ -4,10 +4,16 @@
 
 #include <quakey.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <assert.h>
+#include <poll.h>
 
 #include "tcp.h"
-#include "client_lib.h"
+#include "basic.h"
+#include "config.h"
+#include "metadata.h"
+#include "server.h"
+#include <toastyfs.h>
 
 typedef enum {
     STEP_IDLE,
@@ -15,6 +21,7 @@ typedef enum {
     STEP_COMMIT,
     STEP_DELETE,
     STEP_GET,
+    STEP_FETCH_CHUNK,
     STEP_GET_DONE,
     STEP_PUT_DONE,
     STEP_DELETE_DONE,
@@ -47,6 +54,14 @@ struct ToastyFS {
     uint64_t request_id;
 
     Step step;
+    ToastyFS_Error error;
+    Time phase_time;
+
+    char     bucket[META_BUCKET_MAX];
+    char     key[META_KEY_MAX];
+    uint64_t blob_size;
+    SHA256   content_hash;
+    uint64_t file_size;
 
     Transfer transfers[META_CHUNKS_MAX * REPLICATION_FACTOR];
     int num_transfers;
@@ -54,6 +69,11 @@ struct ToastyFS {
     SHA256 chunks[META_CHUNKS_MAX];
     int num_chunks;
 };
+
+ToastyFS *toastyfs_alloc(void)
+{
+    return malloc(sizeof(ToastyFS));
+}
 
 int toastyfs_init(ToastyFS *tfs, uint64_t client_id, char **addrs, int num_addrs)
 {
@@ -65,8 +85,8 @@ int toastyfs_init(ToastyFS *tfs, uint64_t client_id, char **addrs, int num_addrs
         if (parse_addr_arg(addrs[i], &tfs->server_addrs[i]) < 0)
             return -1;
     }
-    addr_sort(tfs->server_addrs, tfs->num_servers);
     tfs->num_servers = num_addrs;
+    addr_sort(tfs->server_addrs, tfs->num_servers);
 
     if (tcp_context_init(&tfs->tcp) < 0)
         return -1;
@@ -94,7 +114,7 @@ transfer_for_hash_already_started(ToastyFS *tfs, SHA256 hash)
 
 static bool transfer_should_start(ToastyFS *tfs, Transfer *transfer)
 {
-    return transfer->state == TRANSFER_WAITING
+    return transfer->state == TRANSFER_PENDING
         && !transfer_for_hash_already_started(tfs, transfer->hash);
 }
 
@@ -110,7 +130,12 @@ static void add_transfer(ToastyFS *tfs, SHA256 hash, int location, char *data, i
     tfs->num_transfers++;
 }
 
-static void send_message_to_server(ToastyFS *tfs, int server_idx, Message *msg)
+static int leader_idx(ToastyFS *tfs)
+{
+    return tfs->view_number % tfs->num_servers;
+}
+
+static void send_message_to_server(ToastyFS *tfs, int server_idx, MessageHeader *msg)
 {
     int conn_idx = tcp_index_from_tag(&tfs->tcp, server_idx);
     if (conn_idx < 0) {
@@ -129,7 +154,7 @@ static int begin_transfers(ToastyFS *tfs)
 {
     int num = 0;
     for (int i = 0; i < tfs->num_transfers; i++) {
-        if (transfer_should_start(tfs, tfs->transfers[i])) {
+        if (transfer_should_start(tfs, &tfs->transfers[i])) {
 
             FetchChunkMessage msg = {
                 .base = {
@@ -137,12 +162,12 @@ static int begin_transfers(ToastyFS *tfs)
                     .type    = MESSAGE_TYPE_FETCH_CHUNK,
                     .length  = sizeof(FetchChunkMessage),
                 },
-                .hash = tfs->chunks[chunk_idx].hash,
+                .hash = tfs->transfers[i].hash,
                 .sender_idx = -1, // Client (not a peer server)
             };
-            send_message_to_server(tfs, server_idx, &msg);
+            send_message_to_server(tfs, tfs->transfers[i].location, (MessageHeader*)&msg);
 
-            transfer->state = TRANSFER_STARTED;
+            tfs->transfers[i].state = TRANSFER_STARTED;
             num++;
         }
     }
@@ -164,7 +189,7 @@ mark_waiting_transfers_for_hash_as_aborted(ToastyFS *tfs, SHA256 hash)
 {
     for (int i = 0; i < tfs->num_transfers; i++) {
         if (!memcmp(&tfs->transfers[i].hash, &hash, sizeof(SHA256))
-            && tfs->transfers[i].state == TRANSFER_WAITING)
+            && tfs->transfers[i].state == TRANSFER_PENDING)
             tfs->transfers[i].state = TRANSFER_ABORTED;
     }
 }
@@ -185,10 +210,10 @@ static int process_message(ToastyFS *tfs,
                 memcpy(&resp, msg.ptr, sizeof(resp));
                 char *data = msg.ptr + sizeof(resp);
 
-                int transfer_idx = find_started_transfer_by_hash(tfs, reap.hash);
+                int transfer_idx = find_started_transfer_by_hash(tfs, resp.hash);
                 assert(transfer_idx > -1);
 
-                if (resp.size) {
+                if (!resp.size) {
                     tfs->transfers[transfer_idx].state = TRANSFER_ABORTED;
                     break;
                 }
@@ -206,7 +231,7 @@ static int process_message(ToastyFS *tfs,
                 mark_waiting_transfers_for_hash_as_aborted(tfs, resp.hash);
 
                 if (begin_transfers(tfs) == 0) {
-                    tfs->step = TOASTYFS_ERROR_VOID;
+                    tfs->error = TOASTYFS_ERROR_VOID;
                     tfs->step = STEP_GET_DONE;
                 } else {
                     tfs->step = STEP_FETCH_CHUNK;
@@ -255,10 +280,10 @@ static int process_message(ToastyFS *tfs,
                         memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
                         memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
                         for (int i = 0; i < tfs->num_chunks; i++) {
-                            msg.oper.chunks[i].hash = tfs->chunks[i].hash;
-                            msg.oper.chunks[i].size = tfs->chunks[i].size;
+                            msg.oper.chunks[i].hash = tfs->chunks[i];
+                            msg.oper.chunks[i].size = xxx;
                         }
-                        send_message_to_server(xxx);
+                        send_message_to_server(tfs, leader_idx(tfs), (MessageHeader*)&msg);
                         tfs->step = STEP_COMMIT;
 
                     } else {
@@ -397,9 +422,9 @@ static int process_message(ToastyFS *tfs,
 
                     for (int i = 0; i < resp.num_chunks; i++) {
                         for (int j = 0; j < REPLICATION_FACTOR; j++) {
-                            add_transfer(tfs, resp.chunks[i], resp.locations[i][j], NULL, 0);
+                            add_transfer(tfs, resp.chunks[i].hash, xxx, NULL, 0);
                         }
-                        tfs->chunks[i] = resp.chunks[i];
+                        tfs->chunks[i] = resp.chunks[i].hash;
                     }
                     tfs->num_chunks = resp.num_chunks;
                     tfs->file_size = resp.size;
@@ -432,7 +457,7 @@ static int process_message(ToastyFS *tfs,
 void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pnum)
 {
     Event events[TCP_EVENT_CAPACITY];
-    int num_events = tcp_translate_events(&tfs->tcp, events, ctxs, pdata, *pnum);
+    int num_events = tcp_translate_events(&tfs->tcp, events, ctxs, pdata, pnum);
 
     for (int i = 0; i < num_events; i++) {
 
@@ -457,7 +482,7 @@ void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
                 break;
             }
 
-            ret = process_message(state, conn_idx, msg_type, msg);
+            ret = process_message(tfs, conn_idx, msg_type, msg);
             if (ret < 0) {
                 tcp_close(&tfs->tcp, conn_idx);
                 break;
@@ -466,20 +491,19 @@ void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
             tcp_consume_message(&tfs->tcp, conn_idx);
         }
     }
-
-    return 0;
 }
 
 int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pcap)
 {
+    Time now = get_current_time();
     Time deadline = INVALID_TIME;
 
     // TODO: Add timeout for the current operation
-    if (tfs->phase != BLOB_IDLE) {
+    if (tfs->step != STEP_IDLE) {
         nearest_deadline(&deadline, tfs->phase_time + PRIMARY_DEATH_TIMEOUT_SEC * 1000000000ULL);
     }
 
-    *timeout = deadline_to_timeout(deadline, now);
+    (void) deadline_to_timeout(deadline, now);
     if (pcap < TCP_POLL_CAPACITY)
         return -1;
     return tcp_register_events(&tfs->tcp, ctxs, pdata);
@@ -506,7 +530,7 @@ int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
         choose_store_locations_for_chunk(tfs, locations);
 
         for (int j = 0; j < REPLICATION_FACTOR; j++)
-            add_transfer(tfs, hash, locations[j]);
+            add_transfer(tfs, hash, locations[j], NULL, 0);
 
         tfs->chunks[i] = hash;
     }
@@ -535,7 +559,7 @@ int toastyfs_async_get(ToastyFS *tfs, char *key, int key_len)
     memcpy(msg.bucket, tfs->bucket, META_BUCKET_MAX);
     memcpy(msg.key, tfs->key, META_KEY_MAX);
 
-    send_message_to_server(tfs, xxx, &msg);
+    send_message_to_server(tfs, xxx, (MessageHeader*)&msg);
     return 0;
 }
 
@@ -544,28 +568,31 @@ int toastyfs_async_delete(ToastyFS *tfs, char *key, int key_len)
     if (tfs->step != STEP_IDLE)
         return -1;
 
-    ReplyMessage msg = {
+    RequestMessage msg = {
         .base = {
             .version = MESSAGE_VERSION,
-            .type    = MESSAGE_TYPE_GET_BLOB,
-            .length  = sizeof(ReplyMessage),
+            .type    = MESSAGE_TYPE_REQUEST,
+            .length  = sizeof(RequestMessage),
         },
         .oper = {
             .type = META_OPER_DELETE,
-        }
+        },
+        .client_id  = tfs->client_id,
+        .request_id = tfs->request_id,
     };
     memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
     memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
 
-    send_message_to_server(tfs, leader_idx(tfs), &msg);
+    send_message_to_server(tfs, leader_idx(tfs), (MessageHeader*)&msg);
+    return 0;
 }
 
 static int
 find_completed_transfer_for_hash(ToastyFS *tfs, SHA256 hash)
 {
     for (int i = 0; i < tfs->num_transfers; i++) {
-        if (!memcmp(&hash, &tfs->transfer[i].hash, sizeof(SHA256))
-            && tfs->transfer[i].state == TRANSFER_COMPLETED)
+        if (!memcmp(&hash, &tfs->transfers[i].hash, sizeof(SHA256))
+            && tfs->transfers[i].state == TRANSFER_COMPLETED)
             return i;
     }
     return -1;
@@ -595,6 +622,7 @@ static void get_result(ToastyFS *tfs, ToastyFS_Result *result)
     }
 
     int chunk_size = xxx;
+    int offset = 0;
     for (int i = 0; i < tfs->num_chunks; i++) {
 
         SHA256 hash = tfs->chunks[i];
@@ -608,13 +636,13 @@ static void get_result(ToastyFS *tfs, ToastyFS_Result *result)
             return;
         }
 
-        char *data = tfs->transfer[j].data;
-        int   size = tfs->transfer[j].size;
+        char *data = tfs->transfers[j].data;
+        int   size = tfs->transfers[j].size;
 
         if (size > blob_size - offset)
             size = blob_size - offset;
 
-        memcpy(blob + offset, data, size);
+        memcpy(blob_data + offset, data, size);
 
         offset += chunk_size;
     }
@@ -636,7 +664,7 @@ all_chunk_transfers_completed(ToastyFS *tfs)
     return true;
 }
 
-static int put_result(ToastyFS *tfs, ToastyFS_Result *result)
+static void put_result(ToastyFS *tfs, ToastyFS_Result *result)
 {
     assert(tfs->step == STEP_PUT_DONE);
     tfs->step = STEP_IDLE;
@@ -663,7 +691,7 @@ static int put_result(ToastyFS *tfs, ToastyFS_Result *result)
     result->size  = 0;
 }
 
-static int delete_result(ToastyFS *tfs, ToastyFS_Result *result)
+static void delete_result(ToastyFS *tfs, ToastyFS_Result *result)
 {
     assert(tfs->step == STEP_DELETE_DONE);
     tfs->step = STEP_IDLE;
@@ -677,6 +705,7 @@ static int delete_result(ToastyFS *tfs, ToastyFS_Result *result)
     }
 
     result->type = TOASTYFS_RESULT_DELETE;
+    result->error = TOASTYFS_ERROR_VOID;
     result->data = NULL;
     result->size = 0;
 }
@@ -685,11 +714,11 @@ ToastyFS_Result toastyfs_get_result(ToastyFS *tfs)
 {
     ToastyFS_Result result;
     if (tfs->step == STEP_GET_DONE) {
-        get_get_result(tfs, result);
+        get_result(tfs, &result);
     } else if (tfs->step == STEP_PUT_DONE) {
-        get_put_result(tfs, result);
+        put_result(tfs, &result);
     } else if (tfs->step == STEP_DELETE_DONE) {
-        get_delete_result(rfs, result);
+        delete_result(tfs, &result);
     } else {
         result.type = TOASTYFS_RESULT_VOID;
         result.error = TOASTYFS_ERROR_VOID;
@@ -701,19 +730,20 @@ ToastyFS_Result toastyfs_get_result(ToastyFS *tfs)
 
 static int wait_until_result(ToastyFS *tfs, ToastyFS_Result *res)
 {
-    do {
-        int timeout;
-        struct pollfd arr[xxx];
-        int num = toastyfs_register_events(tfs, arr, xxx, &timeout);
+    for (;;) {
+        void *ctxs[TCP_POLL_CAPACITY];
+        struct pollfd arr[TCP_POLL_CAPACITY];
+        int num = toastyfs_register_events(tfs, ctxs, arr, TCP_POLL_CAPACITY);
         if (num < 0)
             return num;
 
-        POLL(arr, num, timeout);
+        poll(arr, num, -1); // TODO: use computed timeout
 
-        toastyfs_process_events(tfs);
-        ret = toastyfs_get_result(tfs, res);
-    } while (ret == 0);
-    return ret;
+        toastyfs_process_events(tfs, ctxs, arr, num);
+        *res = toastyfs_get_result(tfs);
+        if (res->type != TOASTYFS_RESULT_VOID)
+            return 0;
+    }
 }
 
 int toastyfs_put(ToastyFS *tfs, char *key, int key_len,
@@ -725,15 +755,15 @@ int toastyfs_put(ToastyFS *tfs, char *key, int key_len,
     return wait_until_result(tfs, res);
 }
 
-int toastyfs_get(ToastyFS *tfs, char *key, int key_len)
+int toastyfs_get(ToastyFS *tfs, char *key, int key_len, ToastyFS_Result *res)
 {
-    int ret = toastyfs_async_put(tfs, key, key_len);
+    int ret = toastyfs_async_get(tfs, key, key_len);
     if (ret < 0)
         return ret;
     return wait_until_result(tfs, res);
 }
 
-int toastyfs_delete(ToastyFS *tfs, char *key, int key_len)
+int toastyfs_delete(ToastyFS *tfs, char *key, int key_len, ToastyFS_Result *res)
 {
     int ret = toastyfs_async_delete(tfs, key, key_len);
     if (ret < 0)

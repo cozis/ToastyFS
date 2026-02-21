@@ -1,6 +1,8 @@
 #ifndef TOASTYFS_INCLUDED
 #define TOASTYFS_INCLUDED
 
+#include <stdint.h>
+
 typedef enum {
     TOASTYFS_RESULT_VOID,
     TOASTYFS_RESULT_PUT,
@@ -22,8 +24,9 @@ typedef struct {
 
 typedef struct ToastyFS ToastyFS;
 
-ToastyFS* toastyfs_init(char *addrs, int num_addrs);
-void      toastyfs_free(ToastyFS *tfs);
+ToastyFS *toastyfs_alloc(void);
+int  toastyfs_init(ToastyFS *tfs, uint64_t client_id, char **addrs, int num_addrs);
+void toastyfs_free(ToastyFS *tfs);
 
 void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pnum);
 int  toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pcap);
@@ -40,8 +43,8 @@ ToastyFS_Result toastyfs_get_result(ToastyFS *tfs);
 int toastyfs_put(ToastyFS *tfs, char *key, int key_len,
     char *data, int data_len, ToastyFS_Result *res);
 
-int toastyfs_get(ToastyFS *tfs, char *key, int key_len);
+int toastyfs_get(ToastyFS *tfs, char *key, int key_len, ToastyFS_Result *res);
 
-int toastyfs_delete(ToastyFS *tfs, char *key, int key_len);
+int toastyfs_delete(ToastyFS *tfs, char *key, int key_len, ToastyFS_Result *res);
 
 #endif // TOASTYFS_INCLUDED

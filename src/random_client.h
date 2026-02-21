@@ -1,5 +1,7 @@
-#ifndef BLOB_CLIENT_INCLUDED
-#define BLOB_CLIENT_INCLUDED
+#ifndef RANDOM_CLIENT_INCLUDED
+#define RANDOM_CLIENT_INCLUDED
+
+#include <toastyfs.h>
 
 #include "tcp.h"
 #include "basic.h"
@@ -22,4 +24,4 @@ int random_client_tick(void *state, void **ctxs,
 
 int random_client_free(void *state);
 
-#endif // BLOB_CLIENT_INCLUDED
+#endif // RANDOM_CLIENT_INCLUDED
