@@ -66,8 +66,23 @@ struct ToastyFS {
     int num_transfers;
 
     SHA256 chunks[META_CHUNKS_MAX];
-    int num_chunks;
+    int    chunk_sizes[META_CHUNKS_MAX];
+    int    num_chunks;
+
+    char *put_data;
+    int   put_data_len;
 };
+
+static SHA256 compute_chunk_hash(const char *data, int size)
+{
+    SHA256 hash;
+    memset(&hash, 0, sizeof(hash));
+    for (int i = 0; i < size; i++) {
+        hash.data[i % 32] ^= (unsigned char)data[i];
+        hash.data[(i + 7) % 32] += (unsigned char)data[i] * 31;
+    }
+    return hash;
+}
 
 ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
 {
@@ -94,12 +109,15 @@ ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
     }
 
     tfs->step = STEP_IDLE;
+    tfs->put_data = NULL;
+    tfs->put_data_len = 0;
     return tfs;
 }
 
 void toastyfs_free(ToastyFS *tfs)
 {
     tcp_context_free(&tfs->tcp);
+    free(tfs->put_data);
 }
 
 static bool
@@ -122,7 +140,7 @@ static bool transfer_should_start(ToastyFS *tfs, Transfer *transfer)
 
 static void add_transfer(ToastyFS *tfs, SHA256 hash, int location, char *data, int size)
 {
-    assert(tfs->num_transfers < xxx);
+    assert(tfs->num_transfers < META_CHUNKS_MAX * REPLICATION_FACTOR);
     Transfer *transfer = &tfs->transfers[tfs->num_transfers];
     transfer->state = TRANSFER_PENDING;
     transfer->hash = hash;
@@ -152,22 +170,53 @@ static void send_message_to_server(ToastyFS *tfs, int server_idx, MessageHeader 
     byte_queue_write(output, msg, msg->length);
 }
 
+static void send_message_to_server_ex(ToastyFS *tfs, int server_idx,
+    MessageHeader *msg, void *extra, int extra_len)
+{
+    int conn_idx = tcp_index_from_tag(&tfs->tcp, server_idx);
+    if (conn_idx < 0) {
+        tcp_connect(&tfs->tcp, tfs->server_addrs[server_idx], server_idx, NULL);
+        return;
+    }
+
+    ByteQueue *output = tcp_output_buffer(&tfs->tcp, conn_idx);
+    if (output == NULL)
+        return;
+
+    byte_queue_write(output, msg, msg->length - extra_len);
+    byte_queue_write(output, extra, extra_len);
+}
+
 static int begin_transfers(ToastyFS *tfs)
 {
     int num = 0;
     for (int i = 0; i < tfs->num_transfers; i++) {
         if (transfer_should_start(tfs, &tfs->transfers[i])) {
 
-            FetchChunkMessage msg = {
-                .base = {
-                    .version = MESSAGE_VERSION,
-                    .type    = MESSAGE_TYPE_FETCH_CHUNK,
-                    .length  = sizeof(FetchChunkMessage),
-                },
-                .hash = tfs->transfers[i].hash,
-                .sender_idx = -1, // Client (not a peer server)
-            };
-            send_message_to_server(tfs, tfs->transfers[i].location, &msg.base);
+            if (tfs->step == STEP_STORE_CHUNK) {
+                StoreChunkMessage msg = {
+                    .base = {
+                        .version = MESSAGE_VERSION,
+                        .type    = MESSAGE_TYPE_STORE_CHUNK,
+                        .length  = sizeof(StoreChunkMessage) + tfs->transfers[i].size,
+                    },
+                    .hash = tfs->transfers[i].hash,
+                    .size = tfs->transfers[i].size,
+                };
+                send_message_to_server_ex(tfs, tfs->transfers[i].location,
+                    &msg.base, tfs->transfers[i].data, tfs->transfers[i].size);
+            } else {
+                FetchChunkMessage msg = {
+                    .base = {
+                        .version = MESSAGE_VERSION,
+                        .type    = MESSAGE_TYPE_FETCH_CHUNK,
+                        .length  = sizeof(FetchChunkMessage),
+                    },
+                    .hash = tfs->transfers[i].hash,
+                    .sender_idx = -1, // Client (not a peer server)
+                };
+                send_message_to_server(tfs, tfs->transfers[i].location, &msg.base);
+            }
 
             tfs->transfers[i].state = TRANSFER_STARTED;
             num++;
@@ -196,6 +245,75 @@ mark_waiting_transfers_for_hash_as_aborted(ToastyFS *tfs, SHA256 hash)
     }
 }
 
+static void replay_request(ToastyFS *tfs)
+{
+    tfs->step_time = get_current_time();
+
+    switch (tfs->step) {
+    case STEP_COMMIT:
+        {
+            CommitPutMessage msg = {
+                .base = {
+                    .version = MESSAGE_VERSION,
+                    .type    = MESSAGE_TYPE_COMMIT_PUT,
+                    .length  = sizeof(CommitPutMessage),
+                },
+                .oper = {
+                    .type = META_OPER_PUT,
+                    .size = tfs->blob_size,
+                    .content_hash = tfs->content_hash,
+                    .num_chunks = tfs->num_chunks,
+                },
+                .client_id  = tfs->client_id,
+                .request_id = tfs->request_id,
+            };
+            memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
+            memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
+            for (int i = 0; i < tfs->num_chunks; i++) {
+                msg.oper.chunks[i].hash = tfs->chunks[i];
+                msg.oper.chunks[i].size = tfs->chunk_sizes[i];
+            }
+            send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+        }
+        break;
+    case STEP_DELETE:
+        {
+            RequestMessage msg = {
+                .base = {
+                    .version = MESSAGE_VERSION,
+                    .type    = MESSAGE_TYPE_REQUEST,
+                    .length  = sizeof(RequestMessage),
+                },
+                .oper = {
+                    .type = META_OPER_DELETE,
+                },
+                .client_id  = tfs->client_id,
+                .request_id = tfs->request_id,
+            };
+            memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
+            memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
+            send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+        }
+        break;
+    case STEP_GET:
+        {
+            GetBlobMessage msg = {
+                .base = {
+                    .version = MESSAGE_VERSION,
+                    .type    = MESSAGE_TYPE_GET_BLOB,
+                    .length  = sizeof(GetBlobMessage),
+                },
+            };
+            memcpy(msg.bucket, tfs->bucket, META_BUCKET_MAX);
+            memcpy(msg.key, tfs->key, META_KEY_MAX);
+            send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 static int process_message(ToastyFS *tfs,
     int conn_idx, uint8_t type, ByteView msg)
 {
@@ -210,7 +328,7 @@ static int process_message(ToastyFS *tfs,
                 if (msg.len < sizeof(FetchChunkResponseMessage))
                     return -1;
                 memcpy(&resp, msg.ptr, sizeof(resp));
-                char *data = msg.ptr + sizeof(resp);
+                char *data = (char *)msg.ptr + sizeof(resp);
 
                 int transfer_idx = find_started_transfer_by_hash(tfs, resp.hash);
                 assert(transfer_idx > -1);
@@ -240,7 +358,7 @@ static int process_message(ToastyFS *tfs,
                 }
 
             } else {
-                tfs->error = TOASTYFS_ERROR_XXX;
+                tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_GET_DONE;
             }
         }
@@ -259,8 +377,8 @@ static int process_message(ToastyFS *tfs,
                     int transfer_idx = find_started_transfer_by_hash(tfs, ack.hash);
                     assert(transfer_idx > -1);
 
-                    // TODO: Mark all waiting transfers for the same hash as ABORTED
                     tfs->transfers[transfer_idx].state = TRANSFER_COMPLETED;
+                    mark_waiting_transfers_for_hash_as_aborted(tfs, ack.hash);
 
                     if (begin_transfers(tfs) == 0) {
 
@@ -283,9 +401,10 @@ static int process_message(ToastyFS *tfs,
                         memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
                         for (int i = 0; i < tfs->num_chunks; i++) {
                             msg.oper.chunks[i].hash = tfs->chunks[i];
-                            msg.oper.chunks[i].size = xxx;
+                            msg.oper.chunks[i].size = tfs->chunk_sizes[i];
                         }
                         send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+                        tfs->request_id++;
                         tfs->step = STEP_COMMIT;
 
                     } else {
@@ -293,12 +412,12 @@ static int process_message(ToastyFS *tfs,
                     }
 
                 } else {
-                    tfs->error = TOASTYFS_ERROR_XXX;
+                    tfs->error = TOASTYFS_ERROR_TRANSFER_FAILED;
                     tfs->step = STEP_PUT_DONE;
                 }
 
             } else {
-                tfs->error = TOASTYFS_ERROR_XXX;
+                tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_PUT_DONE;
             }
         }
@@ -328,15 +447,13 @@ static int process_message(ToastyFS *tfs,
                     return 0;
 
                 if (reply.rejected) {
-                    // Operation rejected at the VSR layer
-                    tfs->error = TOASTYFS_ERROR_XXX;
+                    tfs->error = TOASTYFS_ERROR_REJECTED;
                     tfs->step = STEP_PUT_DONE;
                     break;
                 }
 
                 if (reply.result.type == META_RESULT_FULL) {
-                    // Storage is full
-                    tfs->error = TOASTYFS_ERROR_XXX;
+                    tfs->error = TOASTYFS_ERROR_FULL;
                     tfs->step = STEP_PUT_DONE;
                     break;
                 }
@@ -346,7 +463,7 @@ static int process_message(ToastyFS *tfs,
                 tfs->step = STEP_PUT_DONE;
 
             } else {
-                tfs->error = TOASTYFS_ERROR_XXX;
+                tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_PUT_DONE;
             }
         }
@@ -376,15 +493,13 @@ static int process_message(ToastyFS *tfs,
                     break;
 
                 if (reply.rejected) {
-                    // Operation rejected at the VSR layer
-                    tfs->error = TOASTYFS_ERROR_XXX;
+                    tfs->error = TOASTYFS_ERROR_REJECTED;
                     tfs->step = STEP_DELETE_DONE;
                     break;
                 }
 
                 if (reply.result.type == META_RESULT_FULL) {
-                    // Storage is full
-                    tfs->error = TOASTYFS_ERROR_XXX;
+                    tfs->error = TOASTYFS_ERROR_FULL;
                     tfs->step = STEP_DELETE_DONE;
                     break;
                 }
@@ -394,7 +509,7 @@ static int process_message(ToastyFS *tfs,
                 tfs->step = STEP_DELETE_DONE;
 
             } else {
-                tfs->error = TOASTYFS_ERROR_XXX;
+                tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_DELETE_DONE;
             }
         }
@@ -422,29 +537,32 @@ static int process_message(ToastyFS *tfs,
 
                 if (resp.found) {
 
-                    for (int i = 0; i < resp.num_chunks; i++) {
+                    tfs->num_transfers = 0;
+                    for (int i = 0; i < (int)resp.num_chunks; i++) {
                         for (int j = 0; j < REPLICATION_FACTOR; j++) {
-                            add_transfer(tfs, resp.chunks[i].hash, xxx, NULL, 0);
+                            add_transfer(tfs, resp.chunks[i].hash,
+                                (i + j) % tfs->num_servers, NULL, 0);
                         }
                         tfs->chunks[i] = resp.chunks[i].hash;
+                        tfs->chunk_sizes[i] = resp.chunks[i].size;
                     }
                     tfs->num_chunks = resp.num_chunks;
                     tfs->blob_size = resp.size;
 
                     if (begin_transfers(tfs) == 0) {
-                        tfs->error = TOASTYFS_ERROR_XXX;
+                        tfs->error = TOASTYFS_ERROR_VOID;
                         tfs->step = STEP_GET_DONE;
                     } else {
                         tfs->step = STEP_FETCH_CHUNK;
                     }
 
                 } else {
-                    tfs->error = TOASTYFS_ERROR_XXX;
+                    tfs->error = TOASTYFS_ERROR_NOT_FOUND;
                     tfs->step = STEP_GET_DONE;
                 }
 
             } else {
-                tfs->error = TOASTYFS_ERROR_XXX;
+                tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_GET_DONE;
             }
         }
@@ -500,7 +618,6 @@ int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
     Time now = get_current_time();
     Time deadline = INVALID_TIME;
 
-    // TODO: Add timeout for the current operation
     if (tfs->step != STEP_IDLE) {
         nearest_deadline(&deadline, tfs->step_time + PRIMARY_DEATH_TIMEOUT_SEC * 1000000000ULL);
     }
@@ -514,8 +631,9 @@ int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
 static void
 choose_store_locations_for_chunk(ToastyFS *tfs, int *locations)
 {
-    // TODO: Pick REPLICATION_FACTOR servers and store their
-    //       indices in "locations"
+    for (int i = 0; i < REPLICATION_FACTOR; i++) {
+        locations[i] = i % tfs->num_servers;
+    }
 }
 
 int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
@@ -524,23 +642,57 @@ int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
     if (tfs->step != STEP_IDLE)
         return -1;
 
-    for (int i = 0; i < num_chunks; i++) {
+    int num_chunks = (data_len + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    if (num_chunks == 0)
+        num_chunks = 1;
+    if (num_chunks > META_CHUNKS_MAX)
+        return -1;
 
-        SHA256 hash = xxx;
+    // Copy the data for the duration of the upload
+    char *data_copy = malloc(data_len);
+    if (data_copy == NULL && data_len > 0)
+        return -1;
+    if (data_len > 0)
+        memcpy(data_copy, data, data_len);
+    free(tfs->put_data);
+    tfs->put_data = data_copy;
+    tfs->put_data_len = data_len;
+
+    // Set key/bucket metadata
+    memset(tfs->bucket, 0, META_BUCKET_MAX);
+    memset(tfs->key, 0, META_KEY_MAX);
+    int copy_len = key_len < META_KEY_MAX - 1 ? key_len : META_KEY_MAX - 1;
+    memcpy(tfs->key, key, copy_len);
+
+    tfs->blob_size = data_len;
+    tfs->content_hash = compute_chunk_hash(data, data_len);
+    tfs->num_chunks = num_chunks;
+    tfs->num_transfers = 0;
+
+    for (int i = 0; i < num_chunks; i++) {
+        int offset = i * CHUNK_SIZE;
+        int size = data_len - offset;
+        if (size > CHUNK_SIZE)
+            size = CHUNK_SIZE;
+
+        SHA256 hash = compute_chunk_hash(data_copy + offset, size);
 
         int locations[REPLICATION_FACTOR];
         choose_store_locations_for_chunk(tfs, locations);
 
         for (int j = 0; j < REPLICATION_FACTOR; j++)
-            add_transfer(tfs, hash, locations[j], NULL, 0);
+            add_transfer(tfs, hash, locations[j], data_copy + offset, size);
 
         tfs->chunks[i] = hash;
+        tfs->chunk_sizes[i] = size;
     }
 
+    tfs->step_time = get_current_time();
     tfs->step = STEP_STORE_CHUNK;
 
     if (begin_transfers(tfs) == 0) {
-        // Eatly completion
+        // Early completion
+        tfs->error = TOASTYFS_ERROR_VOID;
         tfs->step = STEP_PUT_DONE;
     }
     return 0;
@@ -550,6 +702,14 @@ int toastyfs_async_get(ToastyFS *tfs, char *key, int key_len)
 {
     if (tfs->step != STEP_IDLE)
         return -1;
+
+    memset(tfs->bucket, 0, META_BUCKET_MAX);
+    memset(tfs->key, 0, META_KEY_MAX);
+    int copy_len = key_len < META_KEY_MAX - 1 ? key_len : META_KEY_MAX - 1;
+    memcpy(tfs->key, key, copy_len);
+
+    tfs->num_transfers = 0;
+    tfs->num_chunks = 0;
 
     GetBlobMessage msg = {
         .base = {
@@ -561,7 +721,9 @@ int toastyfs_async_get(ToastyFS *tfs, char *key, int key_len)
     memcpy(msg.bucket, tfs->bucket, META_BUCKET_MAX);
     memcpy(msg.key, tfs->key, META_KEY_MAX);
 
-    send_message_to_server(tfs, xxx, &msg.base);
+    tfs->step_time = get_current_time();
+    tfs->step = STEP_GET;
+    send_message_to_server(tfs, leader_idx(tfs), &msg.base);
     return 0;
 }
 
@@ -569,6 +731,13 @@ int toastyfs_async_delete(ToastyFS *tfs, char *key, int key_len)
 {
     if (tfs->step != STEP_IDLE)
         return -1;
+
+    memset(tfs->bucket, 0, META_BUCKET_MAX);
+    memset(tfs->key, 0, META_KEY_MAX);
+    int copy_len = key_len < META_KEY_MAX - 1 ? key_len : META_KEY_MAX - 1;
+    memcpy(tfs->key, key, copy_len);
+
+    tfs->request_id++;
 
     RequestMessage msg = {
         .base = {
@@ -585,6 +754,8 @@ int toastyfs_async_delete(ToastyFS *tfs, char *key, int key_len)
     memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
     memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
 
+    tfs->step_time = get_current_time();
+    tfs->step = STEP_DELETE;
     send_message_to_server(tfs, leader_idx(tfs), &msg.base);
     return 0;
 }
@@ -600,12 +771,25 @@ find_completed_transfer_for_hash(ToastyFS *tfs, SHA256 hash)
     return -1;
 }
 
+static void free_transfer_data(ToastyFS *tfs)
+{
+    for (int i = 0; i < tfs->num_transfers; i++) {
+        // Only free data for fetch transfers (data allocated by malloc in process_message)
+        // Upload transfers point into put_data which is freed separately
+        if (tfs->step == STEP_GET_DONE && tfs->transfers[i].data != NULL) {
+            free(tfs->transfers[i].data);
+            tfs->transfers[i].data = NULL;
+        }
+    }
+}
+
 static void get_result(ToastyFS *tfs, ToastyFS_Result *result)
 {
     assert(tfs->step == STEP_GET_DONE);
-    tfs->step = STEP_IDLE;
 
     if (tfs->error != TOASTYFS_ERROR_VOID) {
+        free_transfer_data(tfs);
+        tfs->step = STEP_IDLE;
         result->type = TOASTYFS_RESULT_GET;
         result->error = tfs->error;
         result->data = NULL;
@@ -616,14 +800,15 @@ static void get_result(ToastyFS *tfs, ToastyFS_Result *result)
     int blob_size = tfs->blob_size;
     char *blob_data = malloc(tfs->blob_size);
     if (blob_data == NULL) {
+        free_transfer_data(tfs);
+        tfs->step = STEP_IDLE;
         result->type  = TOASTYFS_RESULT_GET;
-        result->error = TOASTYFS_ERROR_XXX;
+        result->error = TOASTYFS_ERROR_OUT_OF_MEMORY;
         result->data  = NULL;
         result->size  = 0;
         return;
     }
 
-    int chunk_size = xxx;
     int offset = 0;
     for (int i = 0; i < tfs->num_chunks; i++) {
 
@@ -631,8 +816,11 @@ static void get_result(ToastyFS *tfs, ToastyFS_Result *result)
 
         int j = find_completed_transfer_for_hash(tfs, hash);
         if (j < 0) {
+            free(blob_data);
+            free_transfer_data(tfs);
+            tfs->step = STEP_IDLE;
             result->type  = TOASTYFS_RESULT_GET;
-            result->error = TOASTYFS_ERROR_XXX;
+            result->error = TOASTYFS_ERROR_TRANSFER_FAILED;
             result->data  = NULL;
             result->size  = 0;
             return;
@@ -646,8 +834,11 @@ static void get_result(ToastyFS *tfs, ToastyFS_Result *result)
 
         memcpy(blob_data + offset, data, size);
 
-        offset += chunk_size;
+        offset += size;
     }
+
+    free_transfer_data(tfs);
+    tfs->step = STEP_IDLE;
 
     result->type  = TOASTYFS_RESULT_GET;
     result->error = TOASTYFS_ERROR_VOID;
@@ -671,6 +862,11 @@ static void put_result(ToastyFS *tfs, ToastyFS_Result *result)
     assert(tfs->step == STEP_PUT_DONE);
     tfs->step = STEP_IDLE;
 
+    // Free the upload data copy
+    free(tfs->put_data);
+    tfs->put_data = NULL;
+    tfs->put_data_len = 0;
+
     if (tfs->error != TOASTYFS_ERROR_VOID) {
         result->type = TOASTYFS_RESULT_PUT;
         result->error = tfs->error;
@@ -681,7 +877,7 @@ static void put_result(ToastyFS *tfs, ToastyFS_Result *result)
 
     if (!all_chunk_transfers_completed(tfs)) {
         result->type  = TOASTYFS_RESULT_PUT;
-        result->error = TOASTYFS_ERROR_XXX;
+        result->error = TOASTYFS_ERROR_TRANSFER_FAILED;
         result->data  = NULL;
         result->size  = 0;
         return;

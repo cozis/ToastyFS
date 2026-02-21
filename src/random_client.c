@@ -6,11 +6,34 @@
 #include <toastyfs.h>
 #include <stdint.h>
 #include <assert.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "server.h"
 #include "random_client.h"
 
 static uint64_t next_random_client_id = 100;
+
+static uint64_t rng(void)
+{
+#if defined(MAIN_SIMULATION) || defined(MAIN_TEST)
+    return quakey_random();
+#else
+    return (uint64_t)rand();
+#endif
+}
+
+typedef enum {
+    OPER_PUT,
+    OPER_GET,
+    OPER_DELETE,
+} RandomOper;
+
+static RandomOper choose_random_oper(void)
+{
+    return rng() % 3;
+}
 
 int random_client_init(void *state_, int argc, char **argv,
     void **ctxs, struct pollfd *pdata, int pcap, int *pnum,
@@ -64,34 +87,38 @@ int random_client_tick(void *state_, void **ctxs,
     case TOASTYFS_RESULT_VOID:
         break;
     case TOASTYFS_RESULT_PUT:
-        {
-            // TODO
-        }
         break;
     case TOASTYFS_RESULT_GET:
-        {
-            // TODO
-        }
+        free(result.data);
         break;
     case TOASTYFS_RESULT_DELETE:
-        {
-            // TODO
+        break;
+    }
+
+    // Start a new random operation if idle (previous result was consumed)
+    if (result.type != TOASTYFS_RESULT_VOID) {
+        char key[64];
+        int key_len = snprintf(key, sizeof(key), "k%d", (int)(rng() % 64));
+
+        switch (choose_random_oper()) {
+        case OPER_PUT:
+            {
+                char data[CHUNK_SIZE];
+                for (int i = 0; i < CHUNK_SIZE; i++)
+                    data[i] = rng() & 0xFF;
+                toastyfs_async_put(state->tfs, key, key_len, data, CHUNK_SIZE);
+            }
+            break;
+        case OPER_GET:
+            toastyfs_async_get(state->tfs, key, key_len);
+            break;
+        case OPER_DELETE:
+            toastyfs_async_delete(state->tfs, key, key_len);
+            break;
         }
-        break;
     }
 
-    switch (choose_random_oper()) {
-    case OPER_GET:
-        toastyfs_async_get(state->tfs, xxx);
-        break;
-    case OPER_PUT:
-        toastyfs_async_put(state->tfs, xxx);
-        break;
-    case OPER_DELETE:
-        toastyfs_async_delete(state->tfs, xxx);
-        break;
-    }
-
+    (void) timeout;
     *pnum = toastyfs_register_events(state->tfs, ctxs, pdata, pcap);
     return 0;
 }
