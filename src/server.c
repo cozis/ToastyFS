@@ -64,7 +64,7 @@ static void node_log_impl(ServerState *state, const char *event, const char *det
 }
 
 #define node_log(state, event, fmt, ...) do {                    \
-    char _detail[256];                                           \
+    char _detail[1024];                                           \
     snprintf(_detail, sizeof(_detail), fmt, ##__VA_ARGS__);      \
     node_log_impl(state, event, _detail);                        \
 } while (0)
