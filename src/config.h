@@ -12,6 +12,5 @@
 #define REPLICATION_FACTOR 2
 #define CHUNK_SIZE 32
 #define MAX_TRANSFERS (META_CHUNKS_MAX * REPLICATION_FACTOR)
-#define CEIL(X, Y) (((X) + (Y) - 1) / (Y))
 
 #endif // CONFIG_INCLUDED

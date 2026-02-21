@@ -74,7 +74,7 @@ int deadline_to_timeout(Time deadline, Time current_time)
     if (deadline <= current_time)
         return 0;
     // Round up so sub-millisecond deadlines become 1ms, not 0
-    return (deadline - current_time + 999999) / 1000000;
+    return CEIL(deadline - current_time, 1000000);
 }
 
 bool getargb(int argc, char **argv, char *name)

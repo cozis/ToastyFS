@@ -517,7 +517,6 @@ complete_view_change_and_become_primary(ServerState *state)
     broadcast_to_peers_ex(state, &begin_view_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
 
     clear_view_change_fields(state);
-    state->heartbeat = state->now;
     return HR_OK;
 }
 
