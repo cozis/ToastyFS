@@ -14,6 +14,7 @@
 #include "metadata.h"
 #include "server.h"
 #include <toastyfs.h>
+#include <stdio.h>
 
 typedef enum {
     STEP_IDLE,
@@ -73,6 +74,48 @@ struct ToastyFS {
     int   put_data_len;
 };
 
+// ---- Client logging infrastructure (mirrors server node_log) ----
+
+#define TIME_FMT "%7.3fs"
+#define TIME_VAL(t) ((double)(t) / 1000000000.0)
+
+static const char *step_name(Step step)
+{
+    switch (step) {
+    case STEP_IDLE:        return "IDLE";
+    case STEP_STORE_CHUNK: return "STORE_CHUNK";
+    case STEP_COMMIT:      return "COMMIT";
+    case STEP_DELETE:      return "DELETE";
+    case STEP_GET:         return "GET";
+    case STEP_FETCH_CHUNK: return "FETCH_CHUNK";
+    case STEP_GET_DONE:    return "GET_DONE";
+    case STEP_PUT_DONE:    return "PUT_DONE";
+    case STEP_DELETE_DONE: return "DELETE_DONE";
+    }
+    return "??";
+}
+
+static void client_log_impl(ToastyFS *tfs, const char *event, const char *detail)
+{
+    Time now = get_current_time();
+    printf("[" TIME_FMT "] CLIENT %lu %-12s V%-3lu | %-20s %s\n",
+        TIME_VAL(now),
+        tfs->client_id,
+        step_name(tfs->step),
+        tfs->view_number,
+        event,
+        detail ? detail : "");
+}
+
+#define client_log(tfs, event, fmt, ...) do {                     \
+    char _detail[1024];                                            \
+    snprintf(_detail, sizeof(_detail), fmt, ##__VA_ARGS__);       \
+    client_log_impl(tfs, event, _detail);                         \
+} while (0)
+
+#define client_log_simple(tfs, event) \
+    client_log_impl(tfs, event, NULL)
+
 #warning "TODO: Replace compute_chunk_hash with a proper SHA256 implementation"
 static SHA256 compute_chunk_hash(const char *data, int size)
 {
@@ -112,6 +155,7 @@ ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
     tfs->step = STEP_IDLE;
     tfs->put_data = NULL;
     tfs->put_data_len = 0;
+    client_log(tfs, "INIT", "id=%lu servers=%d", client_id, num_addrs);
     return tfs;
 }
 
@@ -224,6 +268,8 @@ static int begin_transfers(ToastyFS *tfs)
         }
     }
 
+    if (num > 0)
+        client_log(tfs, "BEGIN_TRANSFERS", "started=%d total=%d", num, tfs->num_transfers);
     return num;
 }
 
@@ -249,6 +295,7 @@ mark_waiting_transfers_for_hash_as_aborted(ToastyFS *tfs, SHA256 hash)
 static void replay_request(ToastyFS *tfs)
 {
     tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
+    client_log(tfs, "REPLAY", "step=%s view=%lu", step_name(tfs->step), tfs->view_number);
 
     switch (tfs->step) {
     case STEP_COMMIT:
@@ -335,6 +382,7 @@ static int process_message(ToastyFS *tfs,
                 assert(transfer_idx > -1);
 
                 if (resp.size == 0) {
+                    client_log(tfs, "RECV FETCH_RESP", "size=0 (not found)");
                     tfs->transfers[transfer_idx].state = TRANSFER_ABORTED;
                     break;
                 }
@@ -350,15 +398,18 @@ static int process_message(ToastyFS *tfs,
                 tfs->transfers[transfer_idx].data = copy;
                 tfs->transfers[transfer_idx].size = resp.size;
                 mark_waiting_transfers_for_hash_as_aborted(tfs, resp.hash);
+                client_log(tfs, "RECV FETCH_RESP", "size=%u", resp.size);
 
                 if (begin_transfers(tfs) == 0) {
                     tfs->error = TOASTYFS_ERROR_VOID;
                     tfs->step = STEP_GET_DONE;
+                    client_log_simple(tfs, "ALL CHUNKS FETCHED");
                 } else {
                     tfs->step = STEP_FETCH_CHUNK;
                 }
 
             } else {
+                client_log(tfs, "RECV UNEXPECTED", "type=%d in FETCH_CHUNK", type);
                 tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_GET_DONE;
             }
@@ -372,6 +423,8 @@ static int process_message(ToastyFS *tfs,
                 if (msg.len != sizeof(StoreChunkAckMessage))
                     return -1;
                 memcpy(&ack, msg.ptr, sizeof(ack));
+
+                client_log(tfs, "RECV STORE_ACK", "success=%d", ack.success);
 
                 if (ack.success) {
 
@@ -407,17 +460,21 @@ static int process_message(ToastyFS *tfs,
                         send_message_to_server(tfs, leader_idx(tfs), &msg.base);
                         tfs->request_id++;
                         tfs->step = STEP_COMMIT;
+                        client_log(tfs, "SEND COMMIT_PUT", "key=%s chunks=%d req=%lu",
+                            tfs->key, tfs->num_chunks, tfs->request_id);
 
                     } else {
                         tfs->step = STEP_STORE_CHUNK;
                     }
 
                 } else {
+                    client_log_simple(tfs, "STORE FAILED");
                     tfs->error = TOASTYFS_ERROR_TRANSFER_FAILED;
                     tfs->step = STEP_PUT_DONE;
                 }
 
             } else {
+                client_log(tfs, "RECV UNEXPECTED", "type=%d in STORE_CHUNK", type);
                 tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_PUT_DONE;
             }
@@ -432,6 +489,7 @@ static int process_message(ToastyFS *tfs,
                     return -1;
                 memcpy(&redirect, msg.ptr, sizeof(redirect));
 
+                client_log(tfs, "RECV REDIRECT", "view=%lu", redirect.view_number);
                 if (redirect.view_number > tfs->view_number) {
                     tfs->view_number = redirect.view_number;
                     replay_request(tfs);
@@ -448,22 +506,26 @@ static int process_message(ToastyFS *tfs,
                     return 0;
 
                 if (reply.rejected) {
+                    client_log_simple(tfs, "RECV REPLY REJECTED");
                     tfs->error = TOASTYFS_ERROR_REJECTED;
                     tfs->step = STEP_PUT_DONE;
                     break;
                 }
 
                 if (reply.result.type == META_RESULT_FULL) {
+                    client_log_simple(tfs, "RECV REPLY FULL");
                     tfs->error = TOASTYFS_ERROR_FULL;
                     tfs->step = STEP_PUT_DONE;
                     break;
                 }
 
                 assert(reply.result.type == META_RESULT_OK);
+                client_log_simple(tfs, "RECV REPLY OK");
                 tfs->error = TOASTYFS_ERROR_VOID;
                 tfs->step = STEP_PUT_DONE;
 
             } else {
+                client_log(tfs, "RECV UNEXPECTED", "type=%d in COMMIT", type);
                 tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_PUT_DONE;
             }
@@ -478,6 +540,7 @@ static int process_message(ToastyFS *tfs,
                     return -1;
                 memcpy(&redirect, msg.ptr, sizeof(redirect));
 
+                client_log(tfs, "RECV REDIRECT", "view=%lu", redirect.view_number);
                 if (redirect.view_number > tfs->view_number) {
                     tfs->view_number = redirect.view_number;
                     replay_request(tfs);
@@ -494,22 +557,26 @@ static int process_message(ToastyFS *tfs,
                     break;
 
                 if (reply.rejected) {
+                    client_log_simple(tfs, "RECV REPLY REJECTED");
                     tfs->error = TOASTYFS_ERROR_REJECTED;
                     tfs->step = STEP_DELETE_DONE;
                     break;
                 }
 
                 if (reply.result.type == META_RESULT_FULL) {
+                    client_log_simple(tfs, "RECV REPLY FULL");
                     tfs->error = TOASTYFS_ERROR_FULL;
                     tfs->step = STEP_DELETE_DONE;
                     break;
                 }
 
                 assert(reply.result.type == META_RESULT_OK);
+                client_log_simple(tfs, "RECV REPLY OK");
                 tfs->error = TOASTYFS_ERROR_VOID;
                 tfs->step = STEP_DELETE_DONE;
 
             } else {
+                client_log(tfs, "RECV UNEXPECTED", "type=%d in DELETE", type);
                 tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_DELETE_DONE;
             }
@@ -524,6 +591,7 @@ static int process_message(ToastyFS *tfs,
                     return -1;
                 memcpy(&redirect, msg.ptr, sizeof(redirect));
 
+                client_log(tfs, "RECV REDIRECT", "view=%lu", redirect.view_number);
                 if (redirect.view_number > tfs->view_number) {
                     tfs->view_number = redirect.view_number;
                     replay_request(tfs);
@@ -535,6 +603,9 @@ static int process_message(ToastyFS *tfs,
                 if (msg.len != sizeof(GetBlobResponseMessage))
                     return -1;
                 memcpy(&resp, msg.ptr, sizeof(resp));
+
+                client_log(tfs, "RECV GET_BLOB_RESP", "found=%d chunks=%u size=%lu",
+                    resp.found, resp.num_chunks, resp.size);
 
                 if (resp.found) {
 
@@ -566,6 +637,7 @@ static int process_message(ToastyFS *tfs,
                 }
 
             } else {
+                client_log(tfs, "RECV UNEXPECTED", "type=%d in GET", type);
                 tfs->error = TOASTYFS_ERROR_UNEXPECTED_MESSAGE;
                 tfs->step = STEP_GET_DONE;
             }
@@ -587,6 +659,7 @@ void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
 
         if (events[i].type == EVENT_DISCONNECT) {
             int conn_idx = events[i].conn_idx;
+            client_log(tfs, "DISCONNECT", "conn=%d", conn_idx);
             tcp_close(&tfs->tcp, conn_idx);
             continue;
         }
@@ -701,6 +774,7 @@ int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
 
     tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_STORE_CHUNK;
+    client_log(tfs, "ASYNC PUT", "key=%s size=%d chunks=%d", tfs->key, data_len, num_chunks);
 
     if (begin_transfers(tfs) == 0) {
         // Early completion
@@ -735,6 +809,7 @@ int toastyfs_async_get(ToastyFS *tfs, char *key, int key_len)
 
     tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_GET;
+    client_log(tfs, "ASYNC GET", "key=%s leader=%d", tfs->key, leader_idx(tfs));
     send_message_to_server(tfs, leader_idx(tfs), &msg.base);
     return 0;
 }
@@ -768,6 +843,7 @@ int toastyfs_async_delete(ToastyFS *tfs, char *key, int key_len)
 
     tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_DELETE;
+    client_log(tfs, "ASYNC DELETE", "key=%s req=%lu leader=%d", tfs->key, tfs->request_id, leader_idx(tfs));
     send_message_to_server(tfs, leader_idx(tfs), &msg.base);
     return 0;
 }

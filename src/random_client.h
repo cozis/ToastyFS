@@ -11,6 +11,7 @@
 
 typedef struct {
     ToastyFS *tfs;
+    bool started;
 } RandomClient;
 
 struct pollfd;
