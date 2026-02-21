@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+struct pollfd;
+
 typedef enum {
     TOASTYFS_RESULT_VOID,
     TOASTYFS_RESULT_PUT,
