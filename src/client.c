@@ -62,7 +62,7 @@ struct ToastyFS {
     uint64_t blob_size;
     SHA256   content_hash;
 
-    Transfer transfers[META_CHUNKS_MAX * REPLICATION_FACTOR];
+    Transfer transfers[MAX_TRANSFERS];
     int num_transfers;
 
     SHA256 chunks[META_CHUNKS_MAX];
@@ -73,6 +73,7 @@ struct ToastyFS {
     int   put_data_len;
 };
 
+#warning "TODO: Replace compute_chunk_hash with a proper SHA256 implementation"
 static SHA256 compute_chunk_hash(const char *data, int size)
 {
     SHA256 hash;
@@ -140,7 +141,7 @@ static bool transfer_should_start(ToastyFS *tfs, Transfer *transfer)
 
 static void add_transfer(ToastyFS *tfs, SHA256 hash, int location, char *data, int size)
 {
-    assert(tfs->num_transfers < META_CHUNKS_MAX * REPLICATION_FACTOR);
+    assert(tfs->num_transfers < MAX_TRANSFERS);
     Transfer *transfer = &tfs->transfers[tfs->num_transfers];
     transfer->state = TRANSFER_PENDING;
     transfer->hash = hash;
@@ -247,7 +248,7 @@ mark_waiting_transfers_for_hash_as_aborted(ToastyFS *tfs, SHA256 hash)
 
 static void replay_request(ToastyFS *tfs)
 {
-    tfs->step_time = get_current_time();
+    tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
 
     switch (tfs->step) {
     case STEP_COMMIT:
@@ -539,6 +540,9 @@ static int process_message(ToastyFS *tfs,
 
                     tfs->num_transfers = 0;
                     for (int i = 0; i < (int)resp.num_chunks; i++) {
+                        // TODO: The server selection formula is a temporary
+                        //       solution. Figure out a proper strategy for
+                        //       picking which servers to fetch chunks from.
                         for (int j = 0; j < REPLICATION_FACTOR; j++) {
                             add_transfer(tfs, resp.chunks[i].hash,
                                 (i + j) % tfs->num_servers, NULL, 0);
@@ -613,9 +617,12 @@ void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
     }
 }
 
+// TODO: The toastyfs client needs to determine a timeout based on the
+//       pending operation status, not just use PRIMARY_DEATH_TIMEOUT_SEC
+//       for everything.
 int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pcap)
 {
-    Time now = get_current_time();
+    Time now = get_current_time(); // TODO: Handle INVALID_TIME error
     Time deadline = INVALID_TIME;
 
     if (tfs->step != STEP_IDLE) {
@@ -636,13 +643,18 @@ choose_store_locations_for_chunk(ToastyFS *tfs, int *locations)
     }
 }
 
+// NOTE: Since the client can only perform one request at a time, it's
+//       possible for the toastyfs_async_xxx functions to not return an
+//       error and instead set a sticky error that will be used when
+//       toastyfs_get_result is called.
+
 int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
     char *data, int data_len)
 {
     if (tfs->step != STEP_IDLE)
         return -1;
 
-    int num_chunks = (data_len + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    int num_chunks = CEIL(data_len, CHUNK_SIZE);
     if (num_chunks == 0)
         num_chunks = 1;
     if (num_chunks > META_CHUNKS_MAX)
@@ -687,7 +699,7 @@ int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
         tfs->chunk_sizes[i] = size;
     }
 
-    tfs->step_time = get_current_time();
+    tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_STORE_CHUNK;
 
     if (begin_transfers(tfs) == 0) {
@@ -721,7 +733,7 @@ int toastyfs_async_get(ToastyFS *tfs, char *key, int key_len)
     memcpy(msg.bucket, tfs->bucket, META_BUCKET_MAX);
     memcpy(msg.key, tfs->key, META_KEY_MAX);
 
-    tfs->step_time = get_current_time();
+    tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_GET;
     send_message_to_server(tfs, leader_idx(tfs), &msg.base);
     return 0;
@@ -754,7 +766,7 @@ int toastyfs_async_delete(ToastyFS *tfs, char *key, int key_len)
     memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
     memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
 
-    tfs->step_time = get_current_time();
+    tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_DELETE;
     send_message_to_server(tfs, leader_idx(tfs), &msg.base);
     return 0;
