@@ -237,6 +237,17 @@ static void send_message_to_server_ex(ToastyFS *tfs, int server_idx,
 
 static int begin_transfers(ToastyFS *tfs)
 {
+    // Count started transfers
+    int started = 0;
+    for (int i = 0; i < tfs->num_transfers; i++) {
+        if (tfs->transfers[i].state == TRANSFER_STARTED)
+            started++;
+    }
+
+    if (started == PARALLEL_TRANSFER_MAX)
+        return 0;
+    assert(started < PARALLEL_TRANSFER_MAX);
+
     int num = 0;
     for (int i = 0; i < tfs->num_transfers; i++) {
         if (transfer_should_start(tfs, &tfs->transfers[i])) {
@@ -265,9 +276,12 @@ static int begin_transfers(ToastyFS *tfs)
                 };
                 send_message_to_server(tfs, tfs->transfers[i].location, &msg.base);
             }
-
             tfs->transfers[i].state = TRANSFER_STARTED;
+
             num++;
+            if (started + num == PARALLEL_TRANSFER_MAX)
+                break;
+            assert(started + num < PARALLEL_TRANSFER_MAX);
         }
     }
 
@@ -489,7 +503,7 @@ static int process_message(ToastyFS *tfs,
                     return -1;
                 memcpy(&redirect, msg.ptr, sizeof(redirect));
 
-                client_log(tfs, "RECV REDIRECT", "view=%lu", redirect.view_number);
+                client_log(tfs, "RECV REDIRECT", "view=%lu (local view=%lu)", redirect.view_number, tfs->view_number);
                 if (redirect.view_number > tfs->view_number) {
                     tfs->view_number = redirect.view_number;
                     replay_request(tfs);
@@ -540,7 +554,7 @@ static int process_message(ToastyFS *tfs,
                     return -1;
                 memcpy(&redirect, msg.ptr, sizeof(redirect));
 
-                client_log(tfs, "RECV REDIRECT", "view=%lu", redirect.view_number);
+                client_log(tfs, "RECV REDIRECT", "view=%lu (local view=%lu)", redirect.view_number, tfs->view_number);
                 if (redirect.view_number > tfs->view_number) {
                     tfs->view_number = redirect.view_number;
                     replay_request(tfs);
@@ -598,7 +612,7 @@ static int process_message(ToastyFS *tfs,
                     return -1;
                 memcpy(&redirect, msg.ptr, sizeof(redirect));
 
-                client_log(tfs, "RECV REDIRECT", "view=%lu", redirect.view_number);
+                client_log(tfs, "RECV REDIRECT", "view=%lu (local view=%lu)", redirect.view_number, tfs->view_number);
                 if (redirect.view_number > tfs->view_number) {
                     tfs->view_number = redirect.view_number;
                     replay_request(tfs);
@@ -794,6 +808,7 @@ int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
     tfs->num_transfers = 0;
 
     for (int i = 0; i < num_chunks; i++) {
+
         int offset = i * CHUNK_SIZE;
         int size = data_len - offset;
         if (size > CHUNK_SIZE)
