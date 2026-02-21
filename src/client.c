@@ -455,6 +455,7 @@ static int process_message(ToastyFS *tfs,
                     begin_transfers(tfs);
                     if (all_chunk_transfers_completed(tfs)) {
 
+                        tfs->request_id++;
                         CommitPutMessage msg = {
                             .base = {
                                 .version = MESSAGE_VERSION,
@@ -477,7 +478,6 @@ static int process_message(ToastyFS *tfs,
                             msg.oper.chunks[i].size = tfs->chunk_sizes[i];
                         }
                         send_message_to_server(tfs, leader_idx(tfs), &msg.base);
-                        tfs->request_id++;
                         tfs->step = STEP_COMMIT;
                         client_log(tfs, "SEND COMMIT_PUT", "key=%s chunks=%d req=%lu",
                             tfs->key, tfs->num_chunks, tfs->request_id);
