@@ -205,15 +205,16 @@ static int leader_idx(ToastyFS *tfs)
 
 static void send_message_to_server(ToastyFS *tfs, int server_idx, MessageHeader *msg)
 {
+    ByteQueue *output;
     int conn_idx = tcp_index_from_tag(&tfs->tcp, server_idx);
     if (conn_idx < 0) {
-        tcp_connect(&tfs->tcp, tfs->server_addrs[server_idx], server_idx, NULL);
-        return;
+        if (tcp_connect(&tfs->tcp, tfs->server_addrs[server_idx], server_idx, &output) < 0)
+            return;
+    } else {
+        output = tcp_output_buffer(&tfs->tcp, conn_idx);
+        if (output == NULL)
+            return;
     }
-
-    ByteQueue *output = tcp_output_buffer(&tfs->tcp, conn_idx);
-    if (output == NULL)
-        return;
 
     byte_queue_write(output, msg, msg->length);
 }
@@ -221,15 +222,16 @@ static void send_message_to_server(ToastyFS *tfs, int server_idx, MessageHeader 
 static void send_message_to_server_ex(ToastyFS *tfs, int server_idx,
     MessageHeader *msg, void *extra, int extra_len)
 {
+    ByteQueue *output;
     int conn_idx = tcp_index_from_tag(&tfs->tcp, server_idx);
     if (conn_idx < 0) {
-        tcp_connect(&tfs->tcp, tfs->server_addrs[server_idx], server_idx, NULL);
-        return;
+        if (tcp_connect(&tfs->tcp, tfs->server_addrs[server_idx], server_idx, &output) < 0)
+            return;
+    } else {
+        output = tcp_output_buffer(&tfs->tcp, conn_idx);
+        if (output == NULL)
+            return;
     }
-
-    ByteQueue *output = tcp_output_buffer(&tfs->tcp, conn_idx);
-    if (output == NULL)
-        return;
 
     byte_queue_write(output, msg, msg->length - extra_len);
     byte_queue_write(output, extra, extra_len);
