@@ -38,8 +38,10 @@ static SOCKET create_listen_socket(Address addr)
         return INVALID_SOCKET;
     }
 
+#ifndef MAIN_SIMULATION
     int reuse = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
 
     if (!addr.is_ipv4) {
         assert(0); // TODO
