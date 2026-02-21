@@ -7,3 +7,8 @@ toastyfs_simulation
 *.info
 coverage_html/
 *.log
+*.o
+*.a
+*.so
+examples/example
+.cluster/

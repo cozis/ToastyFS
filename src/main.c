@@ -255,7 +255,14 @@ int main(int argc, char **argv)
 int main(int argc, char **argv)
 {
     int ret;
-    ServerState state;
+
+    // ServerState is ~40 MB (MetaStore holds 4096 ObjectMeta entries),
+    // which exceeds the default stack size.  Heap-allocate it.
+    ServerState *state = malloc(sizeof(ServerState));
+    if (state == NULL) {
+        fprintf(stderr, "Failed to allocate ServerState\n");
+        return -1;
+    }
 
     void*         poll_ctxs[POLL_CAPACITY];
     struct pollfd poll_array[POLL_CAPACITY];
@@ -263,7 +270,7 @@ int main(int argc, char **argv)
     int poll_timeout;
 
     ret = server_init(
-        &state,
+        state,
         argc,
         argv,
         poll_ctxs,
@@ -284,7 +291,7 @@ int main(int argc, char **argv)
 #endif
 
         ret = server_tick(
-            &state,
+            state,
             poll_ctxs,
             poll_array,
             POLL_CAPACITY,
@@ -295,7 +302,8 @@ int main(int argc, char **argv)
             return -1;
     }
 
-    server_free(&state);
+    server_free(state);
+    free(state);
     return 0;
 }
 
