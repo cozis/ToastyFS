@@ -38,7 +38,8 @@ static SOCKET create_listen_socket(Address addr)
         return INVALID_SOCKET;
     }
 
-    // TODO: mark address as reusable in debug builds
+    int reuse = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
     if (!addr.is_ipv4) {
         assert(0); // TODO

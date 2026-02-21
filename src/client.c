@@ -165,6 +165,9 @@ void toastyfs_free(ToastyFS *tfs)
     free(tfs->put_data);
 }
 
+static int find_completed_transfer_for_hash(ToastyFS *tfs, SHA256 hash);
+static bool all_chunk_transfers_completed(ToastyFS *tfs);
+
 static bool
 transfer_for_hash_already_started(ToastyFS *tfs, SHA256 hash)
 {
@@ -400,12 +403,11 @@ static int process_message(ToastyFS *tfs,
                 mark_waiting_transfers_for_hash_as_aborted(tfs, resp.hash);
                 client_log(tfs, "RECV FETCH_RESP", "size=%u", resp.size);
 
-                if (begin_transfers(tfs) == 0) {
+                begin_transfers(tfs);
+                if (all_chunk_transfers_completed(tfs)) {
                     tfs->error = TOASTYFS_ERROR_VOID;
                     tfs->step = STEP_GET_DONE;
                     client_log_simple(tfs, "ALL CHUNKS FETCHED");
-                } else {
-                    tfs->step = STEP_FETCH_CHUNK;
                 }
 
             } else {
@@ -434,7 +436,8 @@ static int process_message(ToastyFS *tfs,
                     tfs->transfers[transfer_idx].state = TRANSFER_COMPLETED;
                     mark_waiting_transfers_for_hash_as_aborted(tfs, ack.hash);
 
-                    if (begin_transfers(tfs) == 0) {
+                    begin_transfers(tfs);
+                    if (all_chunk_transfers_completed(tfs)) {
 
                         CommitPutMessage msg = {
                             .base = {
@@ -462,9 +465,6 @@ static int process_message(ToastyFS *tfs,
                         tfs->step = STEP_COMMIT;
                         client_log(tfs, "SEND COMMIT_PUT", "key=%s chunks=%d req=%lu",
                             tfs->key, tfs->num_chunks, tfs->request_id);
-
-                    } else {
-                        tfs->step = STEP_STORE_CHUNK;
                     }
 
                 } else {
@@ -748,10 +748,10 @@ int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
 }
 
 static void
-choose_store_locations_for_chunk(ToastyFS *tfs, int *locations)
+choose_store_locations_for_chunk(ToastyFS *tfs, int chunk_idx, int *locations)
 {
-    for (int i = 0; i < REPLICATION_FACTOR; i++) {
-        locations[i] = i % tfs->num_servers;
+    for (int j = 0; j < REPLICATION_FACTOR; j++) {
+        locations[j] = (chunk_idx + j) % tfs->num_servers;
     }
 }
 
@@ -802,7 +802,7 @@ int toastyfs_async_put(ToastyFS *tfs, char *key, int key_len,
         SHA256 hash = compute_chunk_hash(data_copy + offset, size);
 
         int locations[REPLICATION_FACTOR];
-        choose_store_locations_for_chunk(tfs, locations);
+        choose_store_locations_for_chunk(tfs, i, locations);
 
         for (int j = 0; j < REPLICATION_FACTOR; j++)
             add_transfer(tfs, hash, locations[j], data_copy + offset, size);

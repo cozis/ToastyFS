@@ -3241,6 +3241,12 @@ int mock_close(int fd)
     return 0;
 }
 
+// NOTE: mock_access must be implemented for simulation to work correctly.
+// chunk_store_exists() uses file_exists() which calls access(). Without a
+// working mock_access, the simulation cannot check chunk existence and
+// must fall back to file_open (O_CREAT), which creates empty files as a
+// side effect and leads to data corruption (servers return uninitialized
+// data for chunks they don't actually have).
 int mock_access(const char *path, int mode)
 {
     assert(0); // TODO

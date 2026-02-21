@@ -949,7 +949,7 @@ found_size:;
         return HR_OUT_OF_MEMORY;
 
     int ret = chunk_store_read(&state->chunk_store, message.hash, chunk_data, chunk_size);
-    if (ret < 0) {
+    if (ret <= 0) {
         free(chunk_data);
         FetchChunkResponseMessage response = {
             .base = {

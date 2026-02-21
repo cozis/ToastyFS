@@ -87,13 +87,7 @@ bool chunk_store_exists(ChunkStore *cs, SHA256 hash)
     if (path.len == 0)
         return false;
 
-    // Use file_open instead of file_exists (access) because
-    // mock_access is not implemented in the Quakey simulation.
-    Handle fd;
-    if (file_open(path, &fd) < 0)
-        return false;
-    file_close(fd);
-    return true;
+    return file_exists(path);
 }
 
 int chunk_store_delete(ChunkStore *cs, SHA256 hash)
