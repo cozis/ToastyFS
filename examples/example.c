@@ -15,6 +15,7 @@
  *   LD_LIBRARY_PATH=. ./example
  */
 
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,8 @@ static const char *error_name(ToastyFS_Error e)
 
 int main(void)
 {
+    srand(time(NULL));
+
     /* Cluster addresses (mapped via docker-compose ports).
      * These must be writable char arrays because parse_addr_arg
      * temporarily modifies the string in-place. */
@@ -45,7 +48,7 @@ int main(void)
     char *addrs[] = { addr1, addr2, addr3 };
 
     printf("Connecting to cluster...\n");
-    ToastyFS *tfs = toastyfs_init(1, addrs, 3);
+    ToastyFS *tfs = toastyfs_init(rand(), addrs, 3);
     if (tfs == NULL) {
         fprintf(stderr, "toastyfs_init failed\n");
         return 1;
