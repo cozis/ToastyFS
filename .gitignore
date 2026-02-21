@@ -11,3 +11,4 @@ coverage_html/
 *.a
 *.so
 examples/example
+.cluster/

@@ -36,12 +36,13 @@ static const char *error_name(ToastyFS_Error e)
 
 int main(void)
 {
-    /* Cluster addresses (mapped via docker-compose ports). */
-    char *addrs[] = {
-        "127.0.0.1:8081",
-        "127.0.0.1:8082",
-        "127.0.0.1:8083",
-    };
+    /* Cluster addresses (mapped via docker-compose ports).
+     * These must be writable char arrays because parse_addr_arg
+     * temporarily modifies the string in-place. */
+    char addr1[] = "127.0.0.1:8081";
+    char addr2[] = "127.0.0.1:8082";
+    char addr3[] = "127.0.0.1:8083";
+    char *addrs[] = { addr1, addr2, addr3 };
 
     printf("Connecting to cluster...\n");
     ToastyFS *tfs = toastyfs_init(1, addrs, 3);
@@ -54,8 +55,8 @@ int main(void)
     int ret;
 
     /* ---- PUT ---- */
-    char *key  = "hello";
-    char *data = "world";
+    char key[]  = "hello";
+    char data[] = "world";
     printf("PUT key=\"%s\" data=\"%s\" (%d bytes)\n",
         key, data, (int)strlen(data));
 

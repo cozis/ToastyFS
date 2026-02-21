@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
 #
-# cluster.sh - Spin up a ToastyFS cluster and optionally build & run
-#              an application that links against libtoastyfs.
+# cluster.sh - Manage a local 3-node ToastyFS cluster.
 #
 # Usage:
-#   ./cluster.sh up                     Start the 3-node cluster
-#   ./cluster.sh down                   Stop the cluster
-#   ./cluster.sh status                 Show cluster status
-#   ./cluster.sh logs [node]            Tail cluster logs (or a single node)
+#   ./cluster.sh up                     Build the server and start 3 nodes
+#   ./cluster.sh down                   Stop all nodes
+#   ./cluster.sh status                 Show which nodes are running
+#   ./cluster.sh logs [1|2|3]           Tail logs (all nodes, or one)
 #   ./cluster.sh run <source.c>         Build the library, compile <source.c>
 #                                       against it, start the cluster, run the
 #                                       binary, then tear down the cluster.
 #
-# The cluster exposes ports 8081-8083 on localhost, mapped to the three
-# server nodes.  Client applications should connect to:
-#   127.0.0.1:8081  127.0.0.1:8082  127.0.0.1:8083
+# The three server nodes listen on:
+#   127.0.0.1:8081   127.0.0.1:8082   127.0.0.1:8083
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+CLUSTER_DIR="$SCRIPT_DIR/.cluster"
+ADDRS=("127.0.0.1:8081" "127.0.0.1:8082" "127.0.0.1:8083")
 
 usage() {
     sed -n '3,14s/^# \?//p' "$0"
@@ -27,26 +26,105 @@ usage() {
 }
 
 cluster_up() {
-    echo "==> Building server image and starting cluster..."
-    docker compose up --build -d
+    echo "==> Building server..."
+    make -C "$SCRIPT_DIR" toastyfs
+
+    mkdir -p "$CLUSTER_DIR"
+
+    for i in 1 2 3; do
+        pidfile="$CLUSTER_DIR/node${i}.pid"
+        if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+            echo "    Node $i already running (pid $(cat "$pidfile"))"
+            continue
+        fi
+
+        node_dir="$CLUSTER_DIR/node${i}"
+        mkdir -p "$node_dir"
+
+        # Build argument list: --addr for self, --peer for the others.
+        args=()
+        for j in 1 2 3; do
+            idx=$((j - 1))
+            if [ "$j" -eq "$i" ]; then
+                args+=(--addr "${ADDRS[$idx]}")
+            else
+                args+=(--peer "${ADDRS[$idx]}")
+            fi
+        done
+
+        (
+            cd "$node_dir"
+            # ServerState is ~40 MB (MetaStore), which exceeds the
+            # default 8 MB stack.  Raise the limit for the server.
+            ulimit -s unlimited
+            "$SCRIPT_DIR/toastyfs" "${args[@]}" \
+                >> "$CLUSTER_DIR/node${i}.log" 2>&1 &
+            echo $! > "$pidfile"
+        )
+        echo "    Node $i started (pid $(cat "$pidfile")) on ${ADDRS[$((i-1))]}"
+    done
     echo "==> Cluster is running."
-    echo "    Nodes: 127.0.0.1:8081  127.0.0.1:8082  127.0.0.1:8083"
 }
 
 cluster_down() {
-    echo "==> Stopping cluster..."
-    docker compose down
+    if [ ! -d "$CLUSTER_DIR" ]; then
+        echo "No cluster state found."
+        return
+    fi
+
+    for i in 1 2 3; do
+        pidfile="$CLUSTER_DIR/node${i}.pid"
+        if [ -f "$pidfile" ]; then
+            pid="$(cat "$pidfile")"
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null || true
+                echo "    Node $i stopped (pid $pid)"
+            else
+                echo "    Node $i was not running"
+            fi
+            rm -f "$pidfile"
+        fi
+    done
+
+    # Clean up node data directories so fresh starts don't trigger
+    # the crash-recovery path (vsr_boot_marker).
+    rm -rf "$CLUSTER_DIR"
+    echo "==> Cluster stopped."
 }
 
 cluster_status() {
-    docker compose ps
+    if [ ! -d "$CLUSTER_DIR" ]; then
+        echo "No cluster state found. Run './cluster.sh up' first."
+        return
+    fi
+
+    printf "%-8s %-8s %-20s %s\n" "NODE" "PID" "ADDRESS" "STATUS"
+    for i in 1 2 3; do
+        pidfile="$CLUSTER_DIR/node${i}.pid"
+        addr="${ADDRS[$((i-1))]}"
+        if [ -f "$pidfile" ]; then
+            pid="$(cat "$pidfile")"
+            if kill -0 "$pid" 2>/dev/null; then
+                printf "%-8s %-8s %-20s %s\n" "node$i" "$pid" "$addr" "running"
+            else
+                printf "%-8s %-8s %-20s %s\n" "node$i" "$pid" "$addr" "dead"
+            fi
+        else
+            printf "%-8s %-8s %-20s %s\n" "node$i" "-" "$addr" "not started"
+        fi
+    done
 }
 
 cluster_logs() {
     if [ $# -gt 0 ]; then
-        docker compose logs -f "$1"
+        logfile="$CLUSTER_DIR/node${1}.log"
+        if [ ! -f "$logfile" ]; then
+            echo "No log file for node $1."
+            return 1
+        fi
+        tail -f "$logfile"
     else
-        docker compose logs -f
+        tail -f "$CLUSTER_DIR"/node*.log
     fi
 }
 
