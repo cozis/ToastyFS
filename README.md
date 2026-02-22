@@ -2,6 +2,8 @@
 
 ToastyFS is a distributed and fault-tolerant object storage.
 
+WARNING: I'm still finishing up :) Log compaction and persistence are missing.
+
 ## Getting Started
 
 First, build ToastyFS by running the build script:
