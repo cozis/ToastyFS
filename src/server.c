@@ -1702,10 +1702,19 @@ int server_init(void *state_, int argc, char **argv,
     state->last_normal_view = state->vc.last_normal_view;
     state->commit_index = 0; // Will be advanced below after replaying the log
 
-    // Load the WAL from disk. Three cases:
-    //   1. Empty log (first start) -> enter normal mode
-    //   2. Corrupt log (truncated) -> enter recovery mode
-    //   3. Clean log              -> replay up to commit_index, enter normal mode
+    // Load the WAL from disk. Two cases:
+    //   1. Empty log, no truncation (first start) -> enter normal mode
+    //   2. Any restart (clean or corrupt log)      -> enter recovery mode
+    //
+    // VR-Revisited Section 4.3: "When a node recovers after a crash it
+    // cannot participate in request processing and view changes until it
+    // has a state at least as recent as what it had before it crashed."
+    //
+    // A clean restart without recovery is unsafe: while the node was
+    // down, a view change may have replaced uncommitted log entries.
+    // Entering NORMAL with the stale log would cause the node to hold
+    // divergent entries that could later be committed via state transfer,
+    // violating committed prefix agreement.
     bool was_truncated = false;
     if (wal_init_from_file(&state->wal, S("vsr.log"), &was_truncated) < 0) {
         fprintf(stderr, "Node :: Couldn't open WAL file\n");
@@ -1717,14 +1726,11 @@ int server_init(void *state_, int argc, char **argv,
     if (state->wal.count == 0 && !was_truncated) {
         // First start: no previous log on disk
         enter_recovery = false;
-    } else if (was_truncated) {
-        // Log was corrupt — must enter recovery to get a valid log
-        // from peers
-        enter_recovery = true;
     } else {
-        // Clean restart with a valid log — replay committed entries
-        // and resume normal operation
-        enter_recovery = false;
+        // Restart (clean or corrupt log). The node must enter recovery
+        // to learn the current view and obtain an authoritative log
+        // from the primary.
+        enter_recovery = true;
     }
 
     if (enter_recovery) {

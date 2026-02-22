@@ -150,10 +150,13 @@ int wal_init_from_network(WAL *wal, void *src, int num)
 {
     wal->count = num;
     wal->capacity = num;
-    wal->entries = malloc(num * sizeof(WALEntry));
-    if (wal->entries == NULL)
-        return -1;
-    memcpy(wal->entries, src, num * sizeof(WALEntry));
+    wal->entries = NULL;
+    if (num > 0) {
+        wal->entries = malloc(num * sizeof(WALEntry));
+        if (wal->entries == NULL)
+            return -1;
+        memcpy(wal->entries, src, num * sizeof(WALEntry));
+    }
     wal->handle = (Handle) { 0 };
     return 0;
 }
