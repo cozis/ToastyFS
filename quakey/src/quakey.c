@@ -3249,7 +3249,29 @@ int mock_close(int fd)
 // data for chunks they don't actually have).
 int mock_access(const char *path, int mode)
 {
-    assert(0); // TODO
+    (void) mode; // No permission bits in mockfs; all checks reduce to existence
+
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_access() with no node scheduled\n");
+
+    if (!host_is_linux(host))
+        abort_("Call to mock_access() not from Linux\n");
+
+    MockFS_OpenFile open_file;
+    int ret = mockfs_open(host->mfs, (char *) path, strlen(path), MOCKFS_O_RDONLY, &open_file);
+    if (ret == MOCKFS_ERRNO_ISDIR) {
+        // Path exists and is a directory
+        return 0;
+    }
+    if (ret < 0) {
+        *host_errno_ptr(host) = ENOENT;
+        return -1;
+    }
+
+    // File exists; close it immediately
+    mockfs_close_file(&open_file);
+    return 0;
 }
 
 static int convert_addr(void *addr, size_t addr_len,
