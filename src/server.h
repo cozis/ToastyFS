@@ -256,6 +256,7 @@ typedef struct {
     Time state_transfer_time;
 
     WAL wal;
+    ViewAndCommit vc;
 
     Time heartbeat;
 

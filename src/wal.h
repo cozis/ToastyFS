@@ -35,8 +35,10 @@ typedef struct {
 void wal_init(WAL *wal);
 
 // Initialize a WAL from an on-disk file. Recovers valid entries,
-// discards partial/corrupted trailing entries.
-int  wal_init_from_file(WAL *wal, string file);
+// discards partial/corrupted trailing entries. If was_truncated is
+// non-NULL, *was_truncated is set to true when entries were discarded
+// due to corruption (not just a partial trailing write).
+int  wal_init_from_file(WAL *wal, string file, bool *was_truncated);
 
 // Initialize a WAL from network data (memory-only, no file).
 int  wal_init_from_network(WAL *wal, void *src, int num);
@@ -61,5 +63,20 @@ int  wal_replace(WAL *wal, WALEntry *entries, int count);
 
 int       wal_entry_count(WAL *wal);
 WALEntry *wal_peek_entry(WAL *wal, int idx);
+
+// Persistent view_number, last_normal_view and commit_index,
+// analogous to raft's TermAndVote. Backed by a small file
+// ("vsr.state") with a checksum for integrity.
+typedef struct {
+    uint64_t view_number;
+    uint64_t last_normal_view;
+    int      commit_index;
+    Handle   handle;
+} ViewAndCommit;
+
+int  view_and_commit_init(ViewAndCommit *vc, string file);
+void view_and_commit_free(ViewAndCommit *vc);
+int  set_view_and_commit(ViewAndCommit *vc, uint64_t view_number,
+                         uint64_t last_normal_view, int commit_index);
 
 #endif // WAL_INCLUDED

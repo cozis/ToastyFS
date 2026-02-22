@@ -334,6 +334,13 @@ static void reply_to_client(ServerState *state, ClientTableEntry *table_entry,
     byte_queue_write(output, &message, sizeof(message));
 }
 
+// Persist view_number, last_normal_view and commit_index to disk.
+static void persist_state(ServerState *state)
+{
+    set_view_and_commit(&state->vc, state->view_number,
+                        state->last_normal_view, state->commit_index);
+}
+
 static void advance_commit_index(ServerState *state, int target_index, bool send_replies)
 {
     target_index = MIN(target_index, state->wal.count);
@@ -376,6 +383,8 @@ static void advance_commit_index(ServerState *state, int target_index, bool send
         if (send_replies)
             reply_to_client(state, table_entry, entry->request_id, &entry->oper, result);
     }
+
+    persist_state(state);
 }
 
 // When the primary appends an entry to its log, it sends a
@@ -427,6 +436,7 @@ process_prepare_ok(ServerState *state, int conn_idx, ByteView msg)
 
     if (message.view_number > state->view_number) {
         state->view_number = message.view_number;
+        persist_state(state);
         begin_state_transfer(state, message.sender_idx);
         return HR_OK;
     }
@@ -484,6 +494,7 @@ complete_view_change_and_become_primary(ServerState *state)
 
     state->status = STATUS_NORMAL;
     state->last_normal_view = state->view_number;
+    persist_state(state);
     node_log(state, "STATUS NORMAL", "became primary (view change complete)");
 
     // Apply committed entries that haven't been executed yet.
@@ -703,6 +714,7 @@ process_begin_view_change(ServerState *state, int conn_idx, ByteView msg)
 
         clear_view_change_fields(state);
         state->view_number = message.view_number;
+        persist_state(state);
         state->heartbeat = state->now;
         state->status = STATUS_CHANGE_VIEW;
         node_log(state, "STATUS CHANGE_VIEW", "view=%lu", state->view_number);
@@ -742,6 +754,7 @@ process_begin_view(ServerState *state, int conn_idx, ByteView msg)
 
     state->status = STATUS_NORMAL;
     state->last_normal_view = state->view_number;
+    persist_state(state);
     node_log(state, "STATUS NORMAL", "new view=%lu (follower)", state->view_number);
 
     int num_entries = (msg.len - sizeof(BeginViewMessage)) / sizeof(WALEntry);
@@ -1052,6 +1065,7 @@ complete_recovery(ServerState *state)
 
     state->status = STATUS_NORMAL;
     state->last_normal_view = state->view_number;
+    persist_state(state);
     node_log(state, "STATUS NORMAL", "recovery complete view=%lu commit=%d",
         state->view_number, state->commit_index);
 
@@ -1235,6 +1249,7 @@ process_prepare(ServerState *state, ByteView msg)
     //           itself up to date before processing the message
     if (message.view_number > state->view_number) {
         state->view_number = message.view_number;
+        persist_state(state);
         if (state->num_future < FUTURE_LIMIT)
             state->future[state->num_future++] = message;
         begin_state_transfer(state, message.sender_idx);
@@ -1659,10 +1674,7 @@ int server_init(void *state_, int argc, char **argv,
 
     Time deadline = INVALID_TIME;
 
-    state->view_number = 0;
-    state->last_normal_view = 0;
     state->heartbeat = now;
-    state->commit_index = 0;
     state->num_future = 0;
     state->state_transfer_pending = false;
     state->state_transfer_time = 0;
@@ -1681,27 +1693,64 @@ int server_init(void *state_, int argc, char **argv,
     state->recovery_log_view = 0;
     wal_init(&state->recovery_log);
 
-    // Open the WAL file. If it contains entries from a previous run,
-    // this node crashed and must enter recovery mode to learn the
-    // current view from peers before participating in the protocol.
-    if (wal_init_from_file(&state->wal, S("vsr.log")) < 0) {
-        fprintf(stderr, "Node :: Couldn't open WAL file\n");
+    // Load persistent view_number, last_normal_view and commit_index.
+    if (view_and_commit_init(&state->vc, S("vsr.state")) < 0) {
+        fprintf(stderr, "Node :: Couldn't open state file\n");
         return -1;
     }
-    bool previously_crashed = (state->wal.count > 0);
-    if (previously_crashed) {
+    state->view_number = state->vc.view_number;
+    state->last_normal_view = state->vc.last_normal_view;
+    state->commit_index = 0; // Will be advanced below after replaying the log
+
+    // Load the WAL from disk. Three cases:
+    //   1. Empty log (first start) -> enter normal mode
+    //   2. Corrupt log (truncated) -> enter recovery mode
+    //   3. Clean log              -> replay up to commit_index, enter normal mode
+    bool was_truncated = false;
+    if (wal_init_from_file(&state->wal, S("vsr.log"), &was_truncated) < 0) {
+        fprintf(stderr, "Node :: Couldn't open WAL file\n");
+        view_and_commit_free(&state->vc);
+        return -1;
+    }
+
+    bool enter_recovery;
+    if (state->wal.count == 0 && !was_truncated) {
+        // First start: no previous log on disk
+        enter_recovery = false;
+    } else if (was_truncated) {
+        // Log was corrupt — must enter recovery to get a valid log
+        // from peers
+        enter_recovery = true;
+    } else {
+        // Clean restart with a valid log — replay committed entries
+        // and resume normal operation
+        enter_recovery = false;
+    }
+
+    if (enter_recovery) {
         state->status = STATUS_RECOVERY;
         state->recovery_nonce = now;
         state->recovery_time = now;
     } else {
         state->status = STATUS_NORMAL;
     }
-    node_log(state, "INIT", "nodes=%d%s", state->num_nodes, previously_crashed ? " (recovering)" : "");
+    node_log(state, "INIT", "nodes=%d%s", state->num_nodes, enter_recovery ? " (recovering)" : "");
 
     client_table_init(&state->client_table);
     state->next_client_tag = NODE_LIMIT; // Make sure they don't overlap with node indices
 
     meta_store_init(&state->metastore);
+
+    // On a clean restart (non-corrupt log present), replay committed
+    // entries into the state machine before accepting new traffic.
+    if (!enter_recovery && state->wal.count > 0) {
+        int replay_target = state->vc.commit_index;
+        if (replay_target > state->wal.count)
+            replay_target = state->wal.count;
+        advance_commit_index(state, replay_target, false);
+        node_log(state, "REPLAY", "applied %d entries", state->commit_index);
+    }
+
     if (chunk_store_init(&state->chunk_store, chunks_path) < 0) {
         fprintf(stderr, "Node :: Couldn't initialize chunk store at '%s'\n", chunks_path);
         return -1;
@@ -1719,7 +1768,7 @@ int server_init(void *state_, int argc, char **argv,
         return -1;
     }
 
-    if (previously_crashed) {
+    if (enter_recovery) {
         node_log(state, "STATUS RECOVERY", "nonce=%lu (crash detected)", state->recovery_nonce);
 
         // Broadcast RECOVERY to all peers to learn the current view
@@ -1843,6 +1892,7 @@ int server_tick(void *state_, void **ctxs,
             add_vote(&state->view_change_begin_votes, self_idx(state));
 
             state->view_number++;
+            persist_state(state);
             state->heartbeat = state->now;
 
             BeginViewChangeMessage begin_view_change_message = {
@@ -1896,6 +1946,7 @@ int server_tick(void *state_, void **ctxs,
                 add_vote(&state->view_change_begin_votes, self_idx(state));
 
                 state->view_number++;
+                persist_state(state);
                 state->status = STATUS_CHANGE_VIEW;
                 state->heartbeat = state->now;
 
@@ -1961,6 +2012,7 @@ int server_free(void *state_)
     node_log_simple(state, "CRASHED");
 
     wal_free(&state->wal);
+    view_and_commit_free(&state->vc);
     wal_free(&state->recovery_log);
     wal_free(&state->view_change_log);
     tcp_context_free(&state->tcp);

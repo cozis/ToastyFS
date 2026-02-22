@@ -70,8 +70,11 @@ void wal_init(WAL *wal)
     wal->handle = (Handle) { 0 };
 }
 
-int wal_init_from_file(WAL *wal, string file)
+int wal_init_from_file(WAL *wal, string file, bool *was_truncated)
 {
+    if (was_truncated)
+        *was_truncated = false;
+
     Handle handle;
     if (file_open(file, &handle) < 0)
         return -1;
@@ -112,6 +115,8 @@ int wal_init_from_file(WAL *wal, string file)
         if (disk_entries[i].checksum != wal_entry_checksum(&disk_entries[i])) {
             count = i;
             file_truncate(handle, count * sizeof(WALEntryDisk));
+            if (was_truncated)
+                *was_truncated = true;
             break;
         }
     }
@@ -300,4 +305,109 @@ WALEntry *wal_peek_entry(WAL *wal, int idx)
     assert(idx >= 0);
     assert(idx < wal->count);
     return &wal->entries[idx];
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// ViewAndCommit — persistent view_number, last_normal_view and commit_index
+///////////////////////////////////////////////////////////////////////////////
+
+// On-disk layout (24 bytes):
+//   [view_number: 8] [last_normal_view: 8] [commit_index: 4] [checksum: 4]
+typedef struct {
+    uint64_t view_number;
+    uint64_t last_normal_view;
+    int      commit_index;
+    uint32_t checksum;
+} ViewAndCommitDisk;
+
+static uint32_t vc_checksum(uint64_t view_number, uint64_t last_normal_view, int commit_index)
+{
+    uint32_t h = 2166136261u;
+
+    const unsigned char *p = (const unsigned char *)&view_number;
+    for (int i = 0; i < (int)sizeof(view_number); i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+
+    p = (const unsigned char *)&last_normal_view;
+    for (int i = 0; i < (int)sizeof(last_normal_view); i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+
+    p = (const unsigned char *)&commit_index;
+    for (int i = 0; i < (int)sizeof(commit_index); i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+
+    return h;
+}
+
+int view_and_commit_init(ViewAndCommit *vc, string file)
+{
+    Handle handle;
+    if (file_open(file, &handle) < 0)
+        return -1;
+
+    vc->handle = handle;
+    vc->view_number = 0;
+    vc->last_normal_view = 0;
+    vc->commit_index = 0;
+
+    size_t size;
+    if (file_size(handle, &size) < 0) {
+        file_close(handle);
+        return -1;
+    }
+
+    if (size >= sizeof(ViewAndCommitDisk)) {
+        ViewAndCommitDisk disk;
+        if (file_set_offset(handle, 0) < 0) {
+            file_close(handle);
+            return -1;
+        }
+        if (file_read_exact(handle, (char *)&disk, sizeof(disk)) < 0) {
+            file_close(handle);
+            return -1;
+        }
+        if (disk.checksum == vc_checksum(disk.view_number, disk.last_normal_view, disk.commit_index)) {
+            vc->view_number = disk.view_number;
+            vc->last_normal_view = disk.last_normal_view;
+            vc->commit_index = disk.commit_index;
+        }
+        // If checksum doesn't match, start from defaults (0, 0, 0).
+    }
+
+    return 0;
+}
+
+void view_and_commit_free(ViewAndCommit *vc)
+{
+    if (vc->handle.data != 0)
+        file_close(vc->handle);
+}
+
+int set_view_and_commit(ViewAndCommit *vc, uint64_t view_number,
+                        uint64_t last_normal_view, int commit_index)
+{
+    ViewAndCommitDisk disk = {
+        .view_number = view_number,
+        .last_normal_view = last_normal_view,
+        .commit_index = commit_index,
+    };
+    disk.checksum = vc_checksum(view_number, last_normal_view, commit_index);
+
+    if (file_set_offset(vc->handle, 0) < 0)
+        return -1;
+    if (file_write_exact(vc->handle, (char *)&disk, sizeof(disk)) < 0)
+        return -1;
+    if (file_sync(vc->handle) < 0)
+        return -1;
+
+    vc->view_number = view_number;
+    vc->last_normal_view = last_normal_view;
+    vc->commit_index = commit_index;
+    return 0;
 }
