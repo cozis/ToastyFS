@@ -58,8 +58,10 @@ void invariant_checker_init(InvariantChecker *ic)
 {
     ic->last_min_commit = -1;
     ic->last_max_commit = -1;
-    for (int i = 0; i < NODE_LIMIT; i++)
+    for (int i = 0; i < NODE_LIMIT; i++) {
         ic->prev_status[i] = STATUS_NORMAL;
+        ic->prev_alive[i] = false;
+    }
     ic->shadow_log = NULL;
     ic->shadow_count = 0;
     ic->shadow_capacity = 0;
@@ -96,7 +98,11 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
 
         if (min_commit < 0 || min_commit > n->commit_index) {
             min_commit = n->commit_index;
-            min_commit_just_recovered = (ic->prev_status[i] == STATUS_RECOVERY);
+            // A node that just recovered or just restarted after a crash
+            // may have a stale commit_index (persisted state can lag behind
+            // the in-memory value if the crash interrupted file_sync).
+            min_commit_just_recovered = (ic->prev_status[i] == STATUS_RECOVERY)
+                                     || !ic->prev_alive[i];
         }
 
         if (max_commit < 0 || max_commit < n->commit_index) {
@@ -153,6 +159,7 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
     ic->last_min_commit = min_commit;
     ic->last_max_commit = max_commit;
     for (int i = 0; i < num_nodes; i++) {
+        ic->prev_alive[i] = (nodes[i] != NULL);
         if (nodes[i])
             ic->prev_status[i] = nodes[i]->status;
     }

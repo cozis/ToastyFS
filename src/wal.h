@@ -7,20 +7,12 @@
 
 typedef struct {
     MetaOper oper;
-    uint32_t votes;       // transient, not persisted to disk
-    int      view_number;
-    uint64_t client_id;
-    uint64_t request_id;
-} WALEntry;
-
-// On-disk representation of a WAL entry (excludes transient 'votes' field).
-typedef struct {
-    MetaOper oper;
+    uint32_t votes;
     int      view_number;
     uint64_t client_id;
     uint64_t request_id;
     uint32_t checksum;    // FNV-1a over all preceding fields
-} WALEntryDisk;
+} WALEntry;
 
 _Static_assert(NODE_LIMIT <= 32, "");
 
@@ -52,6 +44,9 @@ void wal_move(WAL *dst, WAL *src);
 // Append an entry. If the WAL is file-backed, writes to disk and
 // fsyncs before updating the in-memory buffer.
 int  wal_append(WAL *wal, WALEntry entry);
+
+// Write a modified in-memory entry back to disk (recomputes checksum).
+int  wal_update_entry(WAL *wal, int idx);
 
 // Truncate the WAL to new_count entries.
 int  wal_truncate(WAL *wal, int new_count);

@@ -283,6 +283,7 @@ typedef struct {
     int last_min_commit;
     int last_max_commit;
     Status prev_status[NODE_LIMIT];
+    bool   prev_alive[NODE_LIMIT];
 
     // External shadow log of committed operations (unbounded, dynamically allocated)
     MetaOper *shadow_log;

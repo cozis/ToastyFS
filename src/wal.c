@@ -9,12 +9,12 @@
 
 #include "wal.h"
 
-// FNV-1a checksum over all WALEntryDisk fields except the checksum itself.
-static uint32_t wal_entry_checksum(WALEntryDisk *entry)
+// FNV-1a checksum over all WALEntry fields except the checksum itself.
+static uint32_t wal_entry_checksum(WALEntry *entry)
 {
     uint32_t h = 2166136261u;
     const unsigned char *p = (const unsigned char *)entry;
-    size_t len = offsetof(WALEntryDisk, checksum);
+    size_t len = offsetof(WALEntry, checksum);
     for (size_t i = 0; i < len; i++) {
         h ^= p[i];
         h *= 16777619u;
@@ -22,27 +22,9 @@ static uint32_t wal_entry_checksum(WALEntryDisk *entry)
     return h;
 }
 
-static WALEntryDisk wal_entry_to_disk(WALEntry *entry)
+static void wal_entry_set_checksum(WALEntry *entry)
 {
-    WALEntryDisk disk = {
-        .oper        = entry->oper,
-        .view_number = entry->view_number,
-        .client_id   = entry->client_id,
-        .request_id  = entry->request_id,
-    };
-    disk.checksum = wal_entry_checksum(&disk);
-    return disk;
-}
-
-static WALEntry wal_entry_from_disk(WALEntryDisk *disk)
-{
-    return (WALEntry) {
-        .oper        = disk->oper,
-        .votes       = 0,
-        .view_number = disk->view_number,
-        .client_id   = disk->client_id,
-        .request_id  = disk->request_id,
-    };
+    entry->checksum = wal_entry_checksum(entry);
 }
 
 static bool wal_is_file_backed(WAL *wal)
@@ -86,54 +68,43 @@ int wal_init_from_file(WAL *wal, string file, bool *was_truncated)
     }
 
     // Discard any partial trailing entry (crash during write).
-    int raw_count = size / sizeof(WALEntryDisk);
-    size_t valid_size = raw_count * sizeof(WALEntryDisk);
+    int raw_count = size / sizeof(WALEntry);
+    size_t valid_size = raw_count * sizeof(WALEntry);
     if (valid_size < size)
         file_truncate(handle, valid_size);
 
-    WALEntryDisk *disk_entries = malloc(raw_count * sizeof(WALEntryDisk));
-    if (disk_entries == NULL && raw_count > 0) {
+    WALEntry *entries = malloc(raw_count * sizeof(WALEntry));
+    if (entries == NULL && raw_count > 0) {
         file_close(handle);
         return -1;
     }
 
     if (file_set_offset(handle, 0) < 0) {
         file_close(handle);
-        free(disk_entries);
+        free(entries);
         return -1;
     }
 
-    if (raw_count > 0 && file_read_exact(handle, (char *)disk_entries, raw_count * sizeof(WALEntryDisk)) < 0) {
+    if (raw_count > 0 && file_read_exact(handle, (char *)entries, raw_count * sizeof(WALEntry)) < 0) {
         file_close(handle);
-        free(disk_entries);
+        free(entries);
         return -1;
     }
 
     // Verify checksums: truncate at the first corrupted entry.
     int count = raw_count;
     for (int i = 0; i < raw_count; i++) {
-        if (disk_entries[i].checksum != wal_entry_checksum(&disk_entries[i])) {
+        if (entries[i].checksum != wal_entry_checksum(&entries[i])) {
             count = i;
-            file_truncate(handle, count * sizeof(WALEntryDisk));
+            file_truncate(handle, count * sizeof(WALEntry));
             if (was_truncated)
                 *was_truncated = true;
             break;
         }
     }
 
-    // Convert disk entries to in-memory entries.
-    WALEntry *entries = malloc(count * sizeof(WALEntry));
-    if (entries == NULL && count > 0) {
-        file_close(handle);
-        free(disk_entries);
-        return -1;
-    }
-    for (int i = 0; i < count; i++)
-        entries[i] = wal_entry_from_disk(&disk_entries[i]);
-    free(disk_entries);
-
     // Position file offset at end for future appends.
-    if (file_set_offset(handle, count * sizeof(WALEntryDisk)) < 0) {
+    if (file_set_offset(handle, count * sizeof(WALEntry)) < 0) {
         file_close(handle);
         free(entries);
         return -1;
@@ -186,24 +157,49 @@ int wal_append(WAL *wal, WALEntry entry)
     }
 
     if (wal_is_file_backed(wal)) {
-        WALEntryDisk disk = wal_entry_to_disk(&entry);
+        wal_entry_set_checksum(&entry);
 
-        if (file_write_exact(wal->handle, (char *)&disk, sizeof(disk)) < 0) {
+        if (file_write_exact(wal->handle, (char *)&entry, sizeof(entry)) < 0) {
             // Partial write may have advanced file offset. Truncate and
             // rewind so the file stays consistent with in-memory count.
-            file_truncate(wal->handle, wal->count * sizeof(WALEntryDisk));
-            file_set_offset(wal->handle, wal->count * sizeof(WALEntryDisk));
+            file_truncate(wal->handle, wal->count * sizeof(WALEntry));
+            file_set_offset(wal->handle, wal->count * sizeof(WALEntry));
             return -1;
         }
 
         if (file_sync(wal->handle) < 0) {
-            file_truncate(wal->handle, wal->count * sizeof(WALEntryDisk));
-            file_set_offset(wal->handle, wal->count * sizeof(WALEntryDisk));
+            file_truncate(wal->handle, wal->count * sizeof(WALEntry));
+            file_set_offset(wal->handle, wal->count * sizeof(WALEntry));
             return -1;
         }
     }
 
     wal->entries[wal->count++] = entry;
+    return 0;
+}
+
+int wal_update_entry(WAL *wal, int idx)
+{
+    assert(idx >= 0 && idx < wal->count);
+
+    if (wal_is_file_backed(wal)) {
+        WALEntry entry = wal->entries[idx];
+        wal_entry_set_checksum(&entry);
+
+        size_t offset = idx * sizeof(WALEntry);
+        size_t end_offset = wal->count * sizeof(WALEntry);
+
+        if (file_set_offset(wal->handle, offset) < 0)
+            return -1;
+        if (file_write_exact(wal->handle, (char *)&entry, sizeof(entry)) < 0)
+            return -1;
+        if (file_sync(wal->handle) < 0)
+            return -1;
+
+        // Restore file offset to end for future appends.
+        if (file_set_offset(wal->handle, end_offset) < 0)
+            return -1;
+    }
     return 0;
 }
 
@@ -214,9 +210,9 @@ int wal_truncate(WAL *wal, int new_count)
         return 0;
 
     if (wal_is_file_backed(wal)) {
-        if (file_truncate(wal->handle, new_count * sizeof(WALEntryDisk)) < 0)
+        if (file_truncate(wal->handle, new_count * sizeof(WALEntry)) < 0)
             return -1;
-        if (file_set_offset(wal->handle, new_count * sizeof(WALEntryDisk)) < 0)
+        if (file_set_offset(wal->handle, new_count * sizeof(WALEntry)) < 0)
             return -1;
     }
 
@@ -248,8 +244,8 @@ int wal_replace(WAL *wal, WALEntry *entries, int count)
 
     // Write all entries to tmp.log.
     for (int i = 0; i < count; i++) {
-        WALEntryDisk disk = wal_entry_to_disk(&entries[i]);
-        if (file_write_exact(tmp, (char *)&disk, sizeof(disk)) < 0) {
+        wal_entry_set_checksum(&entries[i]);
+        if (file_write_exact(tmp, (char *)&entries[i], sizeof(entries[i])) < 0) {
             file_close(tmp);
             return -1;
         }
@@ -274,7 +270,7 @@ int wal_replace(WAL *wal, WALEntry *entries, int count)
     Handle new_handle;
     if (file_open(wal_path, &new_handle) < 0)
         return -1;
-    if (file_set_offset(new_handle, count * sizeof(WALEntryDisk)) < 0) {
+    if (file_set_offset(new_handle, count * sizeof(WALEntry)) < 0) {
         file_close(new_handle);
         return -1;
     }

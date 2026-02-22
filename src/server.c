@@ -133,6 +133,23 @@ static void broadcast_to_peers(ServerState *state, MessageHeader *msg)
     broadcast_to_peers_ex(state, msg, NULL, 0);
 }
 
+// Called when a node in NORMAL status adopts a higher view_number
+// (e.g. from a PREPARE or PREPARE_OK sent in a newer view).
+// Updates last_normal_view to match and, if the new view makes this
+// node the primary, initialises vote bits for uncommitted entries.
+static void adopt_view(ServerState *state)
+{
+    state->last_normal_view = state->view_number;
+    if (is_primary(state)) {
+        for (int i = state->commit_index; i < state->wal.count; i++) {
+            WALEntry *entry = &state->wal.entries[i];
+            entry->votes = 0;
+            add_vote(&entry->votes, self_idx(state));
+            wal_update_entry(&state->wal, i);
+        }
+    }
+}
+
 static void begin_state_transfer(ServerState *state, int sender_idx)
 {
     if (state->state_transfer_pending)
@@ -436,6 +453,7 @@ process_prepare_ok(ServerState *state, int conn_idx, ByteView msg)
 
     if (message.view_number > state->view_number) {
         state->view_number = message.view_number;
+        adopt_view(state);
         persist_state(state);
         begin_state_transfer(state, message.sender_idx);
         return HR_OK;
@@ -449,6 +467,7 @@ process_prepare_ok(ServerState *state, int conn_idx, ByteView msg)
 
     WALEntry *entry = &state->wal.entries[message.log_index];
     add_vote(&entry->votes, message.sender_idx);
+    wal_update_entry(&state->wal, message.log_index);
     if (reached_quorum(state, entry->votes)) {
         node_log(state, "QUORUM", "idx=%d %s/%s", message.log_index, entry->oper.bucket, entry->oper.key);
         advance_commit_index(state, message.log_index+1, true);
@@ -487,6 +506,16 @@ complete_view_change_and_become_primary(ServerState *state)
 {
     assert(state->commit_index <= state->view_change_commit);
 
+    // Reset vote tracking for uncommitted entries before writing to
+    // disk. The entries inherited from DO_VIEW_CHANGE carry stale
+    // votes from a previous view. Resetting here ensures that if a
+    // crash occurs after wal_replace, the on-disk entries already
+    // have the correct leader vote bit set.
+    for (int i = state->view_change_commit; i < state->view_change_log.count; i++) {
+        state->view_change_log.entries[i].votes = 0;
+        add_vote(&state->view_change_log.entries[i].votes, self_idx(state));
+    }
+
     if (wal_replace(&state->wal, state->view_change_log.entries, state->view_change_log.count) < 0)
         return HR_IO_FAILURE;
     wal_free(&state->view_change_log);
@@ -504,18 +533,6 @@ complete_view_change_and_become_primary(ServerState *state)
     // that must be executed before we start processing new
     // requests, otherwise the state machine will be stale.
     advance_commit_index(state, state->view_change_commit, false);
-
-    // Reset vote tracking for uncommitted entries. The log
-    // entries inherited from DO_VIEW_CHANGE have stale
-    // votes from the previous view. The new leader starts
-    // with its own vote for each entry.
-    for (int i = state->commit_index; i < state->wal.count; i++) {
-
-        WALEntry *entry = &state->wal.entries[i];
-
-        entry->votes = 0;
-        add_vote(&entry->votes, self_idx(state));
-    }
 
     BeginViewMessage begin_view_message = {
         .base = {
@@ -750,20 +767,24 @@ process_begin_view(ServerState *state, int conn_idx, ByteView msg)
     if (message.view_number < state->view_number)
         return HR_OK;
 
-    state->view_number = message.view_number;
+    int num_entries = (msg.len - sizeof(BeginViewMessage)) / sizeof(WALEntry);
+    assert(num_entries >= state->commit_index);
 
+    // Replace the local WAL with the authoritative log from the primary.
+    // This MUST complete before persist_state so that the on-disk log is
+    // always at least as recent as the persisted view/commit metadata.
+    // Otherwise a crash between persist_state and wal_replace would leave
+    // the stale log on disk with a view_number that references the new
+    // view, causing the node to replay divergent entries on restart.
+    WALEntry *new_entries = (WALEntry *)(msg.ptr + sizeof(BeginViewMessage));
+    if (wal_replace(&state->wal, new_entries, num_entries) < 0)
+        return HR_IO_FAILURE;
+
+    state->view_number = message.view_number;
     state->status = STATUS_NORMAL;
     state->last_normal_view = state->view_number;
     persist_state(state);
     node_log(state, "STATUS NORMAL", "new view=%lu (follower)", state->view_number);
-
-    int num_entries = (msg.len - sizeof(BeginViewMessage)) / sizeof(WALEntry);
-    assert(num_entries >= state->commit_index);
-
-    // Replace the local WAL with the authoritative log from the primary
-    WALEntry *new_entries = (WALEntry *)(msg.ptr + sizeof(BeginViewMessage));
-    if (wal_replace(&state->wal, new_entries, num_entries) < 0)
-        return HR_IO_FAILURE;
 
     state->num_future = 0;
     state->state_transfer_pending = false;
@@ -1057,6 +1078,17 @@ complete_recovery(ServerState *state)
     assert(state->commit_index <= state->recovery_commit);
 
     state->view_number = state->recovery_view;
+
+    // Reset stale votes before writing to disk so that a crash
+    // after wal_replace leaves the correct leader vote on disk.
+    int new_primary = state->view_number % state->num_nodes;
+    if (new_primary == self_idx(state)) {
+        for (int i = state->recovery_commit; i < state->recovery_log.count; i++) {
+            state->recovery_log.entries[i].votes = 0;
+            add_vote(&state->recovery_log.entries[i].votes, self_idx(state));
+        }
+    }
+
     if (wal_replace(&state->wal, state->recovery_log.entries, state->recovery_log.count) < 0)
         return HR_IO_FAILURE;
     wal_free(&state->recovery_log);
@@ -1068,15 +1100,6 @@ complete_recovery(ServerState *state)
     persist_state(state);
     node_log(state, "STATUS NORMAL", "recovery complete view=%lu commit=%d",
         state->view_number, state->commit_index);
-
-    // Reset stale votes
-    if (is_primary(state)) {
-        for (int i = state->commit_index; i < state->wal.count; i++) {
-            WALEntry *entry = &state->wal.entries[i];
-            entry->votes = 0;
-            add_vote(&entry->votes, self_idx(state));
-        }
-    }
 
     // Update heartbeat to avoid immediate view change timeout
     state->heartbeat = state->now;
@@ -1249,6 +1272,7 @@ process_prepare(ServerState *state, ByteView msg)
     //           itself up to date before processing the message
     if (message.view_number > state->view_number) {
         state->view_number = message.view_number;
+        adopt_view(state);
         persist_state(state);
         if (state->num_future < FUTURE_LIMIT)
             state->future[state->num_future++] = message;
@@ -1702,19 +1726,10 @@ int server_init(void *state_, int argc, char **argv,
     state->last_normal_view = state->vc.last_normal_view;
     state->commit_index = 0; // Will be advanced below after replaying the log
 
-    // Load the WAL from disk. Two cases:
-    //   1. Empty log, no truncation (first start) -> enter normal mode
-    //   2. Any restart (clean or corrupt log)      -> enter recovery mode
-    //
-    // VR-Revisited Section 4.3: "When a node recovers after a crash it
-    // cannot participate in request processing and view changes until it
-    // has a state at least as recent as what it had before it crashed."
-    //
-    // A clean restart without recovery is unsafe: while the node was
-    // down, a view change may have replaced uncommitted log entries.
-    // Entering NORMAL with the stale log would cause the node to hold
-    // divergent entries that could later be committed via state transfer,
-    // violating committed prefix agreement.
+    // Load the WAL from disk. Three cases:
+    //   1. Empty log (first start) -> enter normal mode
+    //   2. Corrupt log (truncated) -> enter recovery mode
+    //   3. Clean log              -> replay up to commit_index, enter normal mode
     bool was_truncated = false;
     if (wal_init_from_file(&state->wal, S("vsr.log"), &was_truncated) < 0) {
         fprintf(stderr, "Node :: Couldn't open WAL file\n");
@@ -1726,11 +1741,14 @@ int server_init(void *state_, int argc, char **argv,
     if (state->wal.count == 0 && !was_truncated) {
         // First start: no previous log on disk
         enter_recovery = false;
-    } else {
-        // Restart (clean or corrupt log). The node must enter recovery
-        // to learn the current view and obtain an authoritative log
-        // from the primary.
+    } else if (was_truncated) {
+        // Log was corrupt — must enter recovery to get a valid log
+        // from peers
         enter_recovery = true;
+    } else {
+        // Clean restart with a valid log — replay committed entries
+        // and resume normal operation
+        enter_recovery = false;
     }
 
     if (enter_recovery) {
@@ -1739,6 +1757,7 @@ int server_init(void *state_, int argc, char **argv,
         state->recovery_time = now;
     } else {
         state->status = STATUS_NORMAL;
+        state->last_normal_view = state->view_number;
     }
     node_log(state, "INIT", "nodes=%d%s", state->num_nodes, enter_recovery ? " (recovering)" : "");
 
@@ -1754,6 +1773,12 @@ int server_init(void *state_, int argc, char **argv,
         if (replay_target > state->wal.count)
             replay_target = state->wal.count;
         advance_commit_index(state, replay_target, false);
+
+        // If this node is the primary, ensure the leader's own vote
+        // bit is set for uncommitted entries. A crash during
+        // wal_replace (before the atomic rename) can leave on-disk
+        // entries with stale votes from a previous role.
+        adopt_view(state);
         node_log(state, "REPLAY", "applied %d entries", state->commit_index);
     }
 
