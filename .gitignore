@@ -1,5 +1,5 @@
 toastyfs
-toastyfs_client
+toastyfs_random_client
 toastyfs_simulation
 *.gcno
 *.gcda
@@ -13,5 +13,6 @@ coverage_html/
 example
 example_large
 examples/example
+.claude/
 .cluster/
 vsr_boot_marker

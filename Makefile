@@ -15,20 +15,20 @@ SHARED_LIB = libtoastyfs.so
 # ---- Server binary ----
 
 SERVER_SRCS = src/basic.c src/file_system.c src/byte_queue.c src/message.c \
-              src/tcp.c src/server.c src/main.c src/log.c src/client_table.c \
+              src/tcp.c src/server.c src/main.c src/wal.c src/client_table.c \
               src/chunk_store.c src/metadata.c
 
 # ---- Client binary (random test client) ----
 
 CLIENT_SRCS = src/basic.c src/file_system.c src/byte_queue.c src/message.c \
               src/tcp.c src/server.c src/client.c src/random_client.c src/main.c \
-              src/log.c src/client_table.c src/chunk_store.c src/metadata.c
+              src/wal.c src/client_table.c src/chunk_store.c src/metadata.c
 
 # ---- Simulation binary ----
 
 SIM_SRCS = src/basic.c src/file_system.c src/byte_queue.c src/message.c \
            src/tcp.c src/server.c src/client.c src/random_client.c src/main.c \
-           src/log.c src/client_table.c src/invariant_checker.c src/chunk_store.c \
+           src/wal.c src/client_table.c src/invariant_checker.c src/chunk_store.c \
            src/metadata.c quakey/src/mockfs.c quakey/src/quakey.c
 
 # ---- Default target ----

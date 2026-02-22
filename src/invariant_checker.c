@@ -164,9 +164,9 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
 
         // 1. commit_index <= log.count
         //    A node cannot have committed more entries than it has in its log.
-        if (s->commit_index > s->log.count) {
+        if (s->commit_index > s->wal.count) {
             fprintf(stderr, "INVARIANT VIOLATED: node %d: commit_index (%d) > log.count (%d)\n",
-                i, s->commit_index, s->log.count);
+                i, s->commit_index, s->wal.count);
             __builtin_trap();
         }
 
@@ -206,11 +206,11 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
         // 9. Log entry view numbers must not exceed the node's current view.
         //    Entries are created in the view they were proposed. No entry
         //    should carry a view number from the future.
-        for (int k = 0; k < s->log.count; k++) {
-            if ((uint64_t)s->log.entries[k].view_number > s->view_number) {
+        for (int k = 0; k < s->wal.count; k++) {
+            if ((uint64_t)s->wal.entries[k].view_number > s->view_number) {
                 fprintf(stderr, "INVARIANT VIOLATED: node %d: log[%d].view_number (%d) "
                     "> view_number (%lu)\n",
-                    i, k, s->log.entries[k].view_number,
+                    i, k, s->wal.entries[k].view_number,
                     (unsigned long)s->view_number);
                 __builtin_trap();
             }
@@ -221,8 +221,8 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
         //     votes for its own entries.
         if (s->status == STATUS_NORMAL && is_leader(s)) {
             int idx = self_idx(s);
-            for (int k = s->commit_index; k < s->log.count; k++) {
-                if (!(s->log.entries[k].votes & (1 << idx))) {
+            for (int k = s->commit_index; k < s->wal.count; k++) {
+                if (!(s->wal.entries[k].votes & (1 << idx))) {
                     fprintf(stderr, "INVARIANT VIOLATED: node %d (leader): "
                         "uncommitted log[%d] missing leader's own vote bit\n",
                         i, k);
@@ -266,7 +266,7 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
                 mc = nodes[j]->commit_index;
 
             for (int k = 0; k < mc; k++) {
-                if (memcmp(&nodes[i]->log.entries[k].oper, &nodes[j]->log.entries[k].oper, sizeof(MetaOper)) != 0) {
+                if (memcmp(&nodes[i]->wal.entries[k].oper, &nodes[j]->wal.entries[k].oper, sizeof(MetaOper)) != 0) {
                     fprintf(stderr, "INVARIANT VIOLATED: committed log operation mismatch at index %d "
                         "between node %d and node %d\n", k, i, j);
                     __builtin_trap();
@@ -298,11 +298,11 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
     if (source_node_idx >= 0 && observed_max_commit > ic->shadow_count) {
 
         ServerState *source = nodes[source_node_idx];
-        assert(source->log.count >= observed_max_commit);
+        assert(source->wal.count >= observed_max_commit);
 
         for (int k = ic->shadow_count; k < observed_max_commit; k++) {
 
-            MetaOper *source_oper = &source->log.entries[k].oper;
+            MetaOper *source_oper = &source->wal.entries[k].oper;
 
             // Cross-validate against other live non-recovering nodes
             // that have also committed this entry.
@@ -315,10 +315,10 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
                     continue;
                 if (nodes[j]->commit_index <= k)
                     continue;
-                if (nodes[j]->log.count <= k)
+                if (nodes[j]->wal.count <= k)
                     continue;
 
-                if (memcmp(&nodes[j]->log.entries[k].oper, source_oper, sizeof(MetaOper)) != 0) {
+                if (memcmp(&nodes[j]->wal.entries[k].oper, source_oper, sizeof(MetaOper)) != 0) {
                     fprintf(stderr, "INVARIANT VIOLATED: committed entry mismatch at index %d "
                         "between source node %d and node %d during shadow log append\n",
                         k, source_node_idx, j);
@@ -340,15 +340,15 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
         for (int i = 0; i < num_nodes; i++) {
             if (nodes[i] == NULL)
                 continue;
-            if (nodes[i]->log.count <= k)
+            if (nodes[i]->wal.count <= k)
                 continue;
             if (nodes[i]->commit_index <= k)
                 continue;
 
-            if (memcmp(&nodes[i]->log.entries[k].oper, &ic->shadow_log[k], sizeof(MetaOper)) != 0) {
+            if (memcmp(&nodes[i]->wal.entries[k].oper, &ic->shadow_log[k], sizeof(MetaOper)) != 0) {
                 char shadow_buf[128], node_buf[128];
                 meta_snprint_oper(shadow_buf, sizeof(shadow_buf), &ic->shadow_log[k]);
-                meta_snprint_oper(node_buf, sizeof(node_buf), &nodes[i]->log.entries[k].oper);
+                meta_snprint_oper(node_buf, sizeof(node_buf), &nodes[i]->wal.entries[k].oper);
                 fprintf(stderr, "INVARIANT VIOLATED: shadow log mismatch at index %d on node %d\n"
                     "  shadow: %s\n"
                     "  node:   %s\n",
@@ -377,9 +377,9 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
                     num_dead++;
                     continue;
                 }
-                if (nodes[i]->log.count <= k)
+                if (nodes[i]->wal.count <= k)
                     continue;
-                if (memcmp(&nodes[i]->log.entries[k].oper, &ic->shadow_log[k], sizeof(MetaOper)) == 0)
+                if (memcmp(&nodes[i]->wal.entries[k].oper, &ic->shadow_log[k], sizeof(MetaOper)) == 0)
                     holders++;
             }
 

@@ -4,7 +4,7 @@
 #include "tcp.h"
 #include "basic.h"
 #include "message.h"
-#include "log.h"
+#include "wal.h"
 #include "config.h"
 #include "metadata.h"
 #include "chunk_store.h"
@@ -99,15 +99,15 @@ typedef struct {
     int op_number;              // Number of entries in the log
     int commit_index;
     int sender_idx;
-    // Followed by: LogEntry log[op_number]
+    // Followed by: WALEntry log[op_number]
 } DoViewChangeMessage;
 
 typedef struct {
     MessageHeader base;
     uint64_t view_number;
     int commit_index;
-    int op_number;  // Number of log entries that follow
-    // Followed by: LogEntry log[op_number]
+    int op_number;  // Number of WAL entries that follow
+    // Followed by: WALEntry log[op_number]
 } BeginViewMessage;
 
 typedef struct {
@@ -138,7 +138,7 @@ typedef struct {
     int op_number;      // Number of log entries that follow
     int commit_index;
     int start_index;    // Global log index of the first entry in the suffix
-    // Followed by: LogEntry log[op_number]
+    // Followed by: WALEntry log[op_number]
 } NewStateMessage;
 
 typedef struct {
@@ -228,7 +228,7 @@ typedef struct {
     uint32_t recovery_votes;
     uint64_t recovery_nonce;
     uint64_t recovery_view;
-    Log      recovery_log;
+    WAL      recovery_log;
     uint64_t recovery_log_view;
     Time     recovery_time;
     int      recovery_commit;
@@ -238,7 +238,7 @@ typedef struct {
 
     uint32_t view_change_begin_votes;
     uint32_t view_change_apply_votes;
-    Log      view_change_log; // Best log seen
+    WAL      view_change_log; // Best log seen
     uint64_t view_change_old_view;  // Best old_view_number seen in DoViewChange
     int      view_change_commit;    // Best commit_index seen
 
@@ -255,7 +255,7 @@ typedef struct {
     bool state_transfer_pending;
     Time state_transfer_time;
 
-    Log log;
+    WAL wal;
 
     Time heartbeat;
 

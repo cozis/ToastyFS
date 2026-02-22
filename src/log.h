@@ -1,3 +1,4 @@
+#if 0
 #ifndef LOG_INCLUDED
 #define LOG_INCLUDED
 
@@ -28,3 +29,4 @@ void log_move(Log *dst, Log *src);
 int  log_append(Log *log, LogEntry entry);
 
 #endif // LOG_INCLUDED
+#endif

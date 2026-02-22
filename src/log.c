@@ -1,3 +1,4 @@
+#if 0
 #if defined(MAIN_SIMULATION) || defined(MAIN_TEST)
 #define QUAKEY_ENABLE_MOCKS
 #endif
@@ -53,3 +54,5 @@ int log_append(Log *log, LogEntry entry)
     log->entries[log->count++] = entry;
     return 0;
 }
+
+#endif

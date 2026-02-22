@@ -11,6 +11,7 @@
 typedef enum {
     HR_OK,
     HR_OUT_OF_MEMORY,
+    HR_IO_FAILURE,
     HR_INVALID_MESSAGE,
 } HandlerResult;
 
@@ -58,7 +59,7 @@ static void node_log_impl(ServerState *state, const char *event, const char *det
         status_name(state->status),
         state->view_number,
         state->commit_index,
-        state->log.count,
+        state->wal.count,
         event,
         detail ? detail : "");
 }
@@ -145,10 +146,10 @@ static void begin_state_transfer(ServerState *state, int sender_idx)
             .length  = sizeof(GetStateMessage),
         },
         .view_number = state->view_number,
-        .op_number   = state->log.count,
+        .op_number   = state->wal.count,
         .sender_idx  = self_idx(state),
     };
-    node_log(state, "SEND GET_STATE", "to=%d op=%d", sender_idx, state->log.count);
+    node_log(state, "SEND GET_STATE", "to=%d op=%d", sender_idx, state->wal.count);
     send_to_peer(state, sender_idx, &message.base);
 
     state->state_transfer_time = state->now;
@@ -266,14 +267,14 @@ process_request(ServerState *state, int conn_idx, ByteView msg)
         }
     }
 
-    LogEntry log_entry = {
+    WALEntry wal_entry = {
         .oper        = request_message.oper,
         .votes       = 1 << self_idx(state),
         .view_number = state->view_number,
         .client_id   = request_message.client_id,
         .request_id  = request_message.request_id,
     };
-    if (log_append(&state->log, log_entry) < 0)
+    if (wal_append(&state->wal, wal_entry) < 0)
         return HR_OUT_OF_MEMORY;
 
     // We forwarded the message to all peers. As soon as
@@ -287,7 +288,7 @@ process_request(ServerState *state, int conn_idx, ByteView msg)
         },
         .oper         = request_message.oper,
         .sender_idx   = self_idx(state),
-        .log_index    = state->log.count-1,
+        .log_index    = state->wal.count-1,
         .commit_index = state->commit_index,
         .view_number  = state->view_number,
         .client_id    = request_message.client_id,
@@ -296,7 +297,7 @@ process_request(ServerState *state, int conn_idx, ByteView msg)
     {
         char oper_buf[128];
         meta_snprint_oper(oper_buf, sizeof(oper_buf), &request_message.oper);
-        node_log(state, "SEND PREPARE", "to=* idx=%d %s", state->log.count-1, oper_buf);
+        node_log(state, "SEND PREPARE", "to=* idx=%d %s", state->wal.count-1, oper_buf);
     }
     broadcast_to_peers(state, &prepare_message.base);
     return HR_OK;
@@ -335,11 +336,11 @@ static void reply_to_client(ServerState *state, ClientTableEntry *table_entry,
 
 static void advance_commit_index(ServerState *state, int target_index, bool send_replies)
 {
-    target_index = MIN(target_index, state->log.count);
+    target_index = MIN(target_index, state->wal.count);
 
     while (state->commit_index < target_index) {
 
-        LogEntry *entry = &state->log.entries[state->commit_index++];
+        WALEntry *entry = &state->wal.entries[state->commit_index++];
 
         MetaResult result = meta_store_update(&state->metastore, &entry->oper);
         {
@@ -431,12 +432,12 @@ process_prepare_ok(ServerState *state, int conn_idx, ByteView msg)
     }
 
     assert(message.log_index > -1);
-    assert(message.log_index < state->log.count);
+    assert(message.log_index < state->wal.count);
 
     if (message.log_index < state->commit_index)
         return HR_OK; // Already processed
 
-    LogEntry *entry = &state->log.entries[message.log_index];
+    WALEntry *entry = &state->wal.entries[message.log_index];
     add_vote(&entry->votes, message.sender_idx);
     if (reached_quorum(state, entry->votes)) {
         node_log(state, "QUORUM", "idx=%d %s/%s", message.log_index, entry->oper.bucket, entry->oper.key);
@@ -467,8 +468,8 @@ clear_view_change_fields(ServerState *state)
     state->view_change_apply_votes = 0;
     state->view_change_old_view = 0;
     state->view_change_commit = 0;
-    log_free(&state->view_change_log);
-    log_init(&state->view_change_log);
+    wal_free(&state->view_change_log);
+    wal_init(&state->view_change_log);
 }
 
 static HandlerResult
@@ -476,7 +477,10 @@ complete_view_change_and_become_primary(ServerState *state)
 {
     assert(state->commit_index <= state->view_change_commit);
 
-    log_move(&state->log, &state->view_change_log);
+    if (wal_replace(&state->wal, state->view_change_log.entries, state->view_change_log.count) < 0)
+        return HR_IO_FAILURE;
+    wal_free(&state->view_change_log);
+    wal_init(&state->view_change_log);
 
     state->status = STATUS_NORMAL;
     state->last_normal_view = state->view_number;
@@ -494,9 +498,9 @@ complete_view_change_and_become_primary(ServerState *state)
     // entries inherited from DO_VIEW_CHANGE have stale
     // votes from the previous view. The new leader starts
     // with its own vote for each entry.
-    for (int i = state->commit_index; i < state->log.count; i++) {
+    for (int i = state->commit_index; i < state->wal.count; i++) {
 
-        LogEntry *entry = &state->log.entries[i];
+        WALEntry *entry = &state->wal.entries[i];
 
         entry->votes = 0;
         add_vote(&entry->votes, self_idx(state));
@@ -506,15 +510,15 @@ complete_view_change_and_become_primary(ServerState *state)
         .base = {
             .version = MESSAGE_VERSION,
             .type    = MESSAGE_TYPE_BEGIN_VIEW,
-            .length  = sizeof(BeginViewMessage) + state->log.count * sizeof(LogEntry),
+            .length  = sizeof(BeginViewMessage) + state->wal.count * sizeof(WALEntry),
         },
         .view_number = state->view_number,
         .commit_index = state->commit_index,
-        .op_number = state->log.count,
+        .op_number = state->wal.count,
     };
     node_log(state, "SEND BEGIN_VIEW", "to=* view=%lu log=%d commit=%d",
-        state->view_number, state->log.count, state->commit_index);
-    broadcast_to_peers_ex(state, &begin_view_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
+        state->view_number, state->wal.count, state->commit_index);
+    broadcast_to_peers_ex(state, &begin_view_message.base, state->wal.entries, state->wal.count * sizeof(WALEntry));
 
     clear_view_change_fields(state);
     return HR_OK;
@@ -552,15 +556,15 @@ process_do_view_change(ServerState *state, int conn_idx, ByteView msg)
 
             state->view_change_old_view = message.old_view_number;
 
-            LogEntry *entries = (LogEntry*) (msg.ptr + sizeof(DoViewChangeMessage));
+            WALEntry *entries = (WALEntry*) (msg.ptr + sizeof(DoViewChangeMessage));
 
             // Parse the variable-sized log from the message
-            int num_entries = (msg.len - sizeof(DoViewChangeMessage)) / sizeof(LogEntry);
+            int num_entries = (msg.len - sizeof(DoViewChangeMessage)) / sizeof(WALEntry);
             if (num_entries != message.op_number)
                 return HR_INVALID_MESSAGE; // Message size mismatch
 
-            log_free(&state->view_change_log);
-            if (log_init_from_network(&state->view_change_log, entries, num_entries) < 0)
+            wal_free(&state->view_change_log);
+            if (wal_init_from_network(&state->view_change_log, entries, num_entries) < 0)
                 return HR_OUT_OF_MEMORY;
         }
 
@@ -599,15 +603,15 @@ process_recovery(ServerState *state, int conn_idx, ByteView msg)
             .length  = sizeof(RecoveryResponseMessage),
         },
         .view_number  = state->view_number,
-        .op_number    = state->log.count-1, // TODO: What if the log is empty?
+        .op_number    = state->wal.count-1, // TODO: What if the log is empty?
         .nonce        = recovery_message.nonce,
         .commit_index = state->commit_index,
         .sender_idx   = self_idx(state),
     };
     if (is_primary(state)) {
-        recovery_response_message.base.length += state->log.count * sizeof(LogEntry);
+        recovery_response_message.base.length += state->wal.count * sizeof(WALEntry);
         send_to_peer_ex(state, recovery_message.sender_idx, &recovery_response_message.base,
-            state->log.entries, state->log.count * sizeof(LogEntry));
+            state->wal.entries, state->wal.count * sizeof(WALEntry));
     } else {
         send_to_peer(state, recovery_message.sender_idx, &recovery_response_message.base);
     }
@@ -627,7 +631,7 @@ perform_log_transfer_for_view_change(ServerState *state)
         state->view_change_commit = state->commit_index;
 
         // TODO: This should use copy-on-write
-        if (log_init_from_network(&state->view_change_log, state->log.entries, state->log.count) < 0)
+        if (wal_init_from_network(&state->view_change_log, state->wal.entries, state->wal.count) < 0)
             return HR_OUT_OF_MEMORY;
 
     } else {
@@ -635,18 +639,18 @@ perform_log_transfer_for_view_change(ServerState *state)
             .base = {
                 .version = MESSAGE_VERSION,
                 .type    = MESSAGE_TYPE_DO_VIEW_CHANGE,
-                .length  = sizeof(DoViewChangeMessage) + state->log.count * sizeof(LogEntry),
+                .length  = sizeof(DoViewChangeMessage) + state->wal.count * sizeof(WALEntry),
             },
             .view_number = state->view_number,
             .old_view_number = state->last_normal_view,
-            .op_number = state->log.count,
+            .op_number = state->wal.count,
             .commit_index = state->commit_index,
             .sender_idx = self_idx(state),
         };
-        send_to_peer_ex(state, primary_idx(state), &do_view_change_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
+        send_to_peer_ex(state, primary_idx(state), &do_view_change_message.base, state->wal.entries, state->wal.count * sizeof(WALEntry));
         node_log(state, "SEND DO_VIEW_CHANGE", "to=%d view=%lu old_view=%lu log=%d commit=%d",
             primary_idx(state), state->view_number, state->last_normal_view,
-            state->log.count, state->commit_index);
+            state->wal.count, state->commit_index);
     }
 
     // Clear the future array since we're changing views
@@ -740,20 +744,20 @@ process_begin_view(ServerState *state, int conn_idx, ByteView msg)
     state->last_normal_view = state->view_number;
     node_log(state, "STATUS NORMAL", "new view=%lu (follower)", state->view_number);
 
-    int num_entries = (msg.len - sizeof(BeginViewMessage)) / sizeof(LogEntry);
+    int num_entries = (msg.len - sizeof(BeginViewMessage)) / sizeof(WALEntry);
     assert(num_entries >= state->commit_index);
 
-    // Replace the local log with the authoritative log from the primary
-    log_free(&state->log);
-    if (log_init_from_network(&state->log, msg.ptr + sizeof(BeginViewMessage), num_entries) < 0)
-        return HR_OUT_OF_MEMORY;
+    // Replace the local WAL with the authoritative log from the primary
+    WALEntry *new_entries = (WALEntry *)(msg.ptr + sizeof(BeginViewMessage));
+    if (wal_replace(&state->wal, new_entries, num_entries) < 0)
+        return HR_IO_FAILURE;
 
     state->num_future = 0;
     state->state_transfer_pending = false;
 
     // If there are non-committed operations in the log,
     // send a PREPAREOK to the new primary
-    if (state->log.count > message.commit_index) {
+    if (state->wal.count > message.commit_index) {
         PrepareOKMessage ok_msg = {
             .base = {
                 .version = MESSAGE_VERSION,
@@ -761,12 +765,12 @@ process_begin_view(ServerState *state, int conn_idx, ByteView msg)
                 .length  = sizeof(PrepareOKMessage),
             },
             .sender_idx = self_idx(state),
-            .log_index  = state->log.count - 1,
+            .log_index  = state->wal.count - 1,
             .view_number = state->view_number,
         };
         send_to_peer(state, primary_idx(state), &ok_msg.base);
-        node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", primary_idx(state), state->log.count - 1,
-            state->log.entries[state->log.count - 1].oper.bucket, state->log.entries[state->log.count - 1].oper.key);
+        node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", primary_idx(state), state->wal.count - 1,
+            state->wal.entries[state->wal.count - 1].oper.bucket, state->wal.entries[state->wal.count - 1].oper.key);
     }
 
     advance_commit_index(state, message.commit_index, false);
@@ -798,16 +802,16 @@ process_get_state(ServerState *state, int conn_idx, ByteView msg)
 
     // Compute the suffix of log entries the requester is missing
     int start = get_state_message.op_number;
-    if (start < 0 || start >= state->log.count)
+    if (start < 0 || start >= state->wal.count)
         return HR_OK; // Nothing to send
 
-    int num_entries = state->log.count - start;
+    int num_entries = state->wal.count - start;
 
     NewStateMessage new_state_message = {
         .base = {
             .version = MESSAGE_VERSION,
             .type    = MESSAGE_TYPE_NEW_STATE,
-            .length  = sizeof(NewStateMessage) + num_entries * sizeof(LogEntry),
+            .length  = sizeof(NewStateMessage) + num_entries * sizeof(WALEntry),
         },
         .view_number  = state->view_number,
         .op_number    = num_entries,
@@ -817,7 +821,7 @@ process_get_state(ServerState *state, int conn_idx, ByteView msg)
     node_log(state, "SEND NEW_STATE", "to=%d entries=%d commit=%d",
         get_state_message.sender_idx, num_entries, state->commit_index);
     send_to_peer_ex(state, get_state_message.sender_idx, &new_state_message.base,
-        state->log.entries + start, num_entries * sizeof(LogEntry));
+        state->wal.entries + start, num_entries * sizeof(WALEntry));
     return HR_OK;
 }
 
@@ -1040,7 +1044,10 @@ complete_recovery(ServerState *state)
     assert(state->commit_index <= state->recovery_commit);
 
     state->view_number = state->recovery_view;
-    log_move(&state->log, &state->recovery_log);
+    if (wal_replace(&state->wal, state->recovery_log.entries, state->recovery_log.count) < 0)
+        return HR_IO_FAILURE;
+    wal_free(&state->recovery_log);
+    wal_init(&state->recovery_log);
     advance_commit_index(state, state->recovery_commit, false);
 
     state->status = STATUS_NORMAL;
@@ -1050,8 +1057,8 @@ complete_recovery(ServerState *state)
 
     // Reset stale votes
     if (is_primary(state)) {
-        for (int i = state->commit_index; i < state->log.count; i++) {
-            LogEntry *entry = &state->log.entries[i];
+        for (int i = state->commit_index; i < state->wal.count; i++) {
+            WALEntry *entry = &state->wal.entries[i];
             entry->votes = 0;
             add_vote(&entry->votes, self_idx(state));
         }
@@ -1124,13 +1131,13 @@ process_recovery_response(ServerState *state, ByteView msg)
 
     if (should_store_recovery_log(state, message)) {
 
-        LogEntry *entries = (LogEntry*) (msg.ptr + sizeof(RecoveryResponseMessage));
+        WALEntry *entries = (WALEntry*) (msg.ptr + sizeof(RecoveryResponseMessage));
         int   num_entries = message.op_number + 1;
 
-        assert(num_entries == (int) ((msg.len - sizeof(RecoveryResponseMessage)) / sizeof(LogEntry)));
+        assert(num_entries == (int) ((msg.len - sizeof(RecoveryResponseMessage)) / sizeof(WALEntry)));
 
-        log_free(&state->recovery_log);
-        if (log_init_from_network(&state->recovery_log, entries, num_entries) < 0)
+        wal_free(&state->recovery_log);
+        if (wal_init_from_network(&state->recovery_log, entries, num_entries) < 0)
             return HR_OUT_OF_MEMORY;
 
         state->recovery_log_view = message.view_number;
@@ -1151,20 +1158,20 @@ process_single_future_list_entry(ServerState *state)
 {
     // Look for an entry with the current log index
     int i = 0;
-    while (i < state->num_future && state->future[i].log_index != state->log.count)
+    while (i < state->num_future && state->future[i].log_index != state->wal.count)
         i++;
 
     if (i == state->num_future)
         return 0; // No entry
 
-    LogEntry entry = {
+    WALEntry entry = {
         .oper = state->future[i].oper,
         .votes = 0,
         .view_number = state->view_number,
         .client_id  = state->future[i].client_id,
         .request_id = state->future[i].request_id,
     };
-    if (log_append(&state->log, entry) < 0)
+    if (wal_append(&state->wal, entry) < 0)
         return -1;
 
     PrepareOKMessage message = {
@@ -1174,7 +1181,7 @@ process_single_future_list_entry(ServerState *state)
             .length  = sizeof(PrepareOKMessage),
         },
         .sender_idx  = self_idx(state),
-        .log_index   = state->log.count-1,
+        .log_index   = state->wal.count-1,
         .view_number = state->view_number,
     };
     send_to_peer(state, state->future[i].sender_idx, &message.base);
@@ -1185,7 +1192,7 @@ static void
 remove_old_future_list_entries(ServerState *state)
 {
     for (int i = 0; i < state->num_future; i++) {
-        if (state->future[i].log_index < state->log.count) {
+        if (state->future[i].log_index < state->wal.count) {
             state->future[i--] = state->future[--state->num_future];
         }
     }
@@ -1234,24 +1241,24 @@ process_prepare(ServerState *state, ByteView msg)
         return HR_OK;
     }
 
-    if (message.log_index < state->log.count)
+    if (message.log_index < state->wal.count)
         return HR_OK; // Message refers to an old entry. Ignore.
 
-    if (message.log_index > state->log.count) {
+    if (message.log_index > state->wal.count) {
         if (state->num_future < FUTURE_LIMIT)
             state->future[state->num_future++] = message;
         begin_state_transfer(state, message.sender_idx);
         return HR_OK;
     }
 
-    LogEntry log_entry = {
+    WALEntry wal_entry = {
         .oper = message.oper,
         .votes = 0,
         .view_number = state->view_number,
         .client_id  = message.client_id,
         .request_id = message.request_id,
     };
-    if (log_append(&state->log, log_entry) < 0)
+    if (wal_append(&state->wal, wal_entry) < 0)
         return HR_OUT_OF_MEMORY;
 
     PrepareOKMessage ok_message = {
@@ -1261,12 +1268,12 @@ process_prepare(ServerState *state, ByteView msg)
             .length  = sizeof(PrepareOKMessage),
         },
         .sender_idx = self_idx(state),
-        .log_index  = state->log.count-1,
+        .log_index  = state->wal.count-1,
         .view_number = state->view_number,
     };
     send_to_peer(state, message.sender_idx, &ok_message.base);
     node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s",
-        message.sender_idx, state->log.count-1, message.oper.bucket, message.oper.key);
+        message.sender_idx, state->wal.count-1, message.oper.bucket, message.oper.key);
 
     process_future_list(state);
     advance_commit_index(state, message.commit_index, false);
@@ -1318,7 +1325,7 @@ process_new_state(ServerState *state, int conn_idx, ByteView msg)
     if (new_state_message.view_number != state->view_number)
         return HR_OK;
 
-    int num_entries = (msg.len - sizeof(NewStateMessage)) / sizeof(LogEntry);
+    int num_entries = (msg.len - sizeof(NewStateMessage)) / sizeof(WALEntry);
     if (num_entries != new_state_message.op_number)
         return HR_INVALID_MESSAGE;
 
@@ -1328,22 +1335,22 @@ process_new_state(ServerState *state, int conn_idx, ByteView msg)
     // Append received entries to our log.
     // The entries array is a suffix of the sender's log starting at
     // global position start_index. We skip entries we already have.
-    LogEntry *entries = (LogEntry *)((uint8_t *)msg.ptr + sizeof(NewStateMessage));
+    WALEntry *entries = (WALEntry *)((uint8_t *)msg.ptr + sizeof(NewStateMessage));
     int start_index = new_state_message.start_index;
     for (int i = 0; i < num_entries; i++) {
 
         int global_idx = start_index + i;
-        if (global_idx < state->log.count)
+        if (global_idx < state->wal.count)
             continue; // Already have this entry
 
-        LogEntry entry = {
+        WALEntry entry = {
             .oper = entries[i].oper,
             .votes = 0,
             .view_number = state->view_number,
             .client_id = entries[i].client_id,
             .request_id = entries[i].request_id,
         };
-        if (log_append(&state->log, entry) < 0)
+        if (wal_append(&state->wal, entry) < 0)
             return HR_OUT_OF_MEMORY;
 
         // Send PREPARE_OK for each appended entry
@@ -1354,12 +1361,12 @@ process_new_state(ServerState *state, int conn_idx, ByteView msg)
                 .length  = sizeof(PrepareOKMessage),
             },
             .sender_idx  = self_idx(state),
-            .log_index   = state->log.count - 1,
+            .log_index   = state->wal.count - 1,
             .view_number = state->view_number,
         };
         send_to_peer(state, primary_idx(state), &prepare_ok_message.base);
-        node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", primary_idx(state), state->log.count - 1,
-            state->log.entries[state->log.count - 1].oper.bucket, state->log.entries[state->log.count - 1].oper.key);
+        node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", primary_idx(state), state->wal.count - 1,
+            state->wal.entries[state->wal.count - 1].oper.bucket, state->wal.entries[state->wal.count - 1].oper.key);
     }
 
     process_future_list(state);
@@ -1665,27 +1672,23 @@ int server_init(void *state_, int argc, char **argv,
     state->view_change_apply_votes = 0;
     state->view_change_old_view = 0;
     state->view_change_commit = 0;
-    log_init(&state->view_change_log);
+    wal_init(&state->view_change_log);
 
     // Recovery state
     state->recovery_votes = 0;
     state->recovery_commit = 0;
     state->recovery_view = 0;
     state->recovery_log_view = 0;
-    log_init(&state->recovery_log);
+    wal_init(&state->recovery_log);
 
-    // Detect whether this is a restart after a crash by checking for a
-    // boot marker file on disk. The disk persists across crashes, so if
-    // the marker exists, this node previously ran and crashed. In that
-    // case, enter recovery mode to learn the current view from peers
-    // before participating in the protocol.
-    //
-    // We use open() directly (without O_CREAT) instead of file_exists()
-    // because access() is not available in the simulation environment.
-    int marker_fd = open("vsr_boot_marker", O_RDONLY, 0);
-    bool previously_crashed = (marker_fd >= 0);
-    if (previously_crashed)
-        close(marker_fd);
+    // Open the WAL file. If it contains entries from a previous run,
+    // this node crashed and must enter recovery mode to learn the
+    // current view from peers before participating in the protocol.
+    if (wal_init_from_file(&state->wal, S("vsr.log")) < 0) {
+        fprintf(stderr, "Node :: Couldn't open WAL file\n");
+        return -1;
+    }
+    bool previously_crashed = (state->wal.count > 0);
     if (previously_crashed) {
         state->status = STATUS_RECOVERY;
         state->recovery_nonce = now;
@@ -1693,7 +1696,6 @@ int server_init(void *state_, int argc, char **argv,
     } else {
         state->status = STATUS_NORMAL;
     }
-    log_init(&state->log); // Initialize early so node_log can read log.count
     node_log(state, "INIT", "nodes=%d%s", state->num_nodes, previously_crashed ? " (recovering)" : "");
 
     client_table_init(&state->client_table);
@@ -1715,15 +1717,6 @@ int server_init(void *state_, int argc, char **argv,
         fprintf(stderr, "Node :: Couldn't setup TCP listener\n");
         tcp_context_free(&state->tcp);
         return -1;
-    }
-
-    // Write the boot marker to disk so that future restarts can detect
-    // a previous crash. This must happen after TCP init so that the
-    // marker is only written if the node successfully started.
-    if (!previously_crashed) {
-        int fd = open("vsr_boot_marker", O_WRONLY | O_CREAT, 0644);
-        if (fd >= 0)
-            close(fd);
     }
 
     if (previously_crashed) {
@@ -1793,7 +1786,7 @@ int server_tick(void *state_, void **ctxs,
                 tcp_close(&state->tcp, conn_idx);
                 break;
             }
-            if (hret == HR_OUT_OF_MEMORY)
+            if (hret == HR_OUT_OF_MEMORY || hret == HR_IO_FAILURE)
                 return -1;
             assert(hret == HR_OK);
 
@@ -1932,7 +1925,7 @@ int server_tick(void *state_, void **ctxs,
 
         Time st_deadline = state->state_transfer_time + STATE_TRANSFER_TIMEOUT_SEC * 1000000000ULL;
         if (st_deadline <= state->now) {
-            node_log(state, "TIMEOUT STATE_TRANSFER", "op=%d", state->log.count);
+            node_log(state, "TIMEOUT STATE_TRANSFER", "op=%d", state->wal.count);
 
             GetStateMessage get_state_message = {
                 .base = {
@@ -1941,11 +1934,11 @@ int server_tick(void *state_, void **ctxs,
                     .length  = sizeof(GetStateMessage),
                 },
                 .view_number = state->view_number,
-                .op_number   = state->log.count,
+                .op_number   = state->wal.count,
                 .sender_idx  = self_idx(state),
             };
             send_to_peer(state, primary_idx(state), &get_state_message.base);
-            node_log(state, "SEND GET_STATE", "to=%d op=%d", primary_idx(state), state->log.count);
+            node_log(state, "SEND GET_STATE", "to=%d op=%d", primary_idx(state), state->wal.count);
 
             state->state_transfer_time = state->now;
 
@@ -1967,9 +1960,9 @@ int server_free(void *state_)
 
     node_log_simple(state, "CRASHED");
 
-    log_free(&state->log);
-    log_free(&state->recovery_log);
-    log_free(&state->view_change_log);
+    wal_free(&state->wal);
+    wal_free(&state->recovery_log);
+    wal_free(&state->view_change_log);
     tcp_context_free(&state->tcp);
     client_table_free(&state->client_table);
     meta_store_free(&state->metastore);
