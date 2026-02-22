@@ -22,16 +22,16 @@ static int self_idx(ServerState *state)
     UNREACHABLE;
 }
 
-static int leader_idx(ServerState *state)
+static int primary_idx(ServerState *state)
 {
     return state->view_number % state->num_nodes;
 }
 
-static bool is_leader(ServerState *state)
+static bool is_primary(ServerState *state)
 {
     if (state->status == STATUS_RECOVERY)
         return false;
-    return self_idx(state) == leader_idx(state);
+    return self_idx(state) == primary_idx(state);
 }
 
 // ---- Logging infrastructure ----
@@ -54,7 +54,7 @@ static void node_log_impl(ServerState *state, const char *event, const char *det
     printf("[" TIME_FMT "] NODE %d (%s) %s | V%-3lu C%-3d L%-3d | %-20s %s\n",
         TIME_VAL(state->now),
         self_idx(state),
-        is_leader(state) ? "PR" : "RE",
+        is_primary(state) ? "PR" : "RE",
         status_name(state->status),
         state->view_number,
         state->commit_index,
@@ -590,7 +590,7 @@ process_recovery(ServerState *state, int conn_idx, ByteView msg)
     node_log(state, "RECV RECOVERY", "from=%d nonce=%lu", recovery_message.sender_idx, recovery_message.nonce);
 
     node_log(state, "SEND RECOVERY_RESP", "to=%d view=%lu is_primary=%s",
-        recovery_message.sender_idx, state->view_number, is_leader(state) ? "yes" : "no");
+        recovery_message.sender_idx, state->view_number, is_primary(state) ? "yes" : "no");
 
     RecoveryResponseMessage recovery_response_message = {
         .base = {
@@ -604,7 +604,7 @@ process_recovery(ServerState *state, int conn_idx, ByteView msg)
         .commit_index = state->commit_index,
         .sender_idx   = self_idx(state),
     };
-    if (is_leader(state)) {
+    if (is_primary(state)) {
         recovery_response_message.base.length += state->log.count * sizeof(LogEntry);
         send_to_peer_ex(state, recovery_message.sender_idx, &recovery_response_message.base,
             state->log.entries, state->log.count * sizeof(LogEntry));
@@ -617,7 +617,7 @@ process_recovery(ServerState *state, int conn_idx, ByteView msg)
 static HandlerResult
 perform_log_transfer_for_view_change(ServerState *state)
 {
-    if (is_leader(state)) {
+    if (is_primary(state)) {
         // We are the new leader: count our own vote directly
         // since send_to_peer_ex skips self-sends.
 
@@ -643,9 +643,9 @@ perform_log_transfer_for_view_change(ServerState *state)
             .commit_index = state->commit_index,
             .sender_idx = self_idx(state),
         };
-        send_to_peer_ex(state, leader_idx(state), &do_view_change_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
+        send_to_peer_ex(state, primary_idx(state), &do_view_change_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
         node_log(state, "SEND DO_VIEW_CHANGE", "to=%d view=%lu old_view=%lu log=%d commit=%d",
-            leader_idx(state), state->view_number, state->last_normal_view,
+            primary_idx(state), state->view_number, state->last_normal_view,
             state->log.count, state->commit_index);
     }
 
@@ -764,8 +764,8 @@ process_begin_view(ServerState *state, int conn_idx, ByteView msg)
             .log_index  = state->log.count - 1,
             .view_number = state->view_number,
         };
-        send_to_peer(state, leader_idx(state), &ok_msg.base);
-        node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", leader_idx(state), state->log.count - 1,
+        send_to_peer(state, primary_idx(state), &ok_msg.base);
+        node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", primary_idx(state), state->log.count - 1,
             state->log.entries[state->log.count - 1].oper.bucket, state->log.entries[state->log.count - 1].oper.key);
     }
 
@@ -1035,61 +1035,6 @@ process_get_blob(ServerState *state, int conn_idx, ByteView msg)
 }
 
 static HandlerResult
-process_message_as_leader(ServerState *state,
-    int conn_idx, uint8_t type, ByteView msg)
-{
-    switch (type) {
-    case MESSAGE_TYPE_REQUEST:
-        if (state->status == STATUS_NORMAL)
-            return process_request(state, conn_idx, msg);
-        break;
-
-    case MESSAGE_TYPE_COMMIT_PUT:
-        // CommitPut is structurally identical to REQUEST and follows
-        // the same VSR path: client table check, log_append, PREPARE.
-        if (state->status == STATUS_NORMAL)
-            return process_request(state, conn_idx, msg);
-        break;
-
-    case MESSAGE_TYPE_PREPARE_OK:
-        if (state->status == STATUS_NORMAL)
-            return process_prepare_ok(state, conn_idx, msg);
-        break;
-
-    case MESSAGE_TYPE_DO_VIEW_CHANGE:
-        if (state->status == STATUS_CHANGE_VIEW)
-            return process_do_view_change(state, conn_idx, msg);
-        break;
-
-    case MESSAGE_TYPE_RECOVERY:
-        if (state->status == STATUS_NORMAL)
-            return process_recovery(state, conn_idx, msg);
-        break;
-
-    case MESSAGE_TYPE_BEGIN_VIEW_CHANGE:
-        if (state->status != STATUS_RECOVERY)
-            return process_begin_view_change(state, conn_idx, msg);
-        break;
-
-    case MESSAGE_TYPE_BEGIN_VIEW:
-        if (state->status != STATUS_RECOVERY)
-            return process_begin_view(state, conn_idx, msg);
-        break;
-
-    case MESSAGE_TYPE_RECOVERY_RESPONSE:
-        return HR_OK;
-
-    case MESSAGE_TYPE_GET_STATE:
-        return process_get_state(state, conn_idx, msg);
-
-    default:
-        break;
-    }
-
-    return HR_OK;
-}
-
-static HandlerResult
 complete_recovery(ServerState *state)
 {
     assert(state->commit_index <= state->recovery_commit);
@@ -1104,7 +1049,7 @@ complete_recovery(ServerState *state)
         state->view_number, state->commit_index);
 
     // Reset stale votes
-    if (is_leader(state)) {
+    if (is_primary(state)) {
         for (int i = state->commit_index; i < state->log.count; i++) {
             LogEntry *entry = &state->log.entries[i];
             entry->votes = 0;
@@ -1412,8 +1357,8 @@ process_new_state(ServerState *state, int conn_idx, ByteView msg)
             .log_index   = state->log.count - 1,
             .view_number = state->view_number,
         };
-        send_to_peer(state, leader_idx(state), &prepare_ok_message.base);
-        node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", leader_idx(state), state->log.count - 1,
+        send_to_peer(state, primary_idx(state), &prepare_ok_message.base);
+        node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", primary_idx(state), state->log.count - 1,
             state->log.entries[state->log.count - 1].oper.bucket, state->log.entries[state->log.count - 1].oper.key);
     }
 
@@ -1439,7 +1384,7 @@ send_redirect(ServerState *state, int conn_idx)
 
     node_log(state, "SEND REDIRECT", "-> conn %d view=%lu leader=%d",
         tcp_get_tag(&state->tcp, conn_idx),
-        (unsigned long)state->view_number, leader_idx(state));
+        (unsigned long)state->view_number, primary_idx(state));
 
     ByteQueue *output = tcp_output_buffer(&state->tcp, conn_idx);
     assert(output);
@@ -1448,160 +1393,188 @@ send_redirect(ServerState *state, int conn_idx)
     return HR_OK;
 }
 
-static HandlerResult
-process_message_as_replica(ServerState *state,
-    int conn_idx, uint8_t type, ByteView msg)
+static int
+server_idx_from_message(uint8_t type, ByteView msg)
 {
     switch (type) {
-    case MESSAGE_TYPE_REQUEST:
-        if (state->status == STATUS_NORMAL)
-            return send_redirect(state, conn_idx);
-        break;
-
-    case MESSAGE_TYPE_COMMIT_PUT:
-        // CommitPut must go to the leader; redirect the client.
-        if (state->status == STATUS_NORMAL)
-            return send_redirect(state, conn_idx);
-        break;
-
     case MESSAGE_TYPE_PREPARE:
-        if (state->status == STATUS_NORMAL)
-            return process_prepare(state, msg);
+        if (msg.len >= sizeof(PrepareMessage)) {
+            PrepareMessage m;
+            memcpy(&m, msg.ptr, sizeof(m));
+            return m.sender_idx;
+        }
         break;
-
-    case MESSAGE_TYPE_COMMIT:
-        if (state->status == STATUS_NORMAL)
-            return process_commit(state, conn_idx, msg);
+    case MESSAGE_TYPE_PREPARE_OK:
+        if (msg.len >= sizeof(PrepareOKMessage)) {
+            PrepareOKMessage m;
+            memcpy(&m, msg.ptr, sizeof(m));
+            return m.sender_idx;
+        }
         break;
-
     case MESSAGE_TYPE_BEGIN_VIEW_CHANGE:
-        if (state->status != STATUS_RECOVERY)
-            return process_begin_view_change(state, conn_idx, msg);
+        if (msg.len >= sizeof(BeginViewChangeMessage)) {
+            BeginViewChangeMessage m;
+            memcpy(&m, msg.ptr, sizeof(m));
+            return m.sender_idx;
+        }
         break;
-
-    case MESSAGE_TYPE_BEGIN_VIEW:
-        if (state->status != STATUS_RECOVERY)
-            return process_begin_view(state, conn_idx, msg);
+    case MESSAGE_TYPE_DO_VIEW_CHANGE:
+        if (msg.len >= sizeof(DoViewChangeMessage)) {
+            DoViewChangeMessage m;
+            memcpy(&m, msg.ptr, sizeof(m));
+            return m.sender_idx;
+        }
         break;
-
     case MESSAGE_TYPE_RECOVERY:
-        if (state->status == STATUS_NORMAL)
-            return process_recovery(state, conn_idx, msg);
+        if (msg.len >= sizeof(RecoveryMessage)) {
+            RecoveryMessage m;
+            memcpy(&m, msg.ptr, sizeof(m));
+            return m.sender_idx;
+        }
         break;
-
     case MESSAGE_TYPE_RECOVERY_RESPONSE:
-        if (state->status == STATUS_RECOVERY)
-            return process_recovery_response(state, msg);
+        if (msg.len >= sizeof(RecoveryResponseMessage)) {
+            RecoveryResponseMessage m;
+            memcpy(&m, msg.ptr, sizeof(m));
+            return m.sender_idx;
+        }
         break;
-
-    case MESSAGE_TYPE_NEW_STATE:
-        return process_new_state(state, conn_idx, msg);
-
-    default:
+    case MESSAGE_TYPE_GET_STATE:
+        if (msg.len >= sizeof(GetStateMessage)) {
+            GetStateMessage m;
+            memcpy(&m, msg.ptr, sizeof(m));
+            return m.sender_idx;
+        }
+        break;
+    case MESSAGE_TYPE_FETCH_CHUNK:
+        if (msg.len >= sizeof(FetchChunkMessage)) {
+            FetchChunkMessage m;
+            memcpy(&m, msg.ptr, sizeof(m));
+            return m.sender_idx;
+        }
         break;
     }
-    return HR_OK;
+
+    return -1;
 }
 
 static HandlerResult
 process_message(ServerState *state,
     int conn_idx, uint8_t type, ByteView msg)
 {
-    // Tag incoming connections with the sender's node index so that
-    // the connection can be used bidirectionally. Without this, when
-    // node A connects to node B and sends a message, node B can't
-    // send back to node A through the same connection (the tag is
-    // only set on the connector's side).
-    {
-        int sender_idx = -1;
-        switch (type) {
-        case MESSAGE_TYPE_PREPARE:
-            if (msg.len >= sizeof(PrepareMessage)) {
-                PrepareMessage m; memcpy(&m, msg.ptr, sizeof(m));
-                sender_idx = m.sender_idx;
-            }
-            break;
-        case MESSAGE_TYPE_PREPARE_OK:
-            if (msg.len >= sizeof(PrepareOKMessage)) {
-                PrepareOKMessage m; memcpy(&m, msg.ptr, sizeof(m));
-                sender_idx = m.sender_idx;
-            }
-            break;
-        case MESSAGE_TYPE_BEGIN_VIEW_CHANGE:
-            if (msg.len >= sizeof(BeginViewChangeMessage)) {
-                BeginViewChangeMessage m; memcpy(&m, msg.ptr, sizeof(m));
-                sender_idx = m.sender_idx;
-            }
-            break;
-        case MESSAGE_TYPE_DO_VIEW_CHANGE:
-            if (msg.len >= sizeof(DoViewChangeMessage)) {
-                DoViewChangeMessage m; memcpy(&m, msg.ptr, sizeof(m));
-                sender_idx = m.sender_idx;
-            }
-            break;
-        case MESSAGE_TYPE_RECOVERY:
-            if (msg.len >= sizeof(RecoveryMessage)) {
-                RecoveryMessage m; memcpy(&m, msg.ptr, sizeof(m));
-                sender_idx = m.sender_idx;
-            }
-            break;
-        case MESSAGE_TYPE_RECOVERY_RESPONSE:
-            if (msg.len >= sizeof(RecoveryResponseMessage)) {
-                RecoveryResponseMessage m; memcpy(&m, msg.ptr, sizeof(m));
-                sender_idx = m.sender_idx;
-            }
-            break;
-        case MESSAGE_TYPE_GET_STATE:
-            if (msg.len >= sizeof(GetStateMessage)) {
-                GetStateMessage m; memcpy(&m, msg.ptr, sizeof(m));
-                sender_idx = m.sender_idx;
-            }
-            break;
-        case MESSAGE_TYPE_FETCH_CHUNK:
-            if (msg.len >= sizeof(FetchChunkMessage)) {
-                FetchChunkMessage m; memcpy(&m, msg.ptr, sizeof(m));
-                sender_idx = m.sender_idx;
-            }
-            break;
-        }
-        if (sender_idx >= 0 && sender_idx < state->num_nodes) {
-            int existing = tcp_index_from_tag(&state->tcp, sender_idx);
-            if (existing < 0) {
-                // No connection tagged with this peer yet, tag this one
-                tcp_set_tag(&state->tcp, conn_idx, sender_idx, false);
-            }
-            // If a different connection is already tagged for this peer,
-            // keep it. Closing it would also disconnect the peer end,
-            // which may be carrying data in the opposite direction (e.g.
-            // a DO_VIEW_CHANGE queued on the cross-connection). Stale
-            // connections are detected and cleaned up when sends fail.
+    int sender_idx = server_idx_from_message(type, msg);
+    if (sender_idx > -1) {
+        assert(sender_idx < state->num_nodes);
+        if (tcp_index_from_tag(&state->tcp, sender_idx) < 0) {
+            tcp_set_tag(&state->tcp, conn_idx, sender_idx, false);
         }
     }
 
-    // Chunk and blob messages are handled by any server regardless of
-    // leader/replica role. They bypass the VSR log.
     switch (type) {
+    case MESSAGE_TYPE_REQUEST:
+        if (is_primary(state)) {
+            if (state->status == STATUS_NORMAL) {
+                return process_request(state, conn_idx, msg);
+            }
+        } else {
+            if (state->status == STATUS_NORMAL) {
+                return send_redirect(state, conn_idx);
+            }
+        }
+        break;
+    case MESSAGE_TYPE_COMMIT_PUT:
+        if (is_primary(state)) {
+            if (state->status == STATUS_NORMAL) {
+                return process_request(state, conn_idx, msg);
+            }
+        } else {
+            if (state->status == STATUS_NORMAL) {
+                return send_redirect(state, conn_idx);
+            }
+        }
+        break;
+    case MESSAGE_TYPE_PREPARE:
+        if (is_primary(state)) {
+            // TODO
+        } else {
+            if (state->status == STATUS_NORMAL) {
+                return process_prepare(state, msg);
+            }
+        }
+        break;
+    case MESSAGE_TYPE_PREPARE_OK:
+        if (is_primary(state)) {
+            if (state->status == STATUS_NORMAL) {
+                return process_prepare_ok(state, conn_idx, msg);
+            }
+        } else {
+            // Ignore
+        }
+        break;
+    case MESSAGE_TYPE_COMMIT:
+        if (is_primary(state)) {
+            // Ignore
+        } else {
+            if (state->status == STATUS_NORMAL) {
+                return process_commit(state, conn_idx, msg);
+            }
+        }
+        break;
+    case MESSAGE_TYPE_BEGIN_VIEW_CHANGE:
+        if (state->status != STATUS_RECOVERY)
+            return process_begin_view_change(state, conn_idx, msg);
+        break;
+    case MESSAGE_TYPE_DO_VIEW_CHANGE:
+        if (is_primary(state)) {
+            if (state->status == STATUS_CHANGE_VIEW) {
+                return process_do_view_change(state, conn_idx, msg);
+            }
+        } else {
+            // Ignore
+        }
+        break;
+    case MESSAGE_TYPE_BEGIN_VIEW:
+        if (state->status != STATUS_RECOVERY) {
+            return process_begin_view(state, conn_idx, msg);
+        }
+        break;
+    case MESSAGE_TYPE_RECOVERY:
+        if (state->status == STATUS_NORMAL) {
+            return process_recovery(state, conn_idx, msg);
+        }
+        break;
+    case MESSAGE_TYPE_RECOVERY_RESPONSE:
+        if (is_primary(state)) {
+            // Ignore
+        } else {
+            if (state->status == STATUS_RECOVERY) {
+                return process_recovery_response(state, msg);
+            }
+        }
+        break;
+    case MESSAGE_TYPE_GET_STATE:
+        if (is_primary(state)) {
+            return process_get_state(state, conn_idx, msg);
+        } else {
+            // Ignore
+        }
+        break;
+    case MESSAGE_TYPE_NEW_STATE:
+        if (is_primary(state)) {
+            // Ignore
+        } else {
+            return process_new_state(state, conn_idx, msg);
+        }
+        break;
     case MESSAGE_TYPE_STORE_CHUNK:
         return process_store_chunk(state, conn_idx, msg);
     case MESSAGE_TYPE_FETCH_CHUNK:
         return process_fetch_chunk(state, conn_idx, msg);
     case MESSAGE_TYPE_GET_BLOB:
         return process_get_blob(state, conn_idx, msg);
-    case MESSAGE_TYPE_STORE_CHUNK_ACK:
-    case MESSAGE_TYPE_FETCH_CHUNK_RESPONSE:
-    case MESSAGE_TYPE_GET_BLOB_RESPONSE:
-        // These are responses that servers send TO clients, not
-        // messages servers receive from clients. Ignore.
-        return HR_OK;
-    default:
-        break;
     }
 
-    if (is_leader(state)) {
-        return process_message_as_leader(state, conn_idx, type, msg);
-    } else {
-        return process_message_as_replica(state, conn_idx, type, msg);
-    }
+    return HR_OK;
 }
 
 int server_init(void *state_, int argc, char **argv,
@@ -1897,7 +1870,7 @@ int server_tick(void *state_, void **ctxs,
     } else {
         assert(state->status == STATUS_NORMAL);
 
-        if (is_leader(state)) {
+        if (is_primary(state)) {
             Time heartbeat_deadline = state->heartbeat + HEARTBEAT_INTERVAL_SEC * 1000000000ULL;
             if (heartbeat_deadline <= state->now) { // TODO: check the time conversion here
 
@@ -1971,8 +1944,8 @@ int server_tick(void *state_, void **ctxs,
                 .op_number   = state->log.count,
                 .sender_idx  = self_idx(state),
             };
-            send_to_peer(state, leader_idx(state), &get_state_message.base);
-            node_log(state, "SEND GET_STATE", "to=%d op=%d", leader_idx(state), state->log.count);
+            send_to_peer(state, primary_idx(state), &get_state_message.base);
+            node_log(state, "SEND GET_STATE", "to=%d op=%d", primary_idx(state), state->log.count);
 
             state->state_transfer_time = state->now;
 
