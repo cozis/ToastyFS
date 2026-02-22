@@ -266,6 +266,8 @@ int wal_replace(WAL *wal, WALEntry *entries, int count)
     if (rename_file_or_dir(tmp_path, wal_path) < 0)
         return -1;
 
+    // TODO: fsync on parent directory
+
     // Reopen the WAL file and seek to end for future appends.
     Handle new_handle;
     if (file_open(wal_path, &new_handle) < 0)

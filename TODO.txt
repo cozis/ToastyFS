@@ -1,3 +1,4 @@
 [ ] Add log compaction
 [ ] Add log persistence
 [ ] Add chunk locations to metadata
+[ ] fsync parent directory when renaming log
