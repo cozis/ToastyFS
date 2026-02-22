@@ -1,4 +1,5 @@
 toastyfs
+toastyfs_client
 toastyfs_random_client
 toastyfs_simulation
 *.gcno
