@@ -319,7 +319,8 @@ typedef struct {
     uint32_t checksum;
 } ViewAndCommitDisk;
 
-static uint32_t vc_checksum(uint64_t view_number, uint64_t last_normal_view, int commit_index)
+static uint32_t vc_checksum(uint64_t view_number,
+    uint64_t last_normal_view, int commit_index)
 {
     uint32_t h = 2166136261u;
 
@@ -362,21 +363,28 @@ int view_and_commit_init(ViewAndCommit *vc, string file)
     }
 
     if (size >= sizeof(ViewAndCommitDisk)) {
-        ViewAndCommitDisk disk;
+
         if (file_set_offset(handle, 0) < 0) {
             file_close(handle);
             return -1;
         }
+
+        ViewAndCommitDisk disk;
         if (file_read_exact(handle, (char *)&disk, sizeof(disk)) < 0) {
             file_close(handle);
             return -1;
         }
-        if (disk.checksum == vc_checksum(disk.view_number, disk.last_normal_view, disk.commit_index)) {
+
+        uint32_t expected_checksum = vc_checksum(disk.view_number,
+            disk.last_normal_view, disk.commit_index);
+
+        if (disk.checksum == expected_checksum) {
             vc->view_number = disk.view_number;
             vc->last_normal_view = disk.last_normal_view;
             vc->commit_index = disk.commit_index;
         }
-        // If checksum doesn't match, start from defaults (0, 0, 0).
+
+        // If checksum doesn't match, start from defaults (0, 0, 0)
     }
 
     return 0;
@@ -389,7 +397,7 @@ void view_and_commit_free(ViewAndCommit *vc)
 }
 
 int set_view_and_commit(ViewAndCommit *vc, uint64_t view_number,
-                        uint64_t last_normal_view, int commit_index)
+    uint64_t last_normal_view, int commit_index)
 {
     ViewAndCommitDisk disk = {
         .view_number = view_number,

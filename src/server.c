@@ -1358,7 +1358,8 @@ process_new_state(ServerState *state, int conn_idx, ByteView msg)
     memcpy(&new_state_message, msg.ptr, sizeof(new_state_message));
 
     node_log(state, "RECV NEW_STATE", "entries=%d commit=%d view=%lu",
-        new_state_message.op_number, new_state_message.commit_index, new_state_message.view_number);
+        new_state_message.op_number, new_state_message.commit_index,
+        new_state_message.view_number);
 
     // Ignore if we're in a different view
     if (new_state_message.view_number != state->view_number)

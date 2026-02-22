@@ -219,7 +219,8 @@ static void send_message_to_server(ToastyFS *tfs, int server_idx, MessageHeader 
     byte_queue_write(output, msg, msg->length);
 }
 
-static void send_message_to_server_ex(ToastyFS *tfs, int server_idx,
+static void
+send_message_to_server_ex(ToastyFS *tfs, int server_idx,
     MessageHeader *msg, void *extra, int extra_len)
 {
     ByteQueue *output;
@@ -381,8 +382,8 @@ static void replay_request(ToastyFS *tfs)
     }
 }
 
-static int process_message(ToastyFS *tfs,
-    int conn_idx, uint8_t type, ByteView msg)
+static int process_message(ToastyFS *tfs, int conn_idx,
+    uint8_t type, ByteView msg)
 {
     (void) conn_idx;
 
@@ -673,7 +674,8 @@ static int process_message(ToastyFS *tfs,
     return 0;
 }
 
-void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pnum)
+void toastyfs_process_events(ToastyFS *tfs, void **ctxs,
+    struct pollfd *pdata, int pnum)
 {
     Event events[TCP_EVENT_CAPACITY];
     int num_events = tcp_translate_events(&tfs->tcp, events, ctxs, pdata, pnum);
@@ -748,7 +750,8 @@ void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
 // TODO: The toastyfs client needs to determine a timeout based on the
 //       pending operation status, not just use PRIMARY_DEATH_TIMEOUT_SEC
 //       for everything.
-int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pcap, int *timeout)
+int toastyfs_register_events(ToastyFS *tfs, void **ctxs,
+    struct pollfd *pdata, int pcap, int *timeout)
 {
     Time now = get_current_time(); // TODO: Handle INVALID_TIME error
     Time deadline = INVALID_TIME;
