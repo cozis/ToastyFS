@@ -105,6 +105,8 @@ void quakey_set_max_crashes(Quakey *quakey, int max_crashes);
 void quakey_network_partitioning(Quakey *quakey, bool enable);
 
 // Access spawned host information
+//
+// TODO: The following are to be refactored as the host index is not stable
 int         quakey_num_hosts(Quakey *quakey);
 void       *quakey_host_state(Quakey *quakey, int idx);  // Returns NULL if host is dead
 int         quakey_host_is_dead(Quakey *quakey, int idx);
