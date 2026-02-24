@@ -5,6 +5,7 @@
 #include <quakey.h>
 #include <stdint.h>
 #include <assert.h>
+#include <fcntl.h>
 
 /////////////////////////////////////////////////////////////////
 // Utilities
@@ -244,9 +245,6 @@ struct Host {
 
     char *name;
 
-    // Platform used by this host
-    QuakeyPlatform platform;
-
     // State of the ephimeral port allocation
     u16 next_ephemeral_port;
 
@@ -402,11 +400,6 @@ struct Sim {
     // reached, a new random target is generated.
     HostPairList partition;
     HostPairList target_partition;
-
-    // Maximum number of hosts that can be dead at the same time.
-    int max_crashes;
-
-    bool network_partitioning;
 };
 
 static void time_event_wakeup(Sim *sim, Nanos time, Host *host);
@@ -745,6 +738,11 @@ static b32 socket_queue_empty(SocketQueue *queue)
     return queue->used == 0;
 }
 
+static b32 socket_queue_used(SocketQueue *queue)
+{
+    return queue->used;
+}
+
 /////////////////////////////////////////////////////////////////
 // Accept Queue Code
 
@@ -940,7 +938,6 @@ static void host_init(Host *host, Sim *sim, QuakeySpawn config, char *arg)
 {
     host->sim = sim;
     host->name = config.name;
-    host->platform = config.platform;
     host->next_ephemeral_port = FIRST_EPHEMERAL_PORT;
 
     // Save spawn config for restart after crash
@@ -1062,11 +1059,8 @@ static void host_free(Host *host)
 }
 
 // Remove all events associated with a host (WAKEUP events and events
-// whose source or destination descriptors belong to this host).
-// If skip_restart is true, RESTART events are kept (used during
-// restart failure to avoid removing the event currently being
-// processed by process_events_at_current_time).
-static void remove_events_for_host_ex(Sim *sim, Host *host, bool skip_restart)
+// whose source or destination descriptors belong to this host)
+static void remove_events_for_host(Sim *sim, Host *host)
 {
     int i = 0;
     while (i < sim->num_events) {
@@ -1075,7 +1069,7 @@ static void remove_events_for_host_ex(Sim *sim, Host *host, bool skip_restart)
 
         if (event->type == EVENT_TYPE_WAKEUP && event->host == host)
             remove = true;
-        if (!skip_restart && event->type == EVENT_TYPE_RESTART && event->host == host)
+        if (event->type == EVENT_TYPE_RESTART && event->host == host)
             remove = true;
         if (event->src_desc && event->src_desc->host == host)
             remove = true;
@@ -1089,11 +1083,6 @@ static void remove_events_for_host_ex(Sim *sim, Host *host, bool skip_restart)
             i++;
         }
     }
-}
-
-static void remove_events_for_host(Sim *sim, Host *host)
-{
-    remove_events_for_host_ex(sim, host, false);
 }
 
 static int count_dead(Sim *sim)
@@ -1123,11 +1112,6 @@ static void host_crash(Host *host)
     // Remove all pending events for this host
     remove_events_for_host(sim, host);
 
-    // Let the application clean up (e.g. log the crash)
-    host___ = host;
-    host->free_func(host->state);
-    host___ = NULL;
-
     // Free application state
     free(host->state);
     host->state = NULL;
@@ -1138,6 +1122,7 @@ static void host_crash(Host *host)
     host->poll_count = 0;
     host->poll_timeout = -1;
 
+    printf("Quakey: Host crash (%d/%d dead)\n", count_dead(sim), sim->num_hosts);
 }
 
 // Restart a crashed host: re-initialize from saved config,
@@ -1208,22 +1193,10 @@ static void host_restart(Host *host)
                 desc_free(sim, &host->desc[i], true);
         }
         host->num_desc = 0;
-        // Skip removing RESTART events: this function is called from
-        // time_event_process (EVENT_TYPE_RESTART), so the current
-        // restart event is still in the array being iterated by
-        // process_events_at_current_time. Removing it here would cause
-        // the outer loop's swap-removal to discard an unrelated event.
-        remove_events_for_host_ex(sim, host, true);
+        remove_events_for_host(sim, host);
         free(host->state);
         host->state = NULL;
         host->dead = true;
-
-        // Schedule another restart attempt. Init can fail due to
-        // transient I/O errors from fault injection; permanently
-        // killing the host would be unrealistic since a real
-        // process supervisor would keep retrying.
-        Nanos restart_delay = 1000000000ULL + (sim_random(sim) % 9000000000ULL);
-        time_event_restart(sim, sim->current_time + restart_delay, host);
         return;
     }
 
@@ -1233,17 +1206,9 @@ static void host_restart(Host *host)
     } else if (host->poll_timeout == 0)
         host->timedout = true;
 
+    printf("Quakey: Host restart (%d/%d dead)\n", count_dead(sim), sim->num_hosts);
 }
 
-static b32 host_is_linux(Host *host)
-{
-    return host->platform == QUAKEY_LINUX;
-}
-
-static b32 host_is_windows(Host *host)
-{
-    return host->platform == QUAKEY_WINDOWS;
-}
 
 static Nanos host_time(Host *host)
 {
@@ -1402,10 +1367,7 @@ static void host_update(Host *host)
     );
     host___ = NULL;
     if (ret < 0) {
-        host_crash(host);
-        Nanos restart_delay = 1000000000ULL + (sim_random(host->sim) % 9000000000ULL);
-        time_event_restart(host->sim, host->sim->current_time + restart_delay, host);
-        return;
+        TODO;
     }
 
     if (host->poll_timeout > 0) {
@@ -1985,7 +1947,7 @@ static int host_read(Host *host, int desc_idx, char *dst, int len)
         desc->type == DESC_PIPE) {
         num = recv_inner(desc, dst, len);
     } else if (desc->type == DESC_FILE) {
-#if defined(FAULT_INJECTION) && !defined(DISABLE_SPURIOUS_IO_ERRORS)
+#ifdef FAULT_INJECTION
         uint64_t roll = sim_random(host->sim) % 1000;
         if (roll == 0) return HOST_ERROR_IO;
 #endif
@@ -2029,7 +1991,7 @@ static int host_write(Host *host, int desc_idx, char *src, int len)
         desc->type == DESC_PIPE) {
         num = send_inner(desc, src, len);
     } else if (desc->type == DESC_FILE) {
-#if defined(FAULT_INJECTION) && !defined(DISABLE_SPURIOUS_IO_ERRORS)
+#ifdef FAULT_INJECTION
         uint64_t roll = sim_random(host->sim) % 1000;
         if (roll == 0) return HOST_ERROR_IO;
         if (roll == 1) return HOST_ERROR_NOSPC;
@@ -2205,7 +2167,7 @@ static int host_fsync(Host *host, int desc_idx)
     if (desc->type != DESC_FILE)
         return HOST_ERROR_BADIDX;
 
-#if defined(FAULT_INJECTION) && !defined(DISABLE_SPURIOUS_IO_ERRORS)
+#ifdef FAULT_INJECTION
     uint64_t roll = sim_random(host->sim) % 100;
     if (roll == 0)
         return HOST_ERROR_IO;
@@ -2430,7 +2392,7 @@ static bool hosts_are_partitioned(Sim *sim, Host *a, Host *b);
 
 static Nanos pick_partition_delay(Sim *sim, bool longer)
 {
-    Nanos min_delay = 1000000000; // 1s
+    Nanos min_delay = 10000000; // 10ms
     Nanos max_delay = 10000000000; // 10s
     if (longer) {
         min_delay = 10000000000;
@@ -2447,13 +2409,10 @@ static b32 time_event_process(TimeEvent *event, Sim *sim)
         {
             // Try to move one step toward the target partition.
             // If current already matches target, pick a new target.
-            if (!break_or_repair_link(sim)) {
-                if (sim->network_partitioning) {
-                    if (change_target_partition(sim) < 0) {
-                        TODO;
-                    }
+            if (!break_or_repair_link(sim))
+                if (change_target_partition(sim) < 0) {
+                    TODO;
                 }
-            }
 
             // Reschedule for the next partition step
             event->time = sim->current_time + pick_partition_delay(sim, true);
@@ -2473,8 +2432,8 @@ static b32 time_event_process(TimeEvent *event, Sim *sim)
             Host *peer_host = sim->hosts[idx];
 
             if (hosts_are_partitioned(sim, src_desc->host, peer_host)) {
-                //SIM_TRACE(sim, "PARTITION: blocked connection %s -> %s",
-                //    src_desc->host->name, peer_host->name);
+                SIM_TRACE(sim, "PARTITION: blocked connection %s -> %s",
+                    src_desc->host->name, peer_host->name);
                 src_desc->connect_status = CONNECT_STATUS_NOHOST;
                 break;
             }
@@ -2791,20 +2750,9 @@ static void sim_init(Sim *sim, uint64_t seed)
     sim->events = NULL;
     sim->num_signals = 0;
     sim->head_signal = 0;
-    sim->max_crashes = 0;
-    sim->network_partitioning = true;
     host_pair_list_init(&sim->partition);
     host_pair_list_init(&sim->target_partition);
     time_event_partition(sim, pick_partition_delay(sim, false));
-}
-
-static void sim_network_partitioning(Sim *sim, bool enable)
-{
-    sim->network_partitioning = enable;
-    if (!enable) {
-        host_pair_list_free(&sim->target_partition);
-        host_pair_list_init(&sim->target_partition);
-    }
 }
 
 static void sim_free(Sim *sim)
@@ -2890,8 +2838,8 @@ static void process_events_at_current_time(Sim *sim)
         }
     }
 
-    //if (sim->num_events > 10000)
-    //    SIM_TRACE(sim, "WARNING: event queue large: %d events", sim->num_events);
+    if (sim->num_events > 10000)
+        SIM_TRACE(sim, "WARNING: event queue large: %d events", sim->num_events);
 }
 
 static int find_first_ready_host(Sim *sim)
@@ -2954,14 +2902,14 @@ static b32 sim_update(Sim *sim)
     if (sim->num_hosts > 1) {
         uint64_t rng = sim_random(sim);
         if ((rng % 10000) == 0) {
-
+            // Pick a random live host to crash
             int live_count = 0;
             for (int i = 0; i < sim->num_hosts; i++)
                 if (!sim->hosts[i]->dead)
                     live_count++;
-            int dead_count = sim->num_hosts - live_count;
 
-            if (dead_count < sim->max_crashes) {
+            // Only crash if at least 2 hosts are alive (keep a majority)
+            if (live_count >= 2) {
                 // Pick one of the live hosts at random
                 int target = sim_random(sim) % live_count;
                 int j = 0;
@@ -3053,18 +3001,6 @@ void quakey_free(Quakey *quakey)
     }
 }
 
-void quakey_set_max_crashes(Quakey *quakey, int max_crashes)
-{
-    Sim *sim = (Sim*) quakey;
-    sim->max_crashes = max_crashes;
-}
-
-void quakey_network_partitioning(Quakey *quakey, bool enable)
-{
-    Sim *sim = (Sim*) quakey;
-    sim_network_partitioning(sim, enable);
-}
-
 QuakeyNode quakey_spawn(Quakey *quakey, QuakeySpawn config, char *arg)
 {
     return (QuakeyNode) sim_spawn((Sim*) quakey, config, arg);
@@ -3076,26 +3012,9 @@ void *quakey_node_state(QuakeyNode node)
     return host->state;
 }
 
-void quakey_enter_host(QuakeyNode node)
-{
-    Host *host = (void*) node;
-    host___ = host;
-}
-
-void quakey_leave_host(void)
-{
-    host___ = NULL;
-}
-
 int quakey_schedule_one(Quakey *quakey)
 {
     return sim_update((Sim*) quakey);
-}
-
-QuakeyUInt64 quakey_current_time(Quakey *quakey)
-{
-    Sim *sim = (Sim*) quakey;
-    return sim->current_time;
 }
 
 QuakeyUInt64 quakey_random(void)
@@ -3157,6 +3076,39 @@ const char *quakey_host_name(Quakey *quakey, int idx)
     return sim->hosts[idx]->name;
 }
 
+void quakey_set_max_crashes(Quakey *quakey, int max_crashes)
+{
+    // TODO: Implement crash limiting. For now this is a no-op
+    // that allows the simulation to run without the feature.
+    (void) quakey;
+    (void) max_crashes;
+}
+
+void quakey_network_partitioning(Quakey *quakey, bool enabled)
+{
+    // TODO: Implement network partitioning toggle. For now this is
+    // a no-op that allows the simulation to run without the feature.
+    (void) quakey;
+    (void) enabled;
+}
+
+QuakeyUInt64 quakey_current_time(Quakey *quakey)
+{
+    Sim *sim = (Sim*) quakey;
+    return (QuakeyUInt64) sim->current_time;
+}
+
+void quakey_enter_host(QuakeyNode node)
+{
+    Host *host = (void*) node;
+    host___ = host;
+}
+
+void quakey_leave_host(void)
+{
+    host___ = NULL;
+}
+
 /////////////////////////////////////////////////////////////////
 // Mock System Calls
 
@@ -3169,7 +3121,7 @@ int *mock_errno_ptr(void)
     return host_errno_ptr(host);
 }
 
-#ifndef _WIN32
+// Platform-independent mock functions (used by lib/ on all platforms)
 
 int mock_socket(int domain, int type, int protocol)
 {
@@ -3221,8 +3173,6 @@ int mock_close(int fd)
     if (host == NULL)
         abort_("Call to mock_close() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_close() not from Linux\n");
 
     int desc_idx = fd;
     int ret = host_close(host, desc_idx, false);
@@ -3239,17 +3189,6 @@ int mock_close(int fd)
     }
 
     return 0;
-}
-
-// NOTE: mock_access must be implemented for simulation to work correctly.
-// chunk_store_exists() uses file_exists() which calls access(). Without a
-// working mock_access, the simulation cannot check chunk existence and
-// must fall back to file_open (O_CREAT), which creates empty files as a
-// side effect and leads to data corruption (servers return uninitialized
-// data for chunks they don't actually have).
-int mock_access(const char *path, int mode)
-{
-    assert(0); // TODO
 }
 
 static int convert_addr(void *addr, size_t addr_len,
@@ -3443,8 +3382,6 @@ int mock_open(char *path, int flags, int mode)
     if (host == NULL)
         abort_("Call to mock_open() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_open() not from Linux\n");
 
     int converted_flags = convert_linux_open_flags_to_mockfs(flags);
 
@@ -3474,8 +3411,6 @@ int mock_read(int fd, char *dst, int len)
     if (host == NULL)
         abort_("Call to mock_read() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_read() not from Linux\n");
 
     int ret = host_read(host, fd, dst, len);
     if (ret < 0) {
@@ -3506,8 +3441,6 @@ int mock_write(int fd, char *src, int len)
     if (host == NULL)
         abort_("Call to mock_write() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_write() not from Linux\n");
 
     int ret = host_write(host, fd, src, len);
     if (ret < 0) {
@@ -3603,7 +3536,7 @@ int mock_send(int fd, char *src, int len, int flags)
     return ret;
 }
 
-int mock_accept(int fd, void *addr, socklen_t *addr_len)
+int mock_accept(int fd, void *addr, unsigned int *addr_len)
 {
     Host *host = host___;
     if (host == NULL)
@@ -3661,7 +3594,7 @@ int mock_accept(int fd, void *addr, socklen_t *addr_len)
     return new_fd;
 }
 
-int mock_getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen)
+int mock_getsockopt(int fd, int level, int optname, void *optval, unsigned int *optlen)
 {
     if (level != SOL_SOCKET)
         abort_("Call to mock_getsockopt() with level other than SOL_SOCKET\n");
@@ -3716,8 +3649,6 @@ int mock_remove(char *path)
     if (host == NULL)
         abort_("Call to mock_remove() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_remove() not from Linux\n");
 
     int ret = host_remove(host, path);
     if (ret < 0) {
@@ -3744,8 +3675,6 @@ int mock_rename(char *oldpath, char *newpath)
     if (host == NULL)
         abort_("Call to mock_rename() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_rename() not from Linux\n");
 
     int ret = host_rename(host, oldpath, newpath);
     if (ret < 0) {
@@ -3772,14 +3701,14 @@ int mock_rename(char *oldpath, char *newpath)
     return 0;
 }
 
+#ifndef _WIN32
+
 int mock_clock_gettime(clockid_t clockid, struct timespec *tp)
 {
     Host *host = host___;
     if (host == NULL)
         abort_("Call to mock_clock_gettime() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_clock_gettime() not from Linux\n");
 
     if (tp == NULL) {
         *host_errno_ptr(host) = EINVAL;
@@ -3817,8 +3746,6 @@ int mock_fsync(int fd)
     if (host == NULL)
         abort_("Call to mock_fsync() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_fsync() not from Linux\n");
 
     int ret = host_fsync(host, fd);
     if (ret < 0) {
@@ -3838,8 +3765,6 @@ int mock_ftruncate(int fd, size_t new_size)
     if (host == NULL)
         abort_("Call to mock_ftruncate() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_ftruncate() not from Linux\n");
 
     int ret = host_ftruncate(host, fd, (int) new_size);
     if (ret < 0) {
@@ -3861,8 +3786,6 @@ off_t mock_lseek(int fd, off_t offset, int whence)
     if (host == NULL)
         abort_("Call to mock_lseek() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_lseek() not from Linux\n");
 
     // Convert POSIX whence to HOST whence
     int host_whence;
@@ -3899,8 +3822,6 @@ int mock_fstat(int fd, struct stat *buf)
     if (host == NULL)
         abort_("Call to mock_fstat() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_fstat() not from Linux\n");
 
     if (buf == NULL) {
         *host_errno_ptr(host) = EINVAL;
@@ -3942,8 +3863,6 @@ char *mock_realpath(char *path, char *dst)
     if (host == NULL)
         abort_("Call to mock_realpath() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_realpath() not from Linux\n");
 
     if (path == NULL) {
         *host_errno_ptr(host) = EINVAL;
@@ -4057,8 +3976,6 @@ int mock_mkdir(char *path, mode_t mode)
     if (host == NULL)
         abort_("Call to mock_mkdir() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_mkdir() not from Linux\n");
 
     // LittleFS doesn't use mode, but we accept it for API compatibility
     (void) mode;
@@ -4088,8 +4005,6 @@ int mock_fcntl(int fd, int cmd, int flags)
     if (host == NULL)
         abort_("Call to mock_fcntl() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_fcntl() not from Linux\n");
 
     switch (cmd) {
 
@@ -4142,8 +4057,6 @@ DIR *mock_opendir(char *name)
     if (host == NULL)
         abort_("Call to mock_opendir() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_opendir() not from Linux\n");
 
     int ret = host_open_dir(host, name);
     if (ret < 0) {
@@ -4180,8 +4093,6 @@ struct dirent* mock_readdir(DIR *dirp)
     if (host == NULL)
         abort_("Call to mock_readdir() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_readdir() not from Linux\n");
 
     DIR_ *dirp_ = (DIR_*) dirp;
 
@@ -4230,8 +4141,6 @@ int mock_closedir(DIR *dirp)
     if (host == NULL)
         abort_("Call to mock_closedir() with no node scheduled\n");
 
-    if (!host_is_linux(host))
-        abort_("Call to mock_closedir() not from Linux\n");
 
     DIR_ *dirp_ = (DIR_*) dirp;
 
@@ -4266,8 +4175,6 @@ int mock_GetLastError(void)
     if (host == NULL)
         abort_("Call to mock_GetLastError() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_GetLastError() not from Windows\n");
 
     // Note that technically on windows errno and GetLastError
     // are different things. Here we use errno_ to store the
@@ -4287,8 +4194,6 @@ void mock_SetLastError(int err)
     if (host == NULL)
         abort_("Call to mock_SetLastError() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_SetLastError() not from Windows\n");
 
     *host_errno_ptr(host) = err;
 }
@@ -4304,8 +4209,6 @@ int mock_closesocket(SOCKET fd)
     if (host == NULL)
         abort_("Call to mock_closesocket() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_closesocket() not from Windows\n");
 
     int desc_idx = fd;
     int ret = host_close(host, desc_idx, true);  // expect_socket = true
@@ -4326,7 +4229,19 @@ int mock_closesocket(SOCKET fd)
 
 int mock_ioctlsocket(SOCKET fd, long cmd, unsigned long *argp)
 {
-    TODO;
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_ioctlsocket() with no node scheduled\n");
+
+    if (cmd == FIONBIO) {
+        int host_flags = (*argp != 0) ? HOST_FLAG_NONBLOCK : 0;
+        int ret = host_setdescflags(host, (int) fd, host_flags);
+        if (ret < 0)
+            return SOCKET_ERROR;
+        return 0;
+    }
+
+    return SOCKET_ERROR;
 }
 
 // Helper function to convert wide string to narrow string (ASCII subset)
@@ -4353,11 +4268,11 @@ static int convert_windows_flags_to_lfs(DWORD dwDesiredAccess,
 
     // Convert access mode
     if ((dwDesiredAccess & GENERIC_READ) && (dwDesiredAccess & GENERIC_WRITE))
-        lfs_flags = LFS_O_RDWR;
+        lfs_flags = MOCKFS_O_RDWR;
     else if (dwDesiredAccess & GENERIC_WRITE)
-        lfs_flags = LFS_O_WRONLY;
+        lfs_flags = MOCKFS_O_WRONLY;
     else
-        lfs_flags = LFS_O_RDONLY;
+        lfs_flags = MOCKFS_O_RDONLY;
 
     *truncate = false;
 
@@ -4365,11 +4280,11 @@ static int convert_windows_flags_to_lfs(DWORD dwDesiredAccess,
     switch (dwCreationDisposition) {
     case CREATE_NEW:
         // Creates a new file, fails if file exists
-        lfs_flags |= LFS_O_CREAT | LFS_O_EXCL;
+        lfs_flags |= MOCKFS_O_CREAT | MOCKFS_O_EXCL;
         break;
     case CREATE_ALWAYS:
         // Creates a new file, always (truncates if exists)
-        lfs_flags |= LFS_O_CREAT | LFS_O_TRUNC;
+        lfs_flags |= MOCKFS_O_CREAT | MOCKFS_O_TRUNC;
         *truncate = true;
         break;
     case OPEN_EXISTING:
@@ -4378,11 +4293,11 @@ static int convert_windows_flags_to_lfs(DWORD dwDesiredAccess,
         break;
     case OPEN_ALWAYS:
         // Opens file if it exists, creates if it doesn't
-        lfs_flags |= LFS_O_CREAT;
+        lfs_flags |= MOCKFS_O_CREAT;
         break;
     case TRUNCATE_EXISTING:
         // Opens and truncates, fails if file doesn't exist
-        lfs_flags |= LFS_O_TRUNC;
+        lfs_flags |= MOCKFS_O_TRUNC;
         *truncate = true;
         break;
     default:
@@ -4402,8 +4317,6 @@ HANDLE mock_CreateFileW(WCHAR *lpFileName,
     if (host == NULL)
         abort_("Call to mock_CreateFileW() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_CreateFileW() not from Windows\n");
 
     // lpSecurityAttributes and hTemplateFile are typically NULL
     (void) lpSecurityAttributes;
@@ -4464,8 +4377,6 @@ BOOL mock_CloseHandle(HANDLE handle)
     if (host == NULL)
         abort_("Call to mock_CloseHandle() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_CloseHandle() not from Windows\n");
 
     if (handle == INVALID_HANDLE_VALUE || handle == NULL) {
         *host_errno_ptr(host) = ERROR_INVALID_HANDLE;
@@ -4513,8 +4424,6 @@ BOOL mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *
     if (host == NULL)
         abort_("Call to mock_ReadFile() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_ReadFile() not from Windows\n");
 
     // We don't support overlapped (async) I/O
     if (ov != NULL)
@@ -4562,8 +4471,6 @@ BOOL mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED 
     if (host == NULL)
         abort_("Call to mock_WriteFile() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_WriteFile() not from Windows\n");
 
     // We don't support overlapped (async) I/O
     if (ov != NULL)
@@ -4607,8 +4514,6 @@ DWORD mock_SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceTo
     if (host == NULL)
         abort_("Call to mock_SetFilePointer() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_SetFilePointer() not from Windows\n");
 
     if (hFile == INVALID_HANDLE_VALUE || hFile == NULL) {
         *host_errno_ptr(host) = ERROR_INVALID_HANDLE;
@@ -4675,8 +4580,6 @@ BOOL mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf)
     if (host == NULL)
         abort_("Call to mock_GetFileSizeEx() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_GetFileSizeEx() not from Windows\n");
 
     if (handle == INVALID_HANDLE_VALUE || handle == NULL) {
         *host_errno_ptr(host) = ERROR_INVALID_HANDLE;
@@ -4716,8 +4619,6 @@ BOOL mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount)
     if (host == NULL)
         abort_("Call to mock_QueryPerformanceCounter() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_QueryPerformanceCounter() not from Windows\n");
 
     if (lpPerformanceCount == NULL)
         return 0;  // FALSE
@@ -4736,8 +4637,6 @@ BOOL mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency)
     if (host == NULL)
         abort_("Call to mock_QueryPerformanceFrequency() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_QueryPerformanceFrequency() not from Windows\n");
 
     if (lpFrequency == NULL)
         return 0;  // FALSE
@@ -4755,8 +4654,6 @@ char *mock__fullpath(char *path, char *dst, int cap)
     if (host == NULL)
         abort_("Call to mock__fullpath() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock__fullpath() not from Windows\n");
 
     if (path == NULL) {
         *host_errno_ptr(host) = EINVAL;
@@ -4864,8 +4761,6 @@ int mock__mkdir(char *path)
     if (host == NULL)
         abort_("Call to mock__mkdir() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock__mkdir() not from Windows\n");
 
     int ret = host_mkdir(host, path);
     if (ret < 0) {
@@ -4916,8 +4811,6 @@ HANDLE mock_FindFirstFileA(char *lpFileName, WIN32_FIND_DATAA *lpFindFileData)
     if (host == NULL)
         abort_("Call to mock_FindFirstFileA() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_FindFirstFileA() not from Windows\n");
 
     if (lpFileName == NULL || lpFindFileData == NULL) {
         *host_errno_ptr(host) = ERROR_INVALID_PARAMETER;
@@ -5016,8 +4909,6 @@ BOOL mock_FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA *lpFindFileData)
     if (host == NULL)
         abort_("Call to mock_FindNextFileA() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_FindNextFileA() not from Windows\n");
 
     if (hFindFile == INVALID_HANDLE_VALUE || hFindFile == NULL || lpFindFileData == NULL) {
         *host_errno_ptr(host) = ERROR_INVALID_HANDLE;
@@ -5060,8 +4951,6 @@ BOOL mock_FindClose(HANDLE hFindFile)
     if (host == NULL)
         abort_("Call to mock_FindClose() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_FindClose() not from Windows\n");
 
     if (hFindFile == INVALID_HANDLE_VALUE || hFindFile == NULL) {
         *host_errno_ptr(host) = ERROR_INVALID_HANDLE;
@@ -5094,8 +4983,6 @@ BOOL mock_MoveFileExW(WCHAR *lpExistingFileName, WCHAR *lpNewFileName, DWORD dwF
     if (host == NULL)
         abort_("Call to mock_MoveFileExW() with no node scheduled\n");
 
-    if (!host_is_windows(host))
-        abort_("Call to mock_MoveFileExW() not from Windows\n");
 
     // Validate parameters
     if (lpExistingFileName == NULL) {
@@ -5133,7 +5020,7 @@ BOOL mock_MoveFileExW(WCHAR *lpExistingFileName, WCHAR *lpNewFileName, DWORD dwF
     // We need to check this before calling host_rename
     if (!(dwFlags & MOVEFILE_REPLACE_EXISTING)) {
         // Try to check if destination exists by attempting to open it
-        int check = host_open_file(host, newpath, LFS_O_RDONLY);
+        int check = host_open_file(host, newpath, MOCKFS_O_RDONLY);
         if (check >= 0) {
             // File exists, close it and return error
             host_close(host, check, false);
@@ -5166,6 +5053,31 @@ BOOL mock_MoveFileExW(WCHAR *lpExistingFileName, WCHAR *lpNewFileName, DWORD dwF
 
     *host_errno_ptr(host) = ERROR_SUCCESS;
     return 1;  // TRUE
+}
+
+int mock_mkdir(char *path, int mode)
+{
+    (void) mode;
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_mkdir() with no node scheduled\n");
+
+    int ret = host_mkdir(host, path);
+    if (ret < 0) {
+        switch (ret) {
+        case HOST_ERROR_EXIST:
+            *host_errno_ptr(host) = EEXIST;
+            return -1;
+        case HOST_ERROR_NOENT:
+            *host_errno_ptr(host) = ENOENT;
+            return -1;
+        default:
+            *host_errno_ptr(host) = EIO;
+            return -1;
+        }
+    }
+
+    return 0;
 }
 
 #endif

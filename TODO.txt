@@ -1,3 +1,4 @@
 [ ] Add log compaction
 [ ] Add log persistence
 [ ] Add chunk locations to metadata
+[ ] Remove sender_idx fields in messages since it's provided by the message header

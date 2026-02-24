@@ -1,14 +1,15 @@
-#ifndef NODE_INCLUDED
-#define NODE_INCLUDED
+#ifndef SERVER_INCLUDED
+#define SERVER_INCLUDED
 
-#include "tcp.h"
-#include "basic.h"
-#include "message.h"
+#include <lib/message.h>
+
 #include "log.h"
 #include "config.h"
 #include "metadata.h"
 #include "chunk_store.h"
 #include "client_table.h"
+
+#define MESSAGE_VERSION 1
 
 enum {
 
@@ -48,107 +49,107 @@ enum {
 };
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     MetaOper oper;
     uint64_t client_id;
     uint64_t request_id;
 } RequestMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     MetaOper oper;
-    int sender_idx;
-    int log_index;
-    int commit_index;
+    int      sender_idx;
+    int      log_index;
+    int      commit_index;
     uint64_t view_number;
     uint64_t client_id;
     uint64_t request_id;
 } PrepareMessage;
 
 typedef struct {
-    MessageHeader base;
-    int sender_idx;
-    int log_index;
+    Message  base;
+    int      sender_idx;
+    int      log_index;
     uint64_t view_number;
 } PrepareOKMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     uint64_t view_number;
-    int sender_idx;
-    int commit_index;
+    int      sender_idx;
+    int      commit_index;
 } CommitMessage;
 
 typedef struct {
-    MessageHeader base;
-    bool rejected;
+    Message    base;
+    bool       rejected;
     MetaResult result;
-    uint64_t request_id;
-} ReplyMessage;
+    uint64_t   request_id;
+} VsrReplyMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     uint64_t view_number;
-    int sender_idx;
+    int      sender_idx;
 } BeginViewChangeMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     uint64_t view_number;       // The new view number
     uint64_t old_view_number;   // Last view number when replica was in normal status
-    int op_number;              // Number of entries in the log
-    int commit_index;
-    int sender_idx;
+    int      op_number;         // Number of entries in the log
+    int      commit_index;
+    int      sender_idx;
     // Followed by: LogEntry log[op_number]
 } DoViewChangeMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     uint64_t view_number;
-    int commit_index;
-    int op_number;  // Number of log entries that follow
+    int      commit_index;
+    int      op_number;  // Number of log entries that follow
     // Followed by: LogEntry log[op_number]
 } BeginViewMessage;
 
 typedef struct {
-    MessageHeader base;
-    int sender_idx;
+    Message  base;
+    int      sender_idx;
     uint64_t nonce;
 } RecoveryMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     uint64_t view_number;
-    int op_number;
+    int      op_number;
     uint64_t nonce;
-    int commit_index;
-    int sender_idx;
+    int      commit_index;
+    int      sender_idx;
 } RecoveryResponseMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     uint64_t view_number;
-    int op_number;      // Requester's current log count
-    int sender_idx;
+    int      op_number;      // Requester's current log count
+    int      sender_idx;
 } GetStateMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     uint64_t view_number;
-    int op_number;      // Number of log entries that follow
-    int commit_index;
-    int start_index;    // Global log index of the first entry in the suffix
+    int      op_number;      // Number of log entries that follow
+    int      commit_index;
+    int      start_index;    // Global log index of the first entry in the suffix
     // Followed by: LogEntry log[op_number]
 } NewStateMessage;
 
 typedef struct {
-    MessageHeader base;
+    Message  base;
     uint64_t view_number;
 } RedirectMessage;
 
 // StoreChunk: client -> any server. Carries chunk data as trailing bytes.
 typedef struct {
-    MessageHeader base;
+    Message  base;
     SHA256   hash;
     uint32_t size;
     // Followed by: uint8_t data[size]
@@ -156,21 +157,21 @@ typedef struct {
 
 // StoreChunkAck: server -> client.
 typedef struct {
-    MessageHeader base;
-    SHA256   hash;
-    bool     success;
+    Message base;
+    SHA256  hash;
+    bool    success;
 } StoreChunkAckMessage;
 
 // FetchChunk: client/server -> server. Request a chunk by hash.
 typedef struct {
-    MessageHeader base;
-    SHA256   hash;
-    int      sender_idx; // -1 if from a client
+    Message base;
+    SHA256  hash;
+    int     sender_idx; // -1 if from a client
 } FetchChunkMessage;
 
 // FetchChunkResponse: server -> client/server. Chunk data as trailing bytes.
 typedef struct {
-    MessageHeader base;
+    Message  base;
     SHA256   hash;
     uint32_t size; // 0 if chunk not found
     // Followed by: uint8_t data[size]
@@ -179,7 +180,7 @@ typedef struct {
 // CommitPut: blob client -> leader. Commits metadata after chunks uploaded.
 // Processed like a REQUEST (goes through VSR log).
 typedef struct {
-    MessageHeader base;
+    Message  base;
     MetaOper oper;
     uint64_t client_id;
     uint64_t request_id;
@@ -187,14 +188,14 @@ typedef struct {
 
 // GetBlob: client -> any server. Request metadata for a blob.
 typedef struct {
-    MessageHeader base;
-    char bucket[META_BUCKET_MAX];
-    char key[META_KEY_MAX];
+    Message base;
+    char    bucket[META_BUCKET_MAX];
+    char    key[META_KEY_MAX];
 } GetBlobMessage;
 
 // GetBlobResponse: server -> client. Returns blob metadata.
 typedef struct {
-    MessageHeader base;
+    Message  base;
     bool     found;
     uint64_t size;
     SHA256   content_hash;
@@ -210,7 +211,7 @@ typedef enum {
 
 typedef struct {
 
-    TCP tcp;
+    MessageSystem msys;
 
     Address  self_addr;
     Address  node_addrs[NODE_LIMIT];
@@ -219,10 +220,9 @@ typedef struct {
     Status status;
 
     ClientTable client_table;
-    int next_client_tag;
 
     uint64_t view_number;
-    uint64_t last_normal_view;  // Latest view where status was NORMAL
+    uint64_t last_normal_view; // Latest view where status was NORMAL
 
     // These fields are used in recovery mode
     uint32_t recovery_votes;
@@ -265,7 +265,7 @@ typedef struct {
     // Set at each wakeup
     Time now;
 
-} ServerState;
+} Server;
 
 struct pollfd;
 
@@ -294,7 +294,7 @@ void invariant_checker_free(InvariantChecker *ic);
 
 // node_handles: opaque QuakeyNode handles for entering host context.
 // Pass NULL when running outside the simulation (real mode).
-void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_nodes,
+void invariant_checker_run(InvariantChecker *ic, Server **nodes, int num_nodes,
     unsigned long long *node_handles);
 
-#endif // NODE_INCLUDED
+#endif // SERVER_INCLUDED

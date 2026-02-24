@@ -6,7 +6,7 @@
 #include <stdio.h>
 
 #include "chunk_store.h"
-#include "file_system.h"
+#include <lib/file_system.h>
 
 // Build the full path for a chunk: "base_path/HEX_HASH"
 // SHA256 hex = 64 chars. Returns string pointing into buf.

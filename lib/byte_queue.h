@@ -39,6 +39,7 @@ int byte_queue_full(ByteQueue *queue);
 
 ByteView byte_queue_read_buf(ByteQueue *queue);
 void     byte_queue_read_ack(ByteQueue *queue, uint32_t num);
+bool     byte_queue_reading(ByteQueue *queue);
 
 ByteView byte_queue_write_buf(ByteQueue *queue);
 void     byte_queue_write_ack(ByteQueue *queue, uint32_t num);

@@ -6,15 +6,16 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <poll.h>
 
-#include "tcp.h"
-#include "basic.h"
+#include <lib/basic.h>
+
 #include "config.h"
 #include "metadata.h"
 #include "server.h"
 #include <toastyfs.h>
 #include <stdio.h>
+
+#define POLL_CAPACITY (NODE_LIMIT * 2 + 4)
 
 typedef enum {
     STEP_IDLE,
@@ -45,7 +46,7 @@ typedef struct {
 
 struct ToastyFS {
 
-    TCP tcp;
+    MessageSystem msys;
 
     Address server_addrs[NODE_LIMIT];
     int num_servers;
@@ -73,8 +74,6 @@ struct ToastyFS {
     char *put_data;
     int   put_data_len;
 };
-
-// ---- Client logging infrastructure (mirrors server node_log) ----
 
 #define TIME_FMT "%7.3fs"
 #define TIME_VAL(t) ((double)(t) / 1000000000.0)
@@ -147,7 +146,7 @@ ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
     tfs->num_servers = num_addrs;
     addr_sort(tfs->server_addrs, tfs->num_servers);
 
-    if (tcp_context_init(&tfs->tcp) < 0) {
+    if (message_system_init(&tfs->msys, tfs->server_addrs, num_addrs) < 0) {
         free(tfs);
         return NULL;
     }
@@ -161,7 +160,7 @@ ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
 
 void toastyfs_free(ToastyFS *tfs)
 {
-    tcp_context_free(&tfs->tcp);
+    message_system_free(&tfs->msys);
     free(tfs->put_data);
 }
 
@@ -203,40 +202,6 @@ static int leader_idx(ToastyFS *tfs)
     return tfs->view_number % tfs->num_servers;
 }
 
-static void send_message_to_server(ToastyFS *tfs, int server_idx, MessageHeader *msg)
-{
-    ByteQueue *output;
-    int conn_idx = tcp_index_from_tag(&tfs->tcp, server_idx);
-    if (conn_idx < 0) {
-        if (tcp_connect(&tfs->tcp, tfs->server_addrs[server_idx], server_idx, &output) < 0)
-            return;
-    } else {
-        output = tcp_output_buffer(&tfs->tcp, conn_idx);
-        if (output == NULL)
-            return;
-    }
-
-    byte_queue_write(output, msg, msg->length);
-}
-
-static void send_message_to_server_ex(ToastyFS *tfs, int server_idx,
-    MessageHeader *msg, void *extra, int extra_len)
-{
-    ByteQueue *output;
-    int conn_idx = tcp_index_from_tag(&tfs->tcp, server_idx);
-    if (conn_idx < 0) {
-        if (tcp_connect(&tfs->tcp, tfs->server_addrs[server_idx], server_idx, &output) < 0)
-            return;
-    } else {
-        output = tcp_output_buffer(&tfs->tcp, conn_idx);
-        if (output == NULL)
-            return;
-    }
-
-    byte_queue_write(output, msg, msg->length - extra_len);
-    byte_queue_write(output, extra, extra_len);
-}
-
 static int begin_transfers(ToastyFS *tfs)
 {
     // Count started transfers
@@ -264,7 +229,7 @@ static int begin_transfers(ToastyFS *tfs)
                     .hash = tfs->transfers[i].hash,
                     .size = tfs->transfers[i].size,
                 };
-                send_message_to_server_ex(tfs, tfs->transfers[i].location,
+                send_message_ex(&tfs->msys, tfs->transfers[i].location,
                     &msg.base, tfs->transfers[i].data, tfs->transfers[i].size);
             } else {
                 FetchChunkMessage msg = {
@@ -276,7 +241,7 @@ static int begin_transfers(ToastyFS *tfs)
                     .hash = tfs->transfers[i].hash,
                     .sender_idx = -1, // Client (not a peer server)
                 };
-                send_message_to_server(tfs, tfs->transfers[i].location, &msg.base);
+                send_message(&tfs->msys, tfs->transfers[i].location, &msg.base);
             }
             tfs->transfers[i].state = TRANSFER_STARTED;
 
@@ -340,7 +305,7 @@ static void replay_request(ToastyFS *tfs)
                 msg.oper.chunks[i].hash = tfs->chunks[i];
                 msg.oper.chunks[i].size = tfs->chunk_sizes[i];
             }
-            send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+            send_message(&tfs->msys, leader_idx(tfs), &msg.base);
         }
         break;
     case STEP_DELETE:
@@ -359,7 +324,7 @@ static void replay_request(ToastyFS *tfs)
             };
             memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
             memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
-            send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+            send_message(&tfs->msys, leader_idx(tfs), &msg.base);
         }
         break;
     case STEP_GET:
@@ -373,7 +338,7 @@ static void replay_request(ToastyFS *tfs)
             };
             memcpy(msg.bucket, tfs->bucket, META_BUCKET_MAX);
             memcpy(msg.key, tfs->key, META_KEY_MAX);
-            send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+            send_message(&tfs->msys, leader_idx(tfs), &msg.base);
         }
         break;
     default:
@@ -381,11 +346,8 @@ static void replay_request(ToastyFS *tfs)
     }
 }
 
-static int process_message(ToastyFS *tfs,
-    int conn_idx, uint8_t type, ByteView msg)
+static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
 {
-    (void) conn_idx;
-
     switch (tfs->step) {
     case STEP_FETCH_CHUNK:
         {
@@ -477,7 +439,7 @@ static int process_message(ToastyFS *tfs,
                             msg.oper.chunks[i].hash = tfs->chunks[i];
                             msg.oper.chunks[i].size = tfs->chunk_sizes[i];
                         }
-                        send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+                        send_message(&tfs->msys, leader_idx(tfs), &msg.base);
                         tfs->step = STEP_COMMIT;
                         client_log(tfs, "SEND COMMIT_PUT", "key=%s chunks=%d req=%lu",
                             tfs->key, tfs->num_chunks, tfs->request_id);
@@ -513,8 +475,8 @@ static int process_message(ToastyFS *tfs,
 
             } else if (type == MESSAGE_TYPE_REPLY) {
 
-                ReplyMessage reply;
-                if (msg.len != sizeof(ReplyMessage))
+                VsrReplyMessage reply;
+                if (msg.len != sizeof(VsrReplyMessage))
                     return -1;
                 memcpy(&reply, msg.ptr, sizeof(reply));
 
@@ -564,8 +526,8 @@ static int process_message(ToastyFS *tfs,
 
             } else if (type == MESSAGE_TYPE_REPLY) {
 
-                ReplyMessage reply;
-                if (msg.len != sizeof(ReplyMessage))
+                VsrReplyMessage reply;
+                if (msg.len != sizeof(VsrReplyMessage))
                     return -1;
                 memcpy(&reply, msg.ptr, sizeof(reply));
 
@@ -675,44 +637,17 @@ static int process_message(ToastyFS *tfs,
 
 void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pnum)
 {
-    Event events[TCP_EVENT_CAPACITY];
-    int num_events = tcp_translate_events(&tfs->tcp, events, ctxs, pdata, pnum);
+    message_system_process_events(&tfs->msys, ctxs, pdata, pnum);
 
-    for (int i = 0; i < num_events; i++) {
-
-        if (events[i].type == EVENT_DISCONNECT) {
-            int conn_idx = events[i].conn_idx;
-            client_log(tfs, "DISCONNECT", "conn=%d", conn_idx);
-            tcp_close(&tfs->tcp, conn_idx);
-            continue;
-        }
-
-        if (events[i].type != EVENT_MESSAGE)
-            continue;
-
-        int conn_idx = events[i].conn_idx;
-        for (;;) {
-            ByteView msg;
-            uint16_t msg_type;
-            int ret = tcp_next_message(&tfs->tcp, conn_idx, &msg, &msg_type);
-            if (ret == 0)
-                break;
-            if (ret < 0) {
-                tcp_close(&tfs->tcp, conn_idx);
-                break;
-            }
-
-            ret = process_message(tfs, conn_idx, msg_type, msg);
-            if (ret < 0) {
-                tcp_close(&tfs->tcp, conn_idx);
-                break;
-            }
-
-            tcp_consume_message(&tfs->tcp, conn_idx);
-        }
+    void *raw;
+    while ((raw = get_next_message(&tfs->msys)) != NULL) {
+        Message *header = (Message *)raw;
+        ByteView msg_view = { .ptr = raw, .len = header->length };
+        process_message(tfs, header->type, msg_view);
+        consume_message(&tfs->msys, raw);
     }
 
-    // Check for operation timeout — retry the current operation if the
+    // Check for operation timeout -- retry the current operation if the
     // deadline has passed (handles initial sends that were dropped because
     // the TCP connection wasn't established yet, and unresponsive servers).
     if (tfs->step != STEP_IDLE
@@ -758,9 +693,9 @@ int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
     }
 
     *timeout = deadline_to_timeout(deadline, now);
-    if (pcap < TCP_POLL_CAPACITY)
+    if (pcap < POLL_CAPACITY)
         return -1;
-    return tcp_register_events(&tfs->tcp, ctxs, pdata);
+    return message_system_register_events(&tfs->msys, ctxs, pdata, pcap);
 }
 
 static void
@@ -866,7 +801,7 @@ int toastyfs_async_get(ToastyFS *tfs, char *key, int key_len)
     tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_GET;
     client_log(tfs, "ASYNC GET", "key=%s leader=%d", tfs->key, leader_idx(tfs));
-    send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+    send_message(&tfs->msys, leader_idx(tfs), &msg.base);
     return 0;
 }
 
@@ -900,7 +835,7 @@ int toastyfs_async_delete(ToastyFS *tfs, char *key, int key_len)
     tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_DELETE;
     client_log(tfs, "ASYNC DELETE", "key=%s req=%lu leader=%d", tfs->key, tfs->request_id, leader_idx(tfs));
-    send_message_to_server(tfs, leader_idx(tfs), &msg.base);
+    send_message(&tfs->msys, leader_idx(tfs), &msg.base);
     return 0;
 }
 
@@ -1073,14 +1008,18 @@ ToastyFS_Result toastyfs_get_result(ToastyFS *tfs)
 static int wait_until_result(ToastyFS *tfs, ToastyFS_Result *res)
 {
     for (;;) {
-        void *ctxs[TCP_POLL_CAPACITY];
-        struct pollfd arr[TCP_POLL_CAPACITY];
+        void *ctxs[POLL_CAPACITY];
+        struct pollfd arr[POLL_CAPACITY];
         int poll_timeout;
-        int num = toastyfs_register_events(tfs, ctxs, arr, TCP_POLL_CAPACITY, &poll_timeout);
+        int num = toastyfs_register_events(tfs, ctxs, arr, POLL_CAPACITY, &poll_timeout);
         if (num < 0)
             return num;
 
+#ifdef _WIN32
+        WSAPoll(arr, num, poll_timeout);
+#else
         poll(arr, num, poll_timeout);
+#endif
 
         toastyfs_process_events(tfs, ctxs, arr, num);
         *res = toastyfs_get_result(tfs);

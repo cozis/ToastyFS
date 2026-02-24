@@ -1,6 +1,8 @@
 #ifndef CONFIG_INCLUDED
 #define CONFIG_INCLUDED
 
+#define CEIL(a, b) (((a) + (b) - 1) / (b))
+
 #define NODE_LIMIT 32
 #define FUTURE_LIMIT 32
 #define HEARTBEAT_INTERVAL_SEC 1

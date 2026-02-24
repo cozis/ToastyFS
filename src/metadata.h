@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "basic.h"
+#include <lib/basic.h>
 
 typedef struct {
     SHA256   hash;

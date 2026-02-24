@@ -3,8 +3,8 @@
 
 #include <toastyfs.h>
 
-#include "tcp.h"
-#include "basic.h"
+#include <lib/tcp.h>
+#include <lib/basic.h>
 
 #include "config.h"
 #include "metadata.h"

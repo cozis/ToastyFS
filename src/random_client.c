@@ -82,10 +82,7 @@ int random_client_init(void *state_, int argc, char **argv,
         return -1;
     state->started = false;
 
-    if (pcap < TCP_POLL_CAPACITY) {
-        fprintf(stderr, "Random client :: Not enough poll capacity\n");
-        return -1;
-    }
+    (void) pcap;
     *pnum = toastyfs_register_events(state->tfs, ctxs, pdata, pcap, timeout);
     *timeout = 0; // Ensure first tick fires immediately to start an operation
     return 0;

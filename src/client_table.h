@@ -13,7 +13,7 @@ typedef struct {
                              // the REQUEST. After a view change, a new leader
                              // may find stale entries with pending=false from
                              // a previous view when it was leader before.
-    int             conn_tag;
+    void           *pending_message; // Raw message pointer for deferred reply
 } ClientTableEntry;
 
 typedef struct {
@@ -25,7 +25,7 @@ typedef struct {
 void client_table_init(ClientTable *client_table);
 void client_table_free(ClientTable *client_table);
 ClientTableEntry *client_table_find(ClientTable *client_table, uint64_t client_id);
-int client_table_add(ClientTable *client_table, uint64_t client_id, uint64_t request_id, int conn_tag);
+int client_table_add(ClientTable *client_table, uint64_t client_id, uint64_t request_id, void *pending_message);
 int client_table_insert(ClientTable *client_table, uint64_t client_id, uint64_t request_id);
 
 #endif // CLIENT_TABLE_INCLUDED

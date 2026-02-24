@@ -9,16 +9,23 @@
 #include "chunk_store.h"
 
 #include <assert.h>
+#include <stdio.h>
 
 // Restore real allocators (see checker/linearizability.c for precedent).
 #undef malloc
 #undef realloc
 #undef free
 #include <stdlib.h>
+#include <string.h>
+
+// Forward declarations for quakey host context functions
+// (we can't include quakey.h because it would re-mock malloc/realloc/free)
+void quakey_enter_host(unsigned long long node);
+void quakey_leave_host(void);
 
 // These helpers are static in node.c; duplicated here for the checker.
 
-static int self_idx(ServerState *state)
+static int self_idx(Server *state)
 {
     for (int i = 0; i < state->num_nodes; i++)
         if (addr_eql(state->node_addrs[i], state->self_addr))
@@ -26,12 +33,12 @@ static int self_idx(ServerState *state)
     UNREACHABLE;
 }
 
-static int leader_idx(ServerState *state)
+static int leader_idx(Server *state)
 {
     return state->view_number % state->num_nodes;
 }
 
-static bool is_leader(ServerState *state)
+static bool is_leader(Server *state)
 {
     if (state->status == STATUS_RECOVERY)
         return false;
@@ -72,7 +79,7 @@ void invariant_checker_free(InvariantChecker *ic)
     free(ic->shadow_log);
 }
 
-void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_nodes,
+void invariant_checker_run(InvariantChecker *ic, Server **nodes, int num_nodes,
     unsigned long long *node_handles)
 {
     int min_commit = -1;
@@ -90,7 +97,7 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
     }
 
     for (int i = 0; i < num_nodes; i++) {
-        ServerState *n = nodes[i];
+        Server *n = nodes[i];
         if (n == NULL || n->status == STATUS_RECOVERY)
             continue;
 
@@ -158,7 +165,7 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
     }
 
     for (int i = 0; i < num_nodes; i++) {
-        ServerState *s = nodes[i];
+        Server *s = nodes[i];
         if (s == NULL)
             continue;
 
@@ -297,7 +304,7 @@ void invariant_checker_run(InvariantChecker *ic, ServerState **nodes, int num_no
     // Phase 2: Append newly committed entries to the shadow log.
     if (source_node_idx >= 0 && observed_max_commit > ic->shadow_count) {
 
-        ServerState *source = nodes[source_node_idx];
+        Server *source = nodes[source_node_idx];
         assert(source->log.count >= observed_max_commit);
 
         for (int k = ic->shadow_count; k < observed_max_commit; k++) {

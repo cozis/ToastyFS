@@ -108,6 +108,11 @@ void byte_queue_read_ack(ByteQueue *queue, uint32_t num)
     }
 }
 
+bool byte_queue_reading(ByteQueue *queue)
+{
+    return (queue->flags & BYTE_QUEUE_READ) != 0;
+}
+
 ByteView byte_queue_write_buf(ByteQueue *queue)
 {
     if ((queue->flags & BYTE_QUEUE_ERROR) || queue->data == NULL)

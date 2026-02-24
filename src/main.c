@@ -52,7 +52,6 @@ int main(int argc, char **argv)
             .addrs      = (char*[]) { "127.0.0.2" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
-            .platform   = QUAKEY_LINUX,
         };
         (void) quakey_spawn(quakey, config, "cli --server 127.0.0.4:8080 --server 127.0.0.5:8080 --server 127.0.0.6:8080");
     }
@@ -68,7 +67,6 @@ int main(int argc, char **argv)
             .addrs      = (char*[]) { "127.0.0.3" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
-            .platform   = QUAKEY_LINUX,
         };
         (void) quakey_spawn(quakey, config, "cli --server 127.0.0.4:8080 --server 127.0.0.5:8080 --server 127.0.0.6:8080");
     }
@@ -84,7 +82,6 @@ int main(int argc, char **argv)
             .addrs      = (char*[]) { "127.0.0.7" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
-            .platform   = QUAKEY_LINUX,
         };
         (void) quakey_spawn(quakey, config, "cli --server 127.0.0.4:8080 --server 127.0.0.5:8080 --server 127.0.0.6:8080");
     }
@@ -93,14 +90,13 @@ int main(int argc, char **argv)
     {
         QuakeySpawn config = {
             .name       = "server1",
-            .state_size = sizeof(ServerState),
+            .state_size = sizeof(Server),
             .init_func  = server_init,
             .tick_func  = server_tick,
             .free_func  = server_free,
             .addrs      = (char*[]) { "127.0.0.4" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
-            .platform   = QUAKEY_LINUX,
         };
         node_1 = quakey_spawn(quakey, config, "nd --addr 127.0.0.4:8080 --peer 127.0.0.5:8080 --peer 127.0.0.6:8080");
     }
@@ -109,14 +105,13 @@ int main(int argc, char **argv)
     {
         QuakeySpawn config = {
             .name       = "server2",
-            .state_size = sizeof(ServerState),
+            .state_size = sizeof(Server),
             .init_func  = server_init,
             .tick_func  = server_tick,
             .free_func  = server_free,
             .addrs      = (char*[]) { "127.0.0.5" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
-            .platform   = QUAKEY_LINUX,
         };
         node_2 = quakey_spawn(quakey, config, "nd --peer 127.0.0.4:8080 --addr 127.0.0.5:8080 --peer 127.0.0.6:8080");
     }
@@ -125,14 +120,13 @@ int main(int argc, char **argv)
     {
         QuakeySpawn config = {
             .name       = "server3",
-            .state_size = sizeof(ServerState),
+            .state_size = sizeof(Server),
             .init_func  = server_init,
             .tick_func  = server_tick,
             .free_func  = server_free,
             .addrs      = (char*[]) { "127.0.0.6" },
             .num_addrs  = 1,
             .disk_size  = 10<<20,
-            .platform   = QUAKEY_LINUX,
         };
         node_3 = quakey_spawn(quakey, config, "nd --peer 127.0.0.4:8080 --peer 127.0.0.5:8080 --addr 127.0.0.6:8080");
     }
@@ -151,7 +145,7 @@ int main(int argc, char **argv)
 
         quakey_schedule_one(quakey);
 
-        ServerState *arr[] = {
+        Server *arr[] = {
             quakey_node_state(node_1),
             quakey_node_state(node_2),
             quakey_node_state(node_3),
@@ -182,7 +176,11 @@ int main(int argc, char **argv)
 ////////////////////////////////////////////////////////////////////
 #ifdef MAIN_CLIENT
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <poll.h>
+#endif
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
@@ -246,8 +244,14 @@ int main(int argc, char **argv)
 ////////////////////////////////////////////////////////////////////
 #ifdef MAIN_SERVER
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <poll.h>
+#endif
 
+#include <stdio.h>
+#include <stdlib.h>
 #include "server.h"
 
 #define POLL_CAPACITY 1024
@@ -256,11 +260,11 @@ int main(int argc, char **argv)
 {
     int ret;
 
-    // ServerState is ~40 MB (MetaStore holds 4096 ObjectMeta entries),
+    // Server is ~40 MB (MetaStore holds 4096 ObjectMeta entries),
     // which exceeds the default stack size.  Heap-allocate it.
-    ServerState *state = malloc(sizeof(ServerState));
+    Server *state = malloc(sizeof(Server));
     if (state == NULL) {
-        fprintf(stderr, "Failed to allocate ServerState\n");
+        fprintf(stderr, "Failed to allocate Server\n");
         return -1;
     }
 

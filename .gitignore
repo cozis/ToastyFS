@@ -15,3 +15,6 @@ example_large
 examples/example
 .cluster/
 vsr_boot_marker
+*.pem
+*.exe
+.claude/

@@ -36,7 +36,7 @@ int file_open(string path, Handle *fd)
     memcpy(zt, path.ptr, path.len);
     zt[path.len] = '\0';
 
-    int ret = open(zt, O_RDWR | O_CREAT, 0644);
+    int ret = open(zt, O_RDWR | O_CREAT | O_APPEND, 0644);
     if (ret < 0)
         return -1;
 
@@ -293,7 +293,7 @@ int get_full_path(string path, char *dst)
 #endif
 
 #ifdef _WIN32
-    if (_fullpath(path_zt, dst, PATH_MAX) == NULL)
+    if (_fullpath(dst, path_zt, PATH_MAX) == NULL)
         return -1;
 #endif
 

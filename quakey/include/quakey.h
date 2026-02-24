@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -26,19 +27,12 @@
 #include <pthread.h>
 #endif
 
-#include <stdbool.h>
-
 typedef struct {} Quakey;
 
 // Function pointers to a simulated program's code
 typedef int (*QuakeyInitFunc)(void *state, int argc, char **argv, void **ctxs, struct pollfd *pdata, int pcap, int *pnum, int *timeout);
 typedef int (*QuakeyTickFunc)(void *state, void **ctxs, struct pollfd *pdata, int pcap, int *pnum, int *timeout);
 typedef int (*QuakeyFreeFunc)(void *state);
-
-typedef enum {
-    QUAKEY_LINUX,
-    QUAKEY_WINDOWS,
-} QuakeyPlatform;
 
 typedef struct {
 
@@ -61,9 +55,6 @@ typedef struct {
     // Disk size for the process
     int disk_size;
 
-    // Platform used by this program
-    QuakeyPlatform platform;
-
 } QuakeySpawn;
 
 typedef unsigned long long QuakeyUInt64;
@@ -84,9 +75,6 @@ void *quakey_node_state(QuakeyNode node);
 // Schedule and executes one program until it would block, then returns
 int quakey_schedule_one(Quakey *quakey);
 
-// Get the current simulated time in nanoseconds
-QuakeyUInt64 quakey_current_time(Quakey *quakey);
-
 // Generate a random u64
 QuakeyUInt64 quakey_random(void);
 
@@ -98,30 +86,40 @@ typedef struct {
 void quakey_signal(char *name);
 int  quakey_get_signal(Quakey *quakey, QuakeySignal *signal);
 
-// Limit the number of hosts that can be crashed at the same time.
-// Set to 0 for no limit (default).
-void quakey_set_max_crashes(Quakey *quakey, int max_crashes);
-
-void quakey_network_partitioning(Quakey *quakey, bool enable);
-
 // Access spawned host information
-//
-// TODO: The following are to be refactored as the host index is not stable
 int         quakey_num_hosts(Quakey *quakey);
 void       *quakey_host_state(Quakey *quakey, int idx);  // Returns NULL if host is dead
 int         quakey_host_is_dead(Quakey *quakey, int idx);
 const char *quakey_host_name(Quakey *quakey, int idx);
 
-// Enter/leave a host's context so that mock_xxx functions (file I/O,
-// etc.) operate on that host's resources. Use from code that runs
-// outside of the normal init/tick/free callbacks (e.g. invariant
-// checkers).
+// Fault injection control
+void quakey_set_max_crashes(Quakey *quakey, int max_crashes);
+void quakey_network_partitioning(Quakey *quakey, bool enabled);
+
+// Simulation time
+QuakeyUInt64 quakey_current_time(Quakey *quakey);
+
+// Host context (for accessing mock filesystem from outside scheduled context)
 void quakey_enter_host(QuakeyNode node);
 void quakey_leave_host(void);
 
 int *mock_errno_ptr(void);
 
+// Network mocks (POSIX-style, available on all platforms)
+int   mock_socket(int domain, int type, int protocol);
+int   mock_bind(int fd, void *addr, unsigned long addr_len);
+int   mock_connect(int fd, void *addr, unsigned long addr_len);
+int   mock_getsockopt(int fd, int level, int optname, void *optval, unsigned int *optlen);
+int   mock_listen(int fd, int backlog);
+int   mock_accept(int fd, void *addr, unsigned int *addr_len);
+int   mock_pipe(int *fds);
+int   mock_recv(int fd, char *dst, int len, int flags);
+int   mock_send(int fd, char *src, int len, int flags);
+
 #ifdef _WIN32
+// Windows-specific socket functions (use SOCKET type)
+int   mock_closesocket(SOCKET fd);
+int   mock_ioctlsocket(SOCKET fd, long cmd, unsigned long *argp);
 BOOL   mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
 BOOL   mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
 HANDLE mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
@@ -139,23 +137,18 @@ HANDLE mock_FindFirstFileA(char *lpFileName, WIN32_FIND_DATAA *lpFindFileData);
 BOOL   mock_FindNextFileA(HANDLE hFindFile, WIN32_FIND_DATAA *lpFindFileData);
 BOOL   mock_FindClose(HANDLE hFindFile);
 int    mock__mkdir(char *path);
+int   mock_open(char *path, int flags, int mode);
+int   mock_close(int fd);
+int   mock_read(int fd, char *dst, int len);
+int   mock_write(int fd, char *src, int len);
+int   mock_remove(char *path);
+int   mock_rename(char *oldpath, char *newpath);
+int   mock_mkdir(char *path, int mode);
 #else
-int   mock_socket(int domain, int type, int protocol);
-int   mock_closesocket(int fd);
-int   mock_ioctlsocket(int fd, long cmd, unsigned long *argp);
-int   mock_bind(int fd, void *addr, unsigned long addr_len);
-int   mock_connect(int fd, void *addr, unsigned long addr_len);
-int   mock_getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen);
-int   mock_listen(int fd, int backlog);
-int   mock_accept(int fd, void *addr, socklen_t *addr_len);
-int   mock_pipe(int *fds);
-int   mock_recv(int fd, char *dst, int len, int flags);
-int   mock_send(int fd, char *src, int len, int flags);
 int   mock_clock_gettime(clockid_t clockid, struct timespec *tp);
 int   mock_open(char *path, int flags, int mode);
 int   mock_fcntl(int fd, int cmd, int flags);
 int   mock_close(int fd);
-int   mock_access(const char *path, int mode);
 int   mock_ftruncate(int fd, size_t new_size);
 int   mock_fstat(int fd, struct stat *buf);
 int   mock_read(int fd, char *dst, int len);
@@ -204,7 +197,6 @@ void  mock_free(void *ptr);
 #define open             mock_open
 #define fcntl            mock_fcntl
 #define close            mock_close
-#define access           mock_access
 #define ftruncate        mock_ftruncate
 #define CreateFileW      mock_CreateFileW
 #define CloseHandle      mock_CloseHandle

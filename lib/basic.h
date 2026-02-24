@@ -37,7 +37,6 @@ typedef uint64_t Time;
 
 #define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
-#define CEIL(X, Y) (((X) + (Y) - 1) / (Y))
 
 #define UNREACHABLE __builtin_trap();
 
