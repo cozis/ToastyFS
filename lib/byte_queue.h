@@ -6,18 +6,13 @@
 #include "basic.h"
 
 typedef struct {
-    uint8_t *ptr;
-    size_t   len;
-} ByteView;
-
-typedef struct {
     uint64_t curs;
-    uint8_t* data;
+    char*    data;
     uint32_t head;
     uint32_t size;
     uint32_t used;
     uint32_t limit;
-    uint8_t* read_target;
+    char*    read_target;
     uint32_t read_target_size;
     int flags;
 } ByteQueue;
@@ -37,11 +32,11 @@ int byte_queue_error(ByteQueue *queue);
 int byte_queue_empty(ByteQueue *queue);
 int byte_queue_full(ByteQueue *queue);
 
-ByteView byte_queue_read_buf(ByteQueue *queue);
+string byte_queue_read_buf(ByteQueue *queue);
 void     byte_queue_read_ack(ByteQueue *queue, uint32_t num);
 bool     byte_queue_reading(ByteQueue *queue);
 
-ByteView byte_queue_write_buf(ByteQueue *queue);
+string byte_queue_write_buf(ByteQueue *queue);
 void     byte_queue_write_ack(ByteQueue *queue, uint32_t num);
 int      byte_queue_write_setmincap(ByteQueue *queue, uint32_t mincap);
 void     byte_queue_write(ByteQueue *queue, void *ptr, uint32_t len);

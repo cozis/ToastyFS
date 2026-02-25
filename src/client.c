@@ -46,7 +46,7 @@ typedef struct {
 
 struct ToastyFS {
 
-    MessageSystem msys;
+    MessageSystem *msys;
 
     Address server_addrs[NODE_LIMIT];
     int num_servers;
@@ -148,7 +148,8 @@ ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
     tfs->num_servers = num_addrs;
     addr_sort(tfs->server_addrs, tfs->num_servers);
 
-    if (message_system_init(&tfs->msys, tfs->server_addrs, num_addrs) < 0) {
+    tfs->msys = message_system_init(tfs->server_addrs, num_addrs);
+    if (tfs->msys == NULL) {
         free(tfs);
         return NULL;
     }
@@ -162,7 +163,7 @@ ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
 
 void toastyfs_free(ToastyFS *tfs)
 {
-    message_system_free(&tfs->msys);
+    message_system_free(tfs->msys);
     free(tfs->put_data);
 }
 
@@ -232,7 +233,7 @@ static int begin_transfers(ToastyFS *tfs)
                     .hash = tfs->transfers[i].hash,
                     .size = tfs->transfers[i].size,
                 };
-                send_message_ex(&tfs->msys, tfs->transfers[i].location,
+                send_message_ex(tfs->msys, tfs->transfers[i].location,
                     &msg.base, tfs->transfers[i].data, tfs->transfers[i].size);
             } else {
                 FetchChunkMessage msg = {
@@ -244,7 +245,7 @@ static int begin_transfers(ToastyFS *tfs)
                     .hash = tfs->transfers[i].hash,
                     .sender_idx = -1, // Client (not a peer server)
                 };
-                send_message(&tfs->msys, tfs->transfers[i].location, &msg.base);
+                send_message(tfs->msys, tfs->transfers[i].location, &msg.base);
             }
             tfs->transfers[i].state = TRANSFER_STARTED;
 
@@ -311,7 +312,7 @@ static void replay_request(ToastyFS *tfs)
                 for (int j = 0; j < tfs->chunk_num_holders[i]; j++)
                     msg.oper.chunks[i].holders[j] = tfs->chunk_holders[i][j];
             }
-            send_message(&tfs->msys, leader_idx(tfs), &msg.base);
+            send_message(tfs->msys, leader_idx(tfs), &msg.base);
         }
         break;
     case STEP_DELETE:
@@ -330,7 +331,7 @@ static void replay_request(ToastyFS *tfs)
             };
             memcpy(msg.oper.bucket, tfs->bucket, META_BUCKET_MAX);
             memcpy(msg.oper.key,    tfs->key,    META_KEY_MAX);
-            send_message(&tfs->msys, leader_idx(tfs), &msg.base);
+            send_message(tfs->msys, leader_idx(tfs), &msg.base);
         }
         break;
     case STEP_GET:
@@ -344,7 +345,7 @@ static void replay_request(ToastyFS *tfs)
             };
             memcpy(msg.bucket, tfs->bucket, META_BUCKET_MAX);
             memcpy(msg.key, tfs->key, META_KEY_MAX);
-            send_message(&tfs->msys, leader_idx(tfs), &msg.base);
+            send_message(tfs->msys, leader_idx(tfs), &msg.base);
         }
         break;
     default:
@@ -352,7 +353,7 @@ static void replay_request(ToastyFS *tfs)
     }
 }
 
-static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
+static int process_message(ToastyFS *tfs, uint16_t type, string msg)
 {
     // Discard messages that arrive after the operation has completed or
     // before a new one has started.  This handles late/stale responses
@@ -370,7 +371,7 @@ static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
             if (type == MESSAGE_TYPE_FETCH_CHUNK_RESPONSE) {
 
                 FetchChunkResponseMessage resp;
-                if (msg.len < sizeof(FetchChunkResponseMessage))
+                if (msg.len < (int) sizeof(FetchChunkResponseMessage))
                     return -1;
                 memcpy(&resp, msg.ptr, sizeof(resp));
                 char *data = (char *)msg.ptr + sizeof(resp);
@@ -475,7 +476,7 @@ static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
                             for (int j = 0; j < tfs->chunk_num_holders[i]; j++)
                                 msg.oper.chunks[i].holders[j] = tfs->chunk_holders[i][j];
                         }
-                        send_message(&tfs->msys, leader_idx(tfs), &msg.base);
+                        send_message(tfs->msys, leader_idx(tfs), &msg.base);
                         tfs->step = STEP_COMMIT;
                         client_log(tfs, "SEND COMMIT_PUT", "key=%s chunks=%d req=%lu",
                             tfs->key, tfs->num_chunks, tfs->request_id);
@@ -670,14 +671,14 @@ static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
 
 void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, int pnum)
 {
-    message_system_process_events(&tfs->msys, ctxs, pdata, pnum);
+    message_system_process_events(tfs->msys, ctxs, pdata, pnum);
 
     void *raw_message;
-    while ((raw_message = get_next_message(&tfs->msys)) != NULL) {
+    while ((raw_message = get_next_message(tfs->msys)) != NULL) {
         Message *header = (Message *)raw_message;
-        ByteView msg_view = { .ptr = raw_message, .len = header->length };
+        string msg_view = { .ptr = raw_message, .len = header->length };
         process_message(tfs, header->type, msg_view);
-        consume_message(&tfs->msys, raw_message);
+        consume_message(tfs->msys, raw_message);
     }
 
     // Check for operation timeout -- retry the current operation if the
@@ -728,7 +729,7 @@ int toastyfs_register_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
     *timeout = deadline_to_timeout(deadline, now);
     if (pcap < POLL_CAPACITY)
         return -1;
-    return message_system_register_events(&tfs->msys, ctxs, pdata, pcap);
+    return message_system_register_events(tfs->msys, ctxs, pdata, pcap);
 }
 
 static void
@@ -834,7 +835,7 @@ int toastyfs_async_get(ToastyFS *tfs, char *key, int key_len)
     tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_GET;
     client_log(tfs, "ASYNC GET", "key=%s leader=%d", tfs->key, leader_idx(tfs));
-    send_message(&tfs->msys, leader_idx(tfs), &msg.base);
+    send_message(tfs->msys, leader_idx(tfs), &msg.base);
     return 0;
 }
 
@@ -868,7 +869,7 @@ int toastyfs_async_delete(ToastyFS *tfs, char *key, int key_len)
     tfs->step_time = get_current_time(); // TODO: Handle INVALID_TIME error
     tfs->step = STEP_DELETE;
     client_log(tfs, "ASYNC DELETE", "key=%s req=%lu leader=%d", tfs->key, tfs->request_id, leader_idx(tfs));
-    send_message(&tfs->msys, leader_idx(tfs), &msg.base);
+    send_message(tfs->msys, leader_idx(tfs), &msg.base);
     return 0;
 }
 

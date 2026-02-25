@@ -68,10 +68,10 @@ int byte_queue_full(ByteQueue *queue)
 //
 // Note:
 //   - You can't have more than one pending read.
-ByteView byte_queue_read_buf(ByteQueue *queue)
+string byte_queue_read_buf(ByteQueue *queue)
 {
     if (queue->flags & BYTE_QUEUE_ERROR)
-        return (ByteView) {NULL, 0};
+        return (string) {NULL, 0};
 
     assert((queue->flags & BYTE_QUEUE_READ) == 0);
     queue->flags |= BYTE_QUEUE_READ;
@@ -79,9 +79,9 @@ ByteView byte_queue_read_buf(ByteQueue *queue)
     queue->read_target_size = queue->size;
 
     if (queue->data == NULL)
-        return (ByteView) {NULL, 0};
+        return (string) {NULL, 0};
 
-    return (ByteView) { queue->data + queue->head, queue->used };
+    return (string) { queue->data + queue->head, queue->used };
 }
 
 // Complete a previously started operation on the queue.
@@ -113,15 +113,15 @@ bool byte_queue_reading(ByteQueue *queue)
     return (queue->flags & BYTE_QUEUE_READ) != 0;
 }
 
-ByteView byte_queue_write_buf(ByteQueue *queue)
+string byte_queue_write_buf(ByteQueue *queue)
 {
     if ((queue->flags & BYTE_QUEUE_ERROR) || queue->data == NULL)
-        return (ByteView) {NULL, 0};
+        return (string) {NULL, 0};
 
     assert((queue->flags & BYTE_QUEUE_WRITE) == 0);
     queue->flags |= BYTE_QUEUE_WRITE;
 
-    return (ByteView) {
+    return (string) {
         queue->data + (queue->head + queue->used),
         queue->size - (queue->head + queue->used),
     };
@@ -232,7 +232,7 @@ int byte_queue_write_setmincap(ByteQueue *queue, uint32_t mincap)
             if (size > queue->limit)
                 size = queue->limit;
 
-            uint8_t *data = malloc(size);
+            char *data = malloc(size);
             if (!data) {
                 queue->flags |= BYTE_QUEUE_ERROR;
                 return 0;
@@ -263,7 +263,7 @@ int byte_queue_write_setmincap(ByteQueue *queue, uint32_t mincap)
 void byte_queue_write(ByteQueue *queue, void *ptr, uint32_t len)
 {
     byte_queue_write_setmincap(queue, len);
-    ByteView dst = byte_queue_write_buf(queue);
+    string dst = byte_queue_write_buf(queue);
     if (dst.ptr) {
         memcpy(dst.ptr, ptr, len);
         byte_queue_write_ack(queue, len);
@@ -290,7 +290,7 @@ void byte_queue_patch(ByteQueue *queue, ByteQueueOffset off,
     assert(len <= queue->used - (off - queue->curs));
 
     // Perform the patch
-    uint8_t *dst = queue->data + queue->head + (off - queue->curs);
+    char *dst = queue->data + queue->head + (off - queue->curs);
     memcpy(dst, src, len);
 }
 

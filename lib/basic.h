@@ -40,6 +40,8 @@ typedef uint64_t Time;
 
 #define UNREACHABLE __builtin_trap();
 
+#define STATIC_ASSERT(X) _Static_assert((X), "")
+
 bool streq(string s1, string s2);
 
 Time get_current_time(void);

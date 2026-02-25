@@ -38,12 +38,12 @@ typedef struct {
 int  http_server_init(HTTP_Server *server, int max_conns);
 void http_server_free(HTTP_Server *server);
 
-int http_server_listen_tcp(HTTP_Server *server, string addr, uint16_t port);
+int http_server_listen_tcp(HTTP_Server *server, Address addr);
 
-int http_server_listen_tls(HTTP_Server *server, string addr, uint16_t port,
+int http_server_listen_tls(HTTP_Server *server, Address addr,
     string cert_file, string key_file);
 
-int http_server_add_cert(HTTP_Server *server, string cert_file, string key_file);
+int http_server_add_cert(HTTP_Server *server, string domain, string cert_file, string key_file);
 
 void http_server_process_events(HTTP_Server *server,
     void **ptrs, struct pollfd *arr, int cap);

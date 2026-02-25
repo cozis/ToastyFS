@@ -387,7 +387,7 @@ int tls_conn_handshake(TLS_Conn *conn)
     assert(conn->handshake);
 
     // Read available ciphertext from in_buf
-    ByteView in = byte_queue_read_buf(&conn->in_buf);
+    string in = byte_queue_read_buf(&conn->in_buf);
     if (!in.ptr || in.len == 0) {
         byte_queue_read_ack(&conn->in_buf, 0);
         return 0;
@@ -484,7 +484,7 @@ int tls_conn_handshake(TLS_Conn *conn)
 char *tls_conn_net_write_buf(TLS_Conn *conn, int *cap)
 {
     byte_queue_write_setmincap(&conn->in_buf, 4096);
-    ByteView bv = byte_queue_write_buf(&conn->in_buf);
+    string bv = byte_queue_write_buf(&conn->in_buf);
     if (!bv.ptr || bv.len == 0) {
         byte_queue_write_ack(&conn->in_buf, 0);
         return NULL;
@@ -500,7 +500,7 @@ void tls_conn_net_write_ack(TLS_Conn *conn, int num)
 
 char *tls_conn_net_read_buf(TLS_Conn *conn, int *num)
 {
-    ByteView bv = byte_queue_read_buf(&conn->out_buf);
+    string bv = byte_queue_read_buf(&conn->out_buf);
     if (!bv.ptr || bv.len == 0) {
         byte_queue_read_ack(&conn->out_buf, 0);
         return NULL;
@@ -534,7 +534,7 @@ int tls_conn_app_write(TLS_Conn *conn, char *src, int num)
 
     // Ensure output buffer has enough space
     byte_queue_write_setmincap(&conn->out_buf, total);
-    ByteView bv = byte_queue_write_buf(&conn->out_buf);
+    string bv = byte_queue_write_buf(&conn->out_buf);
     if (!bv.ptr || (int) bv.len < total) {
         // Try with less data
         if (!bv.ptr || (int) bv.len < header_size + trailer_size + 1) {
@@ -604,7 +604,7 @@ int tls_conn_app_read(TLS_Conn *conn, char *dst, int cap)
         return n;
     }
 
-    ByteView in = byte_queue_read_buf(&conn->in_buf);
+    string in = byte_queue_read_buf(&conn->in_buf);
     if (!in.ptr || in.len == 0) {
         byte_queue_read_ack(&conn->in_buf, 0);
         return 0;

@@ -97,7 +97,7 @@ static void add_vote(uint32_t *votes, int idx)
     *votes |= 1 << idx;
 }
 
-// Helper: read a message from raw_message into ByteView-like usage
+// Helper: read a message from raw_message into string-like usage
 // raw_message is a pointer to the message bytes in the TCP read buffer
 static uint64_t msg_len(void *raw_message)
 {
@@ -123,7 +123,7 @@ static void begin_state_transfer(Server *state, int sender_idx)
         .op_number   = state->log.count,
         .sender_idx  = self_idx(state),
     };
-    send_message(&state->msys,sender_idx, &message.base);
+    send_message(state->msys,sender_idx, &message.base);
     node_log(state, "SEND GET_STATE", "to=%d op=%d", sender_idx, state->log.count);
 }
 
@@ -165,7 +165,7 @@ process_request(Server *state, void *raw_message)
                     .rejected = true,
                     .request_id = request_message.request_id,
                 };
-                reply_to_message(&state->msys, raw_message, &reply_message.base);
+                reply_to_message(state->msys, raw_message, &reply_message.base);
                 node_log(state, "SEND REPLY", "client=%llu REJECTED (table full)", request_message.client_id);
                 return HR_OK;
             }
@@ -190,7 +190,7 @@ process_request(Server *state, void *raw_message)
                     .result = entry->last_result,
                     .request_id = request_message.request_id,
                 };
-                reply_to_message(&state->msys, raw_message, &reply_message.base);
+                reply_to_message(state->msys, raw_message, &reply_message.base);
 
                 {
                     char result_buf[64];
@@ -230,7 +230,7 @@ process_request(Server *state, void *raw_message)
         .client_id    = request_message.client_id,
         .request_id   = request_message.request_id,
     };
-    broadcast_message(&state->msys, self_idx(state), &prepare_message.base);
+    broadcast_message(state->msys, self_idx(state), &prepare_message.base);
 
     {
         char oper_buf[128];
@@ -261,8 +261,8 @@ static void reply_to_client(Server *state, ClientTableEntry *table_entry,
             .result = result,
             .request_id = request_id,
         };
-        reply_to_message(&state->msys, table_entry->pending_message, &message.base);
-        consume_message(&state->msys, table_entry->pending_message);
+        reply_to_message(state->msys, table_entry->pending_message, &message.base);
+        consume_message(state->msys, table_entry->pending_message);
         table_entry->pending_message = NULL;
     }
 }
@@ -393,7 +393,7 @@ complete_view_change_and_become_primary(Server *state)
         .commit_index = state->commit_index,
         .op_number = state->log.count,
     };
-    broadcast_message_ex(&state->msys, self_idx(state),&begin_view_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
+    broadcast_message_ex(state->msys, self_idx(state),&begin_view_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
 
     node_log(state, "SEND BEGIN_VIEW", "to=* view=%llu log=%d commit=%d",
         state->view_number, state->log.count, state->commit_index);
@@ -478,10 +478,10 @@ process_recovery(Server *state, void *raw_message)
     };
     if (is_primary(state)) {
         recovery_response_message.base.length += state->log.count * sizeof(LogEntry);
-        send_message_ex(&state->msys,recovery_message.sender_idx, &recovery_response_message.base,
+        send_message_ex(state->msys,recovery_message.sender_idx, &recovery_response_message.base,
             state->log.entries, state->log.count * sizeof(LogEntry));
     } else {
-        send_message(&state->msys,recovery_message.sender_idx, &recovery_response_message.base);
+        send_message(state->msys,recovery_message.sender_idx, &recovery_response_message.base);
     }
     return HR_OK;
 }
@@ -511,7 +511,7 @@ perform_log_transfer_for_view_change(Server *state)
             .commit_index = state->commit_index,
             .sender_idx = self_idx(state),
         };
-        send_message_ex(&state->msys,primary_idx(state), &do_view_change_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
+        send_message_ex(state->msys,primary_idx(state), &do_view_change_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
         node_log(state, "SEND DO_VIEW_CHANGE", "to=%d view=%llu old_view=%llu log=%d commit=%d",
             primary_idx(state), state->view_number, state->last_normal_view,
             state->log.count, state->commit_index);
@@ -553,7 +553,7 @@ process_begin_view_change(Server *state, void *raw_message)
             .view_number = message.view_number,
             .sender_idx = self_idx(state),
         };
-        broadcast_message(&state->msys, self_idx(state),&message_2.base);
+        broadcast_message(state->msys, self_idx(state),&message_2.base);
         node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", message.view_number);
 
         clear_view_change_fields(state);
@@ -621,7 +621,7 @@ process_begin_view(Server *state, void *raw_message)
             .log_index  = state->log.count - 1,
             .view_number = state->view_number,
         };
-        send_message(&state->msys,primary_idx(state), &ok_msg.base);
+        send_message(state->msys,primary_idx(state), &ok_msg.base);
         node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", primary_idx(state), state->log.count - 1,
             state->log.entries[state->log.count - 1].oper.bucket, state->log.entries[state->log.count - 1].oper.key);
     }
@@ -669,7 +669,7 @@ process_get_state(Server *state, void *raw_message)
         .commit_index = state->commit_index,
         .start_index  = start,
     };
-    send_message_ex(&state->msys,get_state_message.sender_idx, &new_state_message.base,
+    send_message_ex(state->msys,get_state_message.sender_idx, &new_state_message.base,
         state->log.entries + start, num_entries * sizeof(LogEntry));
     node_log(state, "SEND NEW_STATE", "to=%d entries=%d commit=%d",
         get_state_message.sender_idx, num_entries, state->commit_index);
@@ -707,7 +707,7 @@ process_store_chunk(Server *state, void *raw_message)
         .hash    = message.hash,
         .success = (ret == 0),
     };
-    reply_to_message(&state->msys, raw_message, &ack.base);
+    reply_to_message(state->msys, raw_message, &ack.base);
 
     node_log(state, "RECV STORE_CHUNK", "size=%u ok=%d", message.size, ret == 0);
     return HR_OK;
@@ -735,7 +735,7 @@ process_fetch_chunk(Server *state, void *raw_message)
             .hash = message.hash,
             .size = 0,
         };
-        reply_to_message(&state->msys, raw_message, &response.base);
+        reply_to_message(state->msys, raw_message, &response.base);
 
         node_log(state, "RECV FETCH_CHUNK", "NOT_FOUND");
         return HR_OK;
@@ -762,7 +762,7 @@ process_fetch_chunk(Server *state, void *raw_message)
             .hash = message.hash,
             .size = 0,
         };
-        reply_to_message(&state->msys, raw_message, &response.base);
+        reply_to_message(state->msys, raw_message, &response.base);
 
         node_log(state, "RECV FETCH_CHUNK", "NO_META");
         return HR_OK;
@@ -786,9 +786,9 @@ found_size:;
             .size = 0,
         };
         if (message.sender_idx >= 0 && message.sender_idx < state->num_nodes)
-            send_message(&state->msys,message.sender_idx, &response.base);
+            send_message(state->msys,message.sender_idx, &response.base);
         else
-            reply_to_message(&state->msys, raw_message, &response.base);
+            reply_to_message(state->msys, raw_message, &response.base);
         node_log(state, "RECV FETCH_CHUNK", "READ_ERR size=%u", chunk_size);
         return HR_OK;
     }
@@ -802,7 +802,7 @@ found_size:;
         .hash = message.hash,
         .size = chunk_size,
     };
-    reply_to_message_ex(&state->msys, raw_message, &response.base, chunk_data, chunk_size);
+    reply_to_message_ex(state->msys, raw_message, &response.base, chunk_data, chunk_size);
 
     node_log(state, "RECV FETCH_CHUNK", "size=%u", chunk_size);
 
@@ -842,7 +842,7 @@ process_get_blob(Server *state, void *raw_message)
         response.found = false;
     }
 
-    reply_to_message(&state->msys, raw_message, &response.base);
+    reply_to_message(state->msys, raw_message, &response.base);
     return HR_OK;
 }
 
@@ -968,7 +968,7 @@ process_single_future_list_entry(Server *state)
         .log_index   = state->log.count-1,
         .view_number = state->view_number,
     };
-    send_message(&state->msys,state->future[i].sender_idx, &message.base);
+    send_message(state->msys,state->future[i].sender_idx, &message.base);
     return 1;
 }
 
@@ -1052,7 +1052,7 @@ process_prepare(Server *state, void *raw_message)
         .log_index  = state->log.count-1,
         .view_number = state->view_number,
     };
-    send_message(&state->msys,message.sender_idx, &ok_message.base);
+    send_message(state->msys,message.sender_idx, &ok_message.base);
     node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s",
         message.sender_idx, state->log.count-1, message.oper.bucket, message.oper.key);
 
@@ -1140,7 +1140,7 @@ process_new_state(Server *state, void *raw_message)
             .log_index   = state->log.count - 1,
             .view_number = state->view_number,
         };
-        send_message(&state->msys,primary_idx(state), &prepare_ok_message.base);
+        send_message(state->msys,primary_idx(state), &prepare_ok_message.base);
         node_log(state, "SEND PREPARE_OK", "to=%d idx=%d %s/%s", primary_idx(state), state->log.count - 1,
             state->log.entries[state->log.count - 1].oper.bucket, state->log.entries[state->log.count - 1].oper.key);
     }
@@ -1164,7 +1164,7 @@ send_redirect(Server *state, void *raw_message)
         },
         .view_number = state->view_number,
     };
-    reply_to_message(&state->msys, raw_message, &redirect_message.base);
+    reply_to_message(state->msys, raw_message, &redirect_message.base);
 
     node_log(state, "SEND REDIRECT", "view=%llu leader=%d",
         (unsigned long long)state->view_number, primary_idx(state));
@@ -1401,15 +1401,16 @@ int server_init(void *state_, int argc, char **argv,
         return -1;
     }
 
-    if (message_system_init(&state->msys, state->node_addrs, state->num_nodes) < 0) {
+    state->msys = message_system_init(state->node_addrs, state->num_nodes);
+    if (state->msys == NULL) {
         fprintf(stderr, "Node :: Couldn't setup message system\n");
         return -1;
     }
 
-    int ret = message_system_listen_tcp(&state->msys, state->self_addr);
+    int ret = message_system_listen_tcp(state->msys, state->self_addr);
     if (ret < 0) {
         fprintf(stderr, "Node :: Couldn't setup TCP listener\n");
-        message_system_free(&state->msys);
+        message_system_free(state->msys);
         return -1;
     }
 
@@ -1431,7 +1432,7 @@ int server_init(void *state_, int argc, char **argv,
             .sender_idx = self_idx(state),
             .nonce = state->recovery_nonce,
         };
-        broadcast_message(&state->msys, self_idx(state),&recovery_message.base);
+        broadcast_message(state->msys, self_idx(state),&recovery_message.base);
         node_log(state, "SEND RECOVERY", "to=* nonce=%llu", state->recovery_nonce);
 
         nearest_deadline(&deadline, state->recovery_time + RECOVERY_TIMEOUT_SEC * 1000000000ULL);
@@ -1442,7 +1443,7 @@ int server_init(void *state_, int argc, char **argv,
         fprintf(stderr, "Node :: Not enough poll() capacity (got %d, needed %d)\n", pcap, POLL_CAPACITY);
         return -1;
     }
-    *pnum = message_system_register_events(&state->msys, ctxs, pdata, pcap);
+    *pnum = message_system_register_events(state->msys, ctxs, pdata, pcap);
     return 0;
 }
 
@@ -1459,16 +1460,16 @@ int server_tick(void *state_, void **ctxs,
     // NETWORK EVENTS
     /////////////////////////////////////////////////////////////////
 
-    message_system_process_events(&state->msys, ctxs, pdata, *pnum);
+    message_system_process_events(state->msys, ctxs, pdata, *pnum);
 
-    for (void *ptr; (ptr = get_next_message(&state->msys)) != NULL; ) {
+    for (void *ptr; (ptr = get_next_message(state->msys)) != NULL; ) {
 
         HandlerResult ret = process_message(state, ptr);
         if (ret == HR_OUT_OF_MEMORY)
             return -1;
 
         if (ret != HR_DEFERRED)
-            consume_message(&state->msys, ptr);
+            consume_message(state->msys, ptr);
     }
 
     /////////////////////////////////////////////////////////////////
@@ -1491,7 +1492,7 @@ int server_tick(void *state_, void **ctxs,
                 .sender_idx = self_idx(state),
                 .nonce = state->recovery_nonce,
             };
-            broadcast_message(&state->msys, self_idx(state),&recovery_message.base);
+            broadcast_message(state->msys, self_idx(state),&recovery_message.base);
             node_log(state, "SEND RECOVERY", "to=* nonce=%llu", state->recovery_nonce);
 
             state->recovery_time = state->now;
@@ -1523,7 +1524,7 @@ int server_tick(void *state_, void **ctxs,
                 .sender_idx = self_idx(state),
             };
             node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", state->view_number);
-            broadcast_message(&state->msys, self_idx(state),&begin_view_change_message.base);
+            broadcast_message(state->msys, self_idx(state),&begin_view_change_message.base);
 
         } else {
             nearest_deadline(&deadline, view_change_deadline);
@@ -1545,7 +1546,7 @@ int server_tick(void *state_, void **ctxs,
                     .sender_idx = self_idx(state),
                     .commit_index = state->commit_index,
                 };
-                broadcast_message(&state->msys, self_idx(state),&commit_message.base);
+                broadcast_message(state->msys, self_idx(state),&commit_message.base);
                 node_log(state, "SEND COMMIT", "to=* commit=%d", state->commit_index);
 
                 state->heartbeat = state->now;
@@ -1576,7 +1577,7 @@ int server_tick(void *state_, void **ctxs,
                     .view_number = state->view_number,
                     .sender_idx = self_idx(state),
                 };
-                broadcast_message(&state->msys, self_idx(state),&begin_view_change_message.base);
+                broadcast_message(state->msys, self_idx(state),&begin_view_change_message.base);
 
                 node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", state->view_number);
                 node_log(state, "STATUS CHANGE_VIEW", "view=%llu", state->view_number);
@@ -1602,7 +1603,7 @@ int server_tick(void *state_, void **ctxs,
                 .op_number   = state->log.count,
                 .sender_idx  = self_idx(state),
             };
-            send_message(&state->msys,primary_idx(state), &get_state_message.base);
+            send_message(state->msys,primary_idx(state), &get_state_message.base);
             node_log(state, "SEND GET_STATE", "to=%d op=%d", primary_idx(state), state->log.count);
 
             state->state_transfer_time = state->now;
@@ -1615,7 +1616,7 @@ int server_tick(void *state_, void **ctxs,
     *timeout = deadline_to_timeout(deadline, state->now);
     if (pcap < POLL_CAPACITY)
         return -1;
-    *pnum = message_system_register_events(&state->msys, ctxs, pdata, pcap);
+    *pnum = message_system_register_events(state->msys, ctxs, pdata, pcap);
     return 0;
 }
 
@@ -1628,7 +1629,7 @@ int server_free(void *state_)
     log_free(&state->log);
     log_free(&state->recovery_log);
     log_free(&state->view_change_log);
-    message_system_free(&state->msys);
+    message_system_free(state->msys);
     client_table_free(&state->client_table);
     meta_store_free(&state->metastore);
     chunk_store_free(&state->chunk_store);

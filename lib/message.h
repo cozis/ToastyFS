@@ -1,28 +1,11 @@
 #ifndef MESSAGE_INCLUDED
 #define MESSAGE_INCLUDED
 
-#include "tcp.h"
+#include <stdint.h>
 
-#define MESSAGE_SYSTEM_NODE_LIMIT 8
+#include "basic.h"
 
-typedef struct {
-    bool     used;
-    uint16_t gen;
-    int      senders[MESSAGE_SYSTEM_NODE_LIMIT];
-    int      num_senders;
-    void*    message;
-} ConnMetadata;
-
-typedef struct {
-
-    TCP *tcp;
-
-    Address addrs[MESSAGE_SYSTEM_NODE_LIMIT];
-    int num_addrs;
-
-    int max_conns;
-    ConnMetadata *conns;
-} MessageSystem;
+typedef struct MessageSystem MessageSystem;
 
 typedef struct {
     uint16_t version;
@@ -31,21 +14,23 @@ typedef struct {
     uint64_t length;
 } Message;
 
-int message_system_init(MessageSystem *msys,
-    Address *addrs, int num_addrs);
+MessageSystem *message_system_init(Address *addrs, int num_addrs);
 
-int message_system_free(MessageSystem *msys);
+void message_system_free(MessageSystem *msys);
 
 int message_system_listen_tcp(MessageSystem *msys, Address addr);
-int message_system_listen_tls(MessageSystem *msys, Address addr);
+
+struct pollfd;
 
 void message_system_process_events(MessageSystem *msys,
-    void **ptrs, struct pollfd *arr, int num);
+    void **ptrs, struct pollfd *pfds, int num);
 
 int message_system_register_events(MessageSystem *msys,
-    void **ptrs, struct pollfd *arr, int cap);
+    void **ptrs, struct pollfd *pfds, int cap);
 
 void *get_next_message(MessageSystem *msys);
+
+int message_length(void *raw_message);
 
 void consume_message(MessageSystem *msys, void *ptr);
 

@@ -32,7 +32,7 @@ void tcp_free(TCP *tcp);
 
 // Enable a listening interface for this TCP pool. Connections accepted via
 // this interface will be plaintext.
-int tcp_listen_tcp(TCP *tcp, string addr, uint16_t port);
+int tcp_listen_tcp(TCP *tcp, Address addr);
 
 // Enable a listening interface for this TCP pool. Connections accepted via
 // this interface will be encrypted. A single TCP pool may be configured for
@@ -41,7 +41,7 @@ int tcp_listen_tcp(TCP *tcp, string addr, uint16_t port);
 // transparent.
 // The cert_file and key_file parameters refer to the certificate file and
 // associated private key file to use for encryption, both in PEM format.
-int tcp_listen_tls(TCP *tcp, string addr, uint16_t port, string cert_file, string key_file);
+int tcp_listen_tls(TCP *tcp, Address addr, string cert_file, string key_file);
 
 // If the TCP pool is configured in TLS mode (tcp_listen_tls was called), this
 // function can be used to add an additional certificate. Connecting sockets
@@ -49,12 +49,20 @@ int tcp_listen_tls(TCP *tcp, string addr, uint16_t port, string cert_file, strin
 // are expecting to talk to.
 int tcp_add_cert(TCP *tcp, string domain, string cert_file, string key_file);
 
+// Handle structure representing a TCP connection of the TCP pool. The contents
+// should not be interpreted by users.
+typedef struct {
+    TCP *tcp;
+    int  idx;
+    int  gen;
+} TCP_Handle;
+
 // Add a connection to the TCP pool by establishing one towards the specified
 // peer. The addrs array (of size num_addrs) contains the list of IP addresses
 // for the host. The TCP pool will try each address one by one until a connection
 // is established. If the secure argument is true, the connection will be
 // encrypted.
-int tcp_connect(TCP *tcp, bool secure, Address *addrs, int num_addrs);
+int tcp_connect(TCP *tcp, bool secure, Address *addrs, int num_addrs, TCP_Handle *handle);
 
 // Forward-declare poll item type. The user must include poll.h (Linux) or
 // winsock2.h (Windows) to get this definition (and the definition of poll()
@@ -75,14 +83,6 @@ int tcp_register_events(TCP *tcp, void **ptrs, struct pollfd *pfds, int cap);
 // events and update the internal state of the TCP pool. The ptrs array should
 // be passed in as it was initialized by the tcp_register_events as-is.
 void tcp_process_events(TCP *tcp, void **ptrs, struct pollfd *pfds, int num);
-
-// Handle structure representing a TCP connection of the TCP pool. The contents
-// should not be interpreted by users.
-typedef struct {
-    TCP *tcp;
-    int  idx;
-    int  gen;
-} TCP_Handle;
 
 // Flags for the "flags" field in TCP_Event.
 enum {

@@ -99,24 +99,20 @@ void http_server_free(HTTP_Server *server)
     free(server->conns);
 }
 
-int http_server_listen_tcp(HTTP_Server *server, string addr, uint16_t port)
+int http_server_listen_tcp(HTTP_Server *server, Address addr)
 {
-    int ret = tcp_listen_tcp(&server->tcp, addr, port, true, 128);
+    int ret = tcp_listen_tcp(server->tcp, addr);
     if (ret < 0)
         return -1;
 
     return 0;
 }
 
-int http_server_listen_tls(HTTP_Server *server, string addr, uint16_t port,
+int http_server_listen_tls(HTTP_Server *server, Address addr,
     string cert_file, string key_file)
 {
 #ifdef TLS_ENABLED
-    int ret = tls_server_init(&server->tcp.tls, cert_file, key_file);
-    if (ret < 0)
-        return -1;
-
-    ret = tcp_listen_tls(&server->tcp, addr, port, true, 128);
+    int ret = tcp_listen_tls(server->tcp, addr, cert_file, key_file);
     if (ret < 0)
         return -1;
 
@@ -127,9 +123,9 @@ int http_server_listen_tls(HTTP_Server *server, string addr, uint16_t port,
 #endif
 }
 
-int http_server_add_cert(HTTP_Server *server, string cert_file, string key_file)
+int http_server_add_cert(HTTP_Server *server, string domain, string cert_file, string key_file)
 {
-    int ret = tcp_add_cert(&server->tcp, cert_file, key_file);
+    int ret = tcp_add_cert(server->tcp, domain, cert_file, key_file);
     if (ret < 0)
         return -1;
 
@@ -163,10 +159,10 @@ static void http_conn_free(HTTP_Conn *conn)
 void http_server_process_events(HTTP_Server *server,
     void **ptrs, struct pollfd *arr, int num)
 {
-    tcp_process_events(&server->tcp, ptrs, arr, num);
+    tcp_process_events(server->tcp, ptrs, arr, num);
 
     TCP_Event event;
-    while (tcp_next_event(&server->tcp, &event)) {
+    while (tcp_next_event(server->tcp, &event)) {
 
         if (event.flags & TCP_EVENT_NEW) {
             // New connection. Find an HTTP_Conn struct.
@@ -192,10 +188,7 @@ void http_server_process_events(HTTP_Server *server,
         bool defer_close = false;
         if (event.flags & TCP_EVENT_DATA) {
 
-            // Only idle connections can buffer bytes
-            assert(conn->state == HTTP_CONN_STATE_IDLE);
-
-            ByteView src = tcp_read_buf(event.handle);
+            string src = tcp_read_buf(event.handle);
             int ret = chttp_parse_request((char*) src.ptr, src.len, &conn->request);
             if (ret < 0) {
                 tcp_read_ack(event.handle, 0);
@@ -234,7 +227,7 @@ void http_server_process_events(HTTP_Server *server,
 int http_server_register_events(HTTP_Server *server,
     void **ptrs, struct pollfd *arr, int cap)
 {
-    return tcp_register_events(&server->tcp, ptrs, arr, cap);
+    return tcp_register_events(server->tcp, ptrs, arr, cap);
 }
 
 bool http_server_next_request(HTTP_Server *server,
@@ -373,7 +366,7 @@ void http_response_builder_submit(HTTP_ResponseBuilder builder)
     int ret = snprintf(buf, sizeof(buf), "%d", content_length);
     assert(ret > 0);
     assert(ret < (int) sizeof(buf));
-    tcp_patch(conn->handle, conn->content_length_header_offset, buf, ret);
+    tcp_patch(conn->handle, conn->content_length_header_offset, (string) { buf, ret });
 
     conn->num_served++;
 

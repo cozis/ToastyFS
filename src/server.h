@@ -211,7 +211,7 @@ typedef enum {
 
 typedef struct {
 
-    MessageSystem msys;
+    MessageSystem *msys;
 
     Address  self_addr;
     Address  node_addrs[NODE_LIMIT];

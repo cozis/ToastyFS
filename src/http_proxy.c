@@ -39,8 +39,7 @@ int http_proxy_init(void *state, int argc, char **argv,
 
     // TODO: Make these configurable
     int      max_opers = 128;
-    string   http_addr = S("127.0.0.1");
-    uint16_t http_port = 3000;
+    char    *http_addr = "127.0.0.1:3000";
     uint64_t client_id = 999;
 
     proxy->max_opers = max_opers;
@@ -56,7 +55,13 @@ int http_proxy_init(void *state, int argc, char **argv,
         return -1;
     }
 
-    if (http_server_listen_tcp(&proxy->http_server, http_addr, http_port) < 0) {
+    Address http_addr_2;
+    if (parse_addr_arg(http_addr, &http_addr_2) < 0) {
+        http_server_free(&proxy->http_server);
+        free(proxy->opers);
+        return -1;
+    }
+    if (http_server_listen_tcp(&proxy->http_server, http_addr_2) < 0) {
         http_server_free(&proxy->http_server);
         free(proxy->opers);
         return -1;

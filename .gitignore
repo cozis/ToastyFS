@@ -1,6 +1,9 @@
 toastyfs
 toastyfs_client
 toastyfs_simulation
+toastyfs_server
+toastyfs_http_proxy
+toastyfs_random_client
 *.gcno
 *.gcda
 *.gcov

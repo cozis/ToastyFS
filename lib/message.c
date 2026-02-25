@@ -1,76 +1,116 @@
+#ifdef MAIN_SIMULATION
+#define QUAKEY_ENABLE_MOCKS
+#endif
+
 #include <quakey.h>
 #include <assert.h>
 
+#include "tcp.h"
 #include "message.h"
 
 #define MESSAGE_SYSTEM_VERSION 1
+#define MESSAGE_SYSTEM_NODE_LIMIT 8
 
-int message_system_init(MessageSystem *msys,
-    Address *addrs, int num_addrs)
+typedef struct {
+    bool       used;
+    TCP_Handle handle;
+    int        senders[MESSAGE_SYSTEM_NODE_LIMIT];
+    int        num_senders;
+    void*      message;
+} Channel;
+
+struct MessageSystem {
+
+    TCP *tcp;
+
+    Address addrs[MESSAGE_SYSTEM_NODE_LIMIT];
+    int num_addrs;
+
+    int max_channels;
+    Channel channels[];
+};
+
+MessageSystem *message_system_init(Address *addrs, int num_addrs)
 {
-    if (num_addrs > MESSAGE_SYSTEM_NODE_LIMIT)
-        return -1;
+    int max_channels = 2 * num_addrs + 1;
+    MessageSystem *msys = malloc(sizeof(MessageSystem) + max_channels * sizeof(Channel));
+    if (msys == NULL)
+        return NULL;
+
+    if (num_addrs > MESSAGE_SYSTEM_NODE_LIMIT) {
+        free(msys);
+        return NULL;
+    }
     for (int i = 0; i < num_addrs; i++)
         msys->addrs[i] = addrs[i];
     msys->num_addrs = num_addrs;
-    // TODO: sort addresses
+    addr_sort(msys->addrs, msys->num_addrs);
 
-    int max_conns = 2 * num_addrs + 1;
+    msys->max_channels = max_channels;
+    for (int i = 0; i < max_channels; i++)
+        msys->channels[i].used = 0;
 
-    msys->conns = malloc(max_conns * sizeof(ConnMetadata));
-    if (msys->conns == NULL)
-        return -1;
-
-    msys->max_conns = max_conns;
-
-    for (int i = 0; i < max_conns; i++) {
-        msys->conns[i].used = false;
-        msys->conns[i].gen = 0;
-        msys->conns[i].num_senders = 0;
-    }
-
-    msys->tcp = tcp_init(max_conns);
+    msys->tcp = tcp_init(max_channels);
     if (msys->tcp == NULL) {
-        free(msys->conns);
-        return -1;
+        free(msys);
+        return NULL;
     }
 
-    return 0;
+    return msys;
 }
 
-int message_system_free(MessageSystem *msys)
+void message_system_free(MessageSystem *msys)
 {
     tcp_free(msys->tcp);
-    free(msys->conns);
-    return 0;
+    free(msys);
 }
 
 int message_system_listen_tcp(MessageSystem *msys, Address addr)
 {
-    int ret = tcp_listen_tcp(msys->tcp, S(""), addr.port, true, 128);
-    if (ret < 0)
-        return -1;
-    return 0;
-}
-
-int message_system_listen_tls(MessageSystem *msys, Address addr)
-{
-    int ret = tcp_listen_tls(msys->tcp, S(""), addr.port, true, 128);
+    int ret = tcp_listen_tcp(msys->tcp, addr);
     if (ret < 0)
         return -1;
     return 0;
 }
 
 void message_system_process_events(MessageSystem *msys,
-    void **ptrs, struct pollfd *arr, int num)
+    void **ptrs, struct pollfd *pfds, int num)
 {
-    tcp_process_events(msys->tcp, ptrs, arr, num);
+    tcp_process_events(msys->tcp, ptrs, pfds, num);
 }
 
 int message_system_register_events(MessageSystem *msys,
-    void **ptrs, struct pollfd *arr, int cap)
+    void **ptrs, struct pollfd *pfds, int cap)
 {
-    return tcp_register_events(msys->tcp, ptrs, arr, cap);
+    return tcp_register_events(msys->tcp, ptrs, pfds, cap);
+}
+
+static int
+find_free_channel_struct(MessageSystem *msys)
+{
+    int i = 0;
+    while (i < msys->max_channels && msys->channels[i].used)
+        i++;
+
+    if (i == msys->max_channels)
+        return -1; // No free space
+
+    return i;
+}
+
+static bool has_sender(Channel *channel, int sender_idx)
+{
+    for (int i = 0; i < channel->num_senders; i++)
+        if (channel->senders[i] == sender_idx)
+            return true;
+    return false;
+}
+
+static void add_sender(Channel *channel, int sender_idx)
+{
+    if (has_sender(channel, sender_idx))
+        return;
+    channel->senders[channel->num_senders++] = sender_idx;
 }
 
 void *get_next_message(MessageSystem *msys)
@@ -80,45 +120,35 @@ void *get_next_message(MessageSystem *msys)
 
         if (event.flags & TCP_EVENT_NEW) {
 
-            // Skip if already set up by ensure_conn (outbound connection)
-            if (tcp_get_user_ptr(event.handle) == NULL) {
-                // Use the TCP connection's slot index so that the
-                // ConnMetadata index always matches the TCP_Conn index.
-                // Searching for a "free" metadata slot could assign a
-                // different index when stale metadata entries remain
-                // from failed outbound connections.
-                int i = event.handle.idx;
-                assert(i >= 0 && i < msys->max_conns);
-
-                ConnMetadata *meta = &msys->conns[i];
-                meta->used = true;
-                meta->gen = event.handle.gen;
-                meta->num_senders = 0;
-                meta->message = NULL;
-                tcp_set_user_ptr(event.handle, meta);
+            int channel_idx = find_free_channel_struct(msys);
+            if (channel_idx < 0) {
+                tcp_close(event.handle);
+                continue;
             }
+            Channel *channel = &msys->channels[channel_idx];
+
+            channel->used = true;
+            channel->num_senders = 0;
+            channel->message = NULL;
+            channel->handle = event.handle;
+
+            tcp_set_user_ptr(event.handle, channel);
         }
 
-        ConnMetadata *meta = tcp_get_user_ptr(event.handle);
-        assert(meta);
-
+        Channel *channel = tcp_get_user_ptr(event.handle);
 
         if (event.flags & TCP_EVENT_HUP) {
-            meta->used = false;
-            tcp_close(event.handle);
-            continue;
+            channel->used = false;
+            tcp_close(channel->handle); // TODO: What if the user is still hanging on the message pointer?
         }
 
         if (!(event.flags & TCP_EVENT_DATA))
             continue;
 
-        if (meta->message)
-            continue; // Already processing message
-
-        ByteView buf = tcp_read_buf(event.handle);
+        string buf = tcp_read_buf(event.handle);
 
         Message message;
-        if (buf.len < sizeof(message)) {
+        if (buf.len < (int) sizeof(message)) {
             tcp_read_ack(event.handle, 0);
             continue;
         }
@@ -129,165 +159,136 @@ void *get_next_message(MessageSystem *msys)
             assert(0); // TODO
         }
 
-        if (message.length > (uint64_t)buf.len) {
+        if (message.length > (uint64_t) buf.len) {
             tcp_read_ack(event.handle, 0);
             continue; // Still buffering
         }
 
-        // Associate this sender with the TCP connection
-        if (message.sender < msys->num_addrs) {
-            bool found = false;
-            for (int i = 0; i < meta->num_senders; i++) {
-                if (meta->senders[i] == message.sender) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                meta->senders[meta->num_senders++] = message.sender;
-            }
-        }
+        add_sender(channel, message.sender);
 
-        meta->message = buf.ptr;
+        channel->message = buf.ptr;
         return buf.ptr;
     }
 
     return NULL;
 }
 
-static TCP_Handle find_conn_by_message(MessageSystem *msys, void *message)
+static int find_channel_by_message(MessageSystem *msys, void *raw_message)
 {
-    for (int i = 0; i < msys->max_conns; i++) {
-        ConnMetadata *meta = &msys->conns[i];
-        if (meta->message == message)
-            return (TCP_Handle) { msys->tcp, meta->gen, i };
+    for (int i = 0; i < msys->max_channels; i++) {
+        Channel *channel = &msys->channels[i];
+        if (!channel->used)
+            continue;
+        if (channel->message == raw_message)
+            return i;
     }
-    return (TCP_Handle) {0};
+    return -1;
 }
 
-static TCP_Handle find_conn_by_target(MessageSystem *msys, int target)
+int message_length(void *raw_message)
 {
-    for (int i = 0; i < msys->max_conns; i++) {
-        ConnMetadata *meta = &msys->conns[i];
-        if (!meta->used)
+    Message message;
+    memcpy(&message, raw_message, sizeof(message));
+    return message.length;
+}
+
+void consume_message(MessageSystem *msys, void *raw_message)
+{
+    int channel_idx = find_channel_by_message(msys, raw_message);
+    if (channel_idx < 0)
+        return;
+    Channel *channel = &msys->channels[channel_idx];
+
+    channel->message = NULL;
+    tcp_read_ack(channel->handle, message_length(raw_message));
+    tcp_mark_ready(channel->handle);
+}
+
+static int find_channel_by_target_idx(MessageSystem *msys, int target_idx)
+{
+    for (int i = 0; i < msys->max_channels; i++) {
+
+        Channel *channel = &msys->channels[i];
+        if (!channel->used)
             continue;
-        for (int j = 0; j < meta->num_senders; j++) {
-            if (meta->senders[j] == target) {
-                return (TCP_Handle) { msys->tcp, meta->gen, i };
-            }
+
+        for (int j = 0; j < channel->num_senders; j++) {
+            if (channel->senders[j] == target_idx)
+                return i;
         }
     }
-    return (TCP_Handle) {0};
+
+    return -1;
 }
 
-static TCP_Handle ensure_conn(MessageSystem *msys, int target)
+void send_message_ex(MessageSystem *msys, int target_idx,
+    Message *message, void *extra, int extra_len)
 {
-    TCP_Handle handle = find_conn_by_target(msys, target);
-    if (handle.tcp)
-        return handle;
+    int channel_idx = find_channel_by_target_idx(msys, target_idx);
+    if (channel_idx < 0) {
 
-    if (target < 0 || target >= msys->num_addrs)
-        return (TCP_Handle) {0};
+        // Find an unused channel struct
+        channel_idx = find_free_channel_struct(msys);
+        if (channel_idx < 0)
+            return; // No free space
 
-    int ret = tcp_connect(msys->tcp, false, &msys->addrs[target], 1);
-    if (ret < 0)
-        return (TCP_Handle) {0};
+        // Establish a new connection
+        TCP_Handle handle;
+        if (tcp_connect(msys->tcp, false, &msys->addrs[target_idx], 1, &handle) < 0)
+            return;
 
-    // Find the newly created connection slot and pre-associate with target
-    for (int i = 0; i < msys->max_conns; i++) {
-        TCP_Conn *conn = msys->tcp.conns[i];
-        if (conn->state == TCP_CONN_STATE_FREE)
-            continue;
-        if (conn->user_ptr != NULL)
-            continue;
-        if (conn->state != TCP_CONN_STATE_CONNECTING
-            && conn->state != TCP_CONN_STATE_ESTABLISHED)
-            continue;
+        Channel *channel = &msys->channels[channel_idx];
+        channel->used = true;
+        channel->handle = handle;
+        channel->senders[0] = target_idx;
+        channel->num_senders = 1;
+        channel->message = NULL;
 
-        ConnMetadata *meta = &msys->conns[i];
-        meta->used = true;
-        meta->gen = conn->gen;
-        meta->num_senders = 1;
-        meta->senders[0] = target;
-        meta->message = NULL;
-
-        TCP_Handle h = { msys->tcp, conn->gen, i };
-        tcp_set_user_ptr(h, meta);
-        return h;
+        tcp_set_user_ptr(handle, channel);
     }
+    Channel *channel = &msys->channels[channel_idx];
 
-    return (TCP_Handle) {0};
+    tcp_write(channel->handle, (string) { (void*) message, message->length - extra_len });
+    if (extra_len > 0)
+        tcp_write(channel->handle, (string) { extra, extra_len });
 }
 
-void consume_message(MessageSystem *msys, void *ptr)
+void send_message(MessageSystem *msys, int target_idx,
+    Message *message)
 {
-    int i = 0;
-    while (i < msys->max_conns && msys->conns[i].message != ptr)
-        i++;
-
-    if (i == msys->max_conns)
-        return; // Not found
-
-    Message message;
-    memcpy(&message, ptr, sizeof(message));
-
-    TCP_Handle handle = { msys->tcp, msys->conns[i].gen, i };
-    tcp_read_ack(handle, message.length);
-    tcp_mark_ready(handle);
-    msys->conns[i].message = NULL;
-}
-
-void send_message(MessageSystem *msys, int target, Message *message)
-{
-    TCP_Handle handle = ensure_conn(msys, target);
-    if (!handle.tcp) return;
-    tcp_write(handle, (string) { (char*) message, message->length });
-}
-
-void send_message_ex(MessageSystem *msys, int target,
-    Message *header, void *extra, int extra_len)
-{
-    TCP_Handle handle = ensure_conn(msys, target);
-    if (!handle.tcp) return;
-    int header_size = header->length - extra_len;
-    tcp_write(handle, (string) { (char*) header, header_size });
-    tcp_write(handle, (string) { (char*) extra, extra_len });
-}
-
-void reply_to_message(MessageSystem *msys, void *incoming_message,
-    Message *outgoing_message)
-{
-    TCP_Handle handle = find_conn_by_message(msys, incoming_message);
-    if (!handle.tcp) return;
-    tcp_write(handle, (string) { (char*) outgoing_message, outgoing_message->length });
+    send_message_ex(msys, target_idx, message, NULL, 0);
 }
 
 void reply_to_message_ex(MessageSystem *msys, void *incoming_message,
     Message *outgoing_message, void *extra, int extra_len)
 {
-    TCP_Handle handle = find_conn_by_message(msys, incoming_message);
-    if (!handle.tcp) return;
+    int channel_idx = find_channel_by_message(msys, incoming_message);
+    if (channel_idx < 0)
+        return;
+    Channel *channel = &msys->channels[channel_idx];
+
     int header_size = outgoing_message->length - extra_len;
-    tcp_write(handle, (string) { (char*) outgoing_message, header_size });
-    tcp_write(handle, (string) { (char*) extra, extra_len });
+    tcp_write(channel->handle, (string) { (char*) outgoing_message, header_size });
+    if (extra_len > 0)
+        tcp_write(channel->handle, (string) { (char*) extra, extra_len });
+}
+
+void reply_to_message(MessageSystem *msys, void *incoming_message,
+    Message *outgoing_message)
+{
+    reply_to_message_ex(msys, incoming_message, outgoing_message, NULL, 0);
+}
+
+void broadcast_message_ex(MessageSystem *msys, int self_idx,
+    Message *message, void *extra, int extra_len)
+{
+    for (int i = 0; i < msys->num_addrs; i++) {
+        if (i != self_idx)
+            send_message_ex(msys, i, message, extra, extra_len);
+    }
 }
 
 void broadcast_message(MessageSystem *msys, int self_idx, Message *message)
 {
-    for (int i = 0; i < msys->num_addrs; i++) {
-        if (i != self_idx)
-            send_message(msys, i, message);
-    }
+    broadcast_message_ex(msys, self_idx, message, NULL, 0);
 }
-
-void broadcast_message_ex(MessageSystem *msys, int self_idx,
-    Message *header, void *extra, int extra_len)
-{
-    for (int i = 0; i < msys->num_addrs; i++) {
-        if (i != self_idx)
-            send_message_ex(msys, i, header, extra, extra_len);
-    }
-}
-
-
-

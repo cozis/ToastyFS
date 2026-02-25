@@ -5,6 +5,7 @@
 #include <quakey.h>
 #include <assert.h>
 
+#include "tls.h"
 #include "tcp.h"
 
 #ifdef _WIN32
@@ -98,6 +99,10 @@ struct TCP {
     SOCKET tcp_listen_fd;
     SOCKET tls_listen_fd;
 
+#ifdef TLS_ENABLED
+    TLS_Server tls;
+#endif
+
     // Total size of the connection array and how many
     // structures in it are currently in use.
     int max_conns;
@@ -123,11 +128,11 @@ static int set_socket_blocking(SOCKET fd, bool value)
 {
 #ifdef _WIN32
     u_long mode = !value;
-    if (ioctlsocket(sock, FIONBIO, &mode) == SOCKET_ERROR)
+    if (ioctlsocket(fd, FIONBIO, &mode) == SOCKET_ERROR)
         return -1;
     return 0;
 #else
-    int flags = fcntl(sock, F_GETFL, 0);
+    int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0)
         return -1;
 
@@ -136,19 +141,35 @@ static int set_socket_blocking(SOCKET fd, bool value)
     else
         flags |= O_NONBLOCK;
 
-    if (fcntl(sock, F_SETFL, flags) < 0)
+    if (fcntl(fd, F_SETFL, flags) < 0)
         return -1;
     return 0;
 #endif
 }
 
+static int bind_2(SOCKET fd, Address addr)
+{
+    if (addr.is_ipv4) {
+        struct sockaddr_in buf;
+        buf.sin_family = AF_INET;
+        buf.sin_port   = htons(addr.port);
+        memcpy(&buf.sin_addr, &addr.ipv4, sizeof(IPv4));
+        return bind(fd, (struct sockaddr*) &buf, sizeof(buf));
+    } else {
+        struct sockaddr_in6 buf;
+        buf.sin6_family = AF_INET6;
+        buf.sin6_port   = htons(addr.port);
+        memcpy(&buf.sin6_addr, &addr.ipv6, sizeof(IPv6));
+        return bind(fd, (struct sockaddr*) &buf, sizeof(buf));
+    }
+}
+
 static SOCKET
-create_listen_socket(string addr, uint16_t port,
-    bool reuse_addr, int backlog)
+create_listen_socket(Address addr, bool reuse_addr, int backlog)
 {
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
 #ifdef _WIN32
-    if (fd == INVALID_SOCKET && WSALastError() == xxx) {
+    if (fd == INVALID_SOCKET && WSAGetLastError() == WSANOTINITIALISED) {
         WSADATA wsa;
         WSAStartup(MAKEWORD(2, 2), &wsa); // TODO: check error
         fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -167,32 +188,11 @@ create_listen_socket(string addr, uint16_t port,
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (void*) &one, sizeof(one)); // TODO: mock this
     }
+#else
+    (void) reuse_addr;
 #endif
 
-    struct in_addr addr_buf;
-    if (addr.len == 0)
-        addr_buf.s_addr = htonl(INADDR_ANY);
-    else {
-
-        char copy[100];
-        if (addr.len >= (int) sizeof(copy)) {
-            close_socket(fd);
-            return INVALID_SOCKET;
-        }
-        memcpy(copy, addr.ptr, addr.len);
-        copy[addr.len] = '\0';
-
-        if (inet_pton(AF_INET, copy, &addr_buf) < 0) {
-            close_socket(fd);
-            return INVALID_SOCKET;
-        }
-    }
-
-    struct sockaddr_in bind_buf;
-    bind_buf.sin_family = AF_INET;
-    bind_buf.sin_addr   = addr_buf;
-    bind_buf.sin_port   = htons(port);
-    if (bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf)) < 0) {
+    if (bind_2(fd, addr) < 0) {
         close_socket(fd);
         return INVALID_SOCKET;
     }
@@ -207,20 +207,19 @@ create_listen_socket(string addr, uint16_t port,
 
 static int connect_2(SOCKET fd, Address addr)
 {
-    int ret;
-    if (next_addr.is_ipv4) {
+    if (addr.is_ipv4) {
         struct sockaddr_in buf;
         buf.sin_family = AF_INET;
-        buf.sin_port   = htons(next_addr.port);
-        STATIC_ASSERT(sizeof(buf.sin_addr) == sizeof(next_addr.ipv4));
-        memcpy(&buf.sin_addr, &next_addr.ipv4, sizeof(next_addr.ipv4));
+        buf.sin_port   = htons(addr.port);
+        STATIC_ASSERT(sizeof(buf.sin_addr) == sizeof(addr.ipv4));
+        memcpy(&buf.sin_addr, &addr.ipv4, sizeof(addr.ipv4));
         return connect(fd, (struct sockaddr*) &buf, sizeof(buf));
     } else {
         struct sockaddr_in6 buf;
         buf.sin6_family = AF_INET;
-        buf.sin6_port   = htons(next_addr.port);
-        STATIC_ASSERT(sizeof(buf.sin6_addr) == sizeof(next_addr.ipv6));
-        memcpy(&buf.sin6_addr, &next_addr.ipv6, sizeof(next_addr.ipv6));
+        buf.sin6_port   = htons(addr.port);
+        STATIC_ASSERT(sizeof(buf.sin6_addr) == sizeof(addr.ipv6));
+        memcpy(&buf.sin6_addr, &addr.ipv6, sizeof(addr.ipv6));
         return connect(fd, (struct sockaddr*) &buf, sizeof(buf));
     }
 }
@@ -276,13 +275,17 @@ void tcp_free(TCP *tcp)
 }
 
 // See tcp.h
-int tcp_listen_tcp(TCP *tcp, string addr, uint16_t port)
+int tcp_listen_tcp(TCP *tcp, Address addr)
 {
     // Ensure plaintext server mode wasn't enabled already.
     if (tcp->tcp_listen_fd != INVALID_SOCKET)
         return -1;
 
-    SOCKET fd = create_listen_socket(addr, port, reuse_addr, backlog);
+    // TODO: Make these configurable
+    bool reuse_addr = false;
+    int backlog = 32;
+
+    SOCKET fd = create_listen_socket(addr, reuse_addr, backlog);
     if (fd == INVALID_SOCKET)
         return -1;
 
@@ -291,18 +294,22 @@ int tcp_listen_tcp(TCP *tcp, string addr, uint16_t port)
 }
 
 // See tcp.h
-int tcp_listen_tls(TCP *tcp, string addr, uint16_t port, string cert_file, string key_file)
+int tcp_listen_tls(TCP *tcp, Address addr, string cert_file, string key_file)
 {
 #ifdef TLS_ENABLED
     // Ensure plaintext server mode wasn't enabled already.
     if (tcp->tls_listen_fd != INVALID_SOCKET)
         return -1;
 
-    SOCKET fd = create_listen_socket(addr, port, reuse_addr, backlog);
+    // TODO: Make these configurable
+    bool reuse_addr = false;
+    int backlog = 32;
+
+    SOCKET fd = create_listen_socket(addr, reuse_addr, backlog);
     if (fd == INVALID_SOCKET)
         return -1;
 
-    if (tls_server_init() < 0) {
+    if (tls_server_init(&tcp->tls, cert_file, key_file) < 0) {
         close_socket(fd);
         return -1;
     }
@@ -312,9 +319,8 @@ int tcp_listen_tls(TCP *tcp, string addr, uint16_t port, string cert_file, strin
 #else
     (void) tcp;
     (void) addr;
-    (void) port;
-    (void) reuse_addr;
-    (void) backlog;
+    (void) cert_file;
+    (void) key_file;
     return -1;
 #endif
 }
@@ -323,7 +329,7 @@ int tcp_listen_tls(TCP *tcp, string addr, uint16_t port, string cert_file, strin
 int tcp_add_cert(TCP *tcp, string domain, string cert_file, string key_file)
 {
 #ifdef TLS_ENABLED
-    int ret = tcp_server_add_cert(&tcp->tls, domain, cert_file, cert_key);
+    int ret = tls_server_add_cert(&tcp->tls, domain, cert_file, key_file);
     if (ret < 0)
         return -1;
     return 0;
@@ -336,7 +342,7 @@ int tcp_add_cert(TCP *tcp, string domain, string cert_file, string key_file)
 #endif
 }
 
-static void tcp_conn_init(TCP *tcp, TCP_Conn *conn)
+static void tcp_conn_init(TCP *tcp, TCP_Conn *conn, bool secure, TCP_ConnState state, SOCKET fd)
 {
     conn->state = state;
     conn->flags = 0;
@@ -382,15 +388,15 @@ static void tcp_conn_set_addrs(TCP_Conn *conn,
     conn->num_addrs = num_addrs;
 }
 
-static ByteView tcp_conn_write_buf(TCP_Conn *conn)
+static string tcp_conn_write_buf(TCP_Conn *conn)
 {
 #ifdef TLS_ENABLED
     if (conn->flags & TCP_CONN_FLAG_SECURE) {
         int cap;
         char *ptr = tls_conn_net_write_buf(&conn->tls, &cap);
         if (ptr == NULL)
-            return (ByteView) {0};
-        return (ByteView) { (uint8_t*) ptr, cap };
+            return (string) {0};
+        return (string) { ptr, cap };
     }
 #endif
 
@@ -406,7 +412,7 @@ static int tcp_conn_write_ack(TCP_Conn *conn, int num)
         tls_conn_net_write_ack(&conn->tls, num);
         for (bool done = false; !done; ) {
             byte_queue_write_setmincap(&conn->input, MIN_RECV);
-            ByteView buf = byte_queue_write_buf(&conn->input);
+            string buf = byte_queue_write_buf(&conn->input);
             int n = tls_conn_app_read(&conn->tls, (char*) buf.ptr, buf.len);
             if (n <= 0) {
                 if (n < 0) {
@@ -431,7 +437,7 @@ static int tcp_conn_write_ack(TCP_Conn *conn, int num)
 static void tcp_conn_tls_encrypt_output(TCP_Conn *conn)
 {
     while (!byte_queue_empty(&conn->output)) {
-        ByteView src = byte_queue_read_buf(&conn->output);
+        string src = byte_queue_read_buf(&conn->output);
         if (!src.ptr || src.len == 0) {
             byte_queue_read_ack(&conn->output, 0);
             break;
@@ -446,7 +452,7 @@ static void tcp_conn_tls_encrypt_output(TCP_Conn *conn)
 }
 #endif
 
-static ByteView tcp_conn_read_buf(TCP_Conn *conn)
+static string tcp_conn_read_buf(TCP_Conn *conn)
 {
 #ifdef TLS_ENABLED
     if (conn->flags & TCP_CONN_FLAG_SECURE) {
@@ -454,8 +460,8 @@ static ByteView tcp_conn_read_buf(TCP_Conn *conn)
         int n;
         char *ptr = tls_conn_net_read_buf(&conn->tls, &n);
         if (ptr == NULL)
-            return (ByteView) {0};
-        return (ByteView) { (uint8_t*) ptr, n };
+            return (string) {0};
+        return (string) { ptr, n };
     }
 #endif
 
@@ -500,7 +506,7 @@ static bool tcp_conn_is_buffering(TCP_Conn *conn)
 
 static bool tcp_conn_free_maybe(TCP_Conn *conn)
 {
-    if (!conn->handled && conn->fd < 0) {
+    if (!conn->handled && conn->fd == INVALID_SOCKET) {
         tcp_conn_free(conn);
         return true;
     } else {
@@ -513,6 +519,32 @@ static void tcp_conn_invalidate_handles(TCP_Conn *conn)
     conn->gen++;
     if (conn->gen == 0)
         conn->gen = 1;
+}
+
+static TCP_Handle conn_to_handle(TCP *tcp, TCP_Conn *conn)
+{
+    TCP_Handle handle = {
+        .tcp=tcp,
+        .gen=conn->gen,
+        .idx=conn - tcp->conns,
+    };
+    return handle;
+}
+
+static TCP_Conn *handle_to_conn(TCP_Handle handle)
+{
+    if (handle.tcp == NULL)
+        return NULL;
+    TCP *tcp = handle.tcp;
+
+    if (handle.idx < 0 || handle.idx >= tcp->max_conns)
+        return NULL;
+    TCP_Conn *conn = &tcp->conns[handle.idx];
+
+    if (conn->state == TCP_CONN_STATE_FREE || conn->gen != handle.gen)
+        return NULL;
+
+    return conn;
 }
 
 static int find_free_conn_struct(TCP *tcp)
@@ -533,13 +565,13 @@ static int find_free_conn_struct(TCP *tcp)
 
 static bool connect_in_progress(void)
 {
-#if defined(_WIN32)
-#if defined(QUAKEY_ENABLE_MOCKS)
+#ifdef _WIN32
+#ifdef QUAKEY_ENABLE_MOCKS
     assert(0); // TODO: The mock WSA function must use WSASetLastError
 #endif
-    return (WSAGetLastError() == WSAEWOULDBLOCK);
+    return WSAGetLastError() == WSAEWOULDBLOCK;
 #else
-    return (errno == EINPROGRESS);
+    return errno == EINPROGRESS;
 #endif
 }
 
@@ -556,7 +588,7 @@ int tcp_connect(TCP *tcp, bool secure, Address *addrs, int num_addrs, TCP_Handle
 
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
 #ifdef _WIN32
-    if (fd == INVALID_SOCKET && WSALastError() == xxx) {
+    if (fd == INVALID_SOCKET && WSAGetLastError() == WSANOTINITIALISED) {
         WSADATA wsa;
         WSAStartup(MAKEWORD(2, 2), &wsa); // TODO: check error
         fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -627,7 +659,7 @@ static int restart_connect(TCP_Conn *conn)
     conn->addr_idx++;
     if (conn->addr_idx == conn->num_addrs)
         return -1; // No more addresses to try
-    Address next_addr = &conn->addrs[conn->addr_idx];
+    Address next_addr = conn->addrs[conn->addr_idx];
 
     // Elsewhere in this file calls to socket() are
     // followed by the initialization of the winsock2
@@ -644,6 +676,7 @@ static int restart_connect(TCP_Conn *conn)
         return -1;
     }
 
+    TCP_ConnState state;
     int ret = connect_2(fd, next_addr);
     if (ret == 0) {
         if (conn->flags & TCP_CONN_FLAG_SECURE) {
@@ -675,9 +708,9 @@ int tcp_register_events(TCP *tcp, void **ptrs, struct pollfd *pfds, int cap)
 
     if (tcp->tcp_listen_fd != INVALID_SOCKET) {
         if (tcp->num_conns < tcp->max_conns) {
-            arr[ret].fd = tcp->tcp_listen_fd;
-            arr[ret].events = POLLIN;
-            arr[ret].revents = 0;
+            pfds[ret].fd = tcp->tcp_listen_fd;
+            pfds[ret].events = POLLIN;
+            pfds[ret].revents = 0;
             ptrs[ret] = NULL;
             ret++;
         }
@@ -685,9 +718,9 @@ int tcp_register_events(TCP *tcp, void **ptrs, struct pollfd *pfds, int cap)
 
     if (tcp->tls_listen_fd != INVALID_SOCKET) {
         if (tcp->num_conns < tcp->max_conns) {
-            arr[ret].fd = tcp->tls_listen_fd;
-            arr[ret].events = POLLIN;
-            arr[ret].revents = 0;
+            pfds[ret].fd = tcp->tls_listen_fd;
+            pfds[ret].events = POLLIN;
+            pfds[ret].revents = 0;
             ptrs[ret] = NULL;
             ret++;
         }
@@ -712,9 +745,9 @@ int tcp_register_events(TCP *tcp, void **ptrs, struct pollfd *pfds, int cap)
             events |= POLLOUT;
 
         if (events) {
-            arr[ret].fd = conn->fd;
-            arr[ret].events = events;
-            arr[ret].revents = 0;
+            pfds[ret].fd = conn->fd;
+            pfds[ret].events = events;
+            pfds[ret].revents = 0;
             ptrs[ret] = conn;
             ret++;
         }
@@ -755,7 +788,20 @@ accept_incoming_conns(TCP *tcp, SOCKET listen_fd)
         conn->events |= TCP_EVENT_NEW;
 
     tcp->num_conns++;
-    return 0;
+}
+
+static bool would_block(void)
+{
+#ifdef _WIN32
+#ifdef QUAKEY_ENABLE_MOCKS
+    assert(0); // TODO: The mock WSA function must use WSASetLastError
+#endif
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+    return errno == EWOULDBLOCK
+        || errno == EAGAIN
+        || errno == EINTR;
+#endif
 }
 
 // Returns true if the connection should be closed
@@ -763,7 +809,7 @@ static bool
 read_from_net_into_conn(TCP_Conn *conn)
 {
     bool defer_close = false;
-    ByteView buf = tcp_conn_write_buf(conn);
+    string buf = tcp_conn_write_buf(conn);
     int n = recv(conn->fd, (char*) buf.ptr, buf.len, 0);
     if (n == 0) {
         defer_close = true;
@@ -784,7 +830,7 @@ static bool
 write_from_conn_into_net(TCP_Conn *conn)
 {
     bool defer_close = false;
-    ByteView buf = tcp_conn_read_buf(conn);
+    string buf = tcp_conn_read_buf(conn);
     int n = send(conn->fd, (char*) buf.ptr, buf.len, 0);
     if (n < 0) {
         if (!would_block())
@@ -797,7 +843,7 @@ write_from_conn_into_net(TCP_Conn *conn)
     return defer_close;
 }
 
-static void process_conn_events(TCP_Conn *conn, int revents)
+static void process_conn_events(TCP *tcp, TCP_Conn *conn, int revents)
 {
     bool defer_close = false;
     bool defer_connect = false;
@@ -822,64 +868,70 @@ static void process_conn_events(TCP_Conn *conn, int revents)
                     conn->state = TCP_CONN_STATE_HANDSHAKE;
                 } else {
                     conn->state = TCP_CONN_STATE_ESTABLISHED;
-                    conn->events |= TCP_EVENT_NEW;
                 }
             }
-        case TCP_CONN_STATE_HANDSHAKE:
-        case TCP_CONN_STATE_ACCEPTING:
-#ifdef TLS_ENABLED
-            {
-                if (revents & POLLIN) {
-                    defer_close = read_from_net_into_conn(conn);
-                }
-                if (revents & POLLOUT) {
-                    defer_close = write_from_conn_into_net(conn);
-                }
-                int ret = tls_conn_handshake(&conn->tls);
-                if (ret == -1) {
-                    defer_close = true;
-                    break;
-                }
-
-                if (ret == 1) {
-                    conn->state = TCP_CONN_STATE_ESTABLISHED;
-                    conn->events |= TCP_EVENT_NEW;
-
-                    // Decrypt any application data already in the BIO
-                    for (;;) {
-                        byte_queue_write_setmincap(&conn->input, MIN_RECV);
-                        ByteView buf = byte_queue_write_buf(&conn->input);
-                        if (buf.ptr == NULL)
-                            break;
-                        int n = tls_conn_app_read(&conn->tls, (char*) buf.ptr, buf.len);
-                        if (n <= 0) {
-                            byte_queue_write_ack(&conn->input, 0);
-                            break;
-                        }
-                        byte_queue_write_ack(&conn->input, n);
-                        conn->events |= TCP_EVENT_DATA;
-                    }
-                }
-            }
-#endif // TLS_ENABLED
-            break;
-        case TCP_CONN_STATE_ESTABLISHED:
-            {
-                if (revents & POLLIN) {
-                    defer_close = read_from_net_into_conn(conn);
-                }
-                if (revents & POLLOUT) {
-                    defer_close = write_from_conn_into_net(conn);
-                }
-            }
-            break;
-        case TCP_CONN_STATE_SHUTDOWN:
-            {
-                // TODO
-            }
-            break;
         }
         break;
+    case TCP_CONN_STATE_HANDSHAKE:
+    case TCP_CONN_STATE_ACCEPTING:
+#ifdef TLS_ENABLED
+        {
+            if (revents & POLLIN) {
+                defer_close = read_from_net_into_conn(conn);
+            }
+            if (revents & POLLOUT) {
+                defer_close = write_from_conn_into_net(conn);
+            }
+            int ret = tls_conn_handshake(&conn->tls);
+            if (ret == -1) {
+                defer_close = true;
+                break;
+            }
+
+            if (ret == 1) {
+                conn->state = TCP_CONN_STATE_ESTABLISHED;
+
+                // Don't set the NEW flag if the connection was
+                // started by us
+                if (conn->num_addrs > 0) {
+                    conn->events |= TCP_EVENT_NEW;
+                }
+
+                // Decrypt any application data already in the BIO
+                for (;;) {
+                    byte_queue_write_setmincap(&conn->input, MIN_RECV);
+                    string buf = byte_queue_write_buf(&conn->input);
+                    if (buf.ptr == NULL)
+                        break;
+                    int n = tls_conn_app_read(&conn->tls, (char*) buf.ptr, buf.len);
+                    if (n <= 0) {
+                        byte_queue_write_ack(&conn->input, 0);
+                        break;
+                    }
+                    byte_queue_write_ack(&conn->input, n);
+                    conn->events |= TCP_EVENT_DATA;
+                }
+            }
+        }
+#endif // TLS_ENABLED
+        break;
+    case TCP_CONN_STATE_ESTABLISHED:
+        {
+            if (revents & POLLIN) {
+                defer_close = read_from_net_into_conn(conn);
+            }
+            if (revents & POLLOUT) {
+                defer_close = write_from_conn_into_net(conn);
+            }
+        }
+        break;
+    case TCP_CONN_STATE_SHUTDOWN:
+        {
+            // TODO
+        }
+        break;
+    default:
+        UNREACHABLE;
     }
 
     if (defer_connect) {
@@ -913,35 +965,9 @@ void tcp_process_events(TCP *tcp, void **ptrs, struct pollfd *pfds, int num)
             }
         } else {
             TCP_Conn *conn = ptrs[i];
-            process_conn_events(conn, pfds[i].revents);
+            process_conn_events(tcp, conn, pfds[i].revents);
         }
     }
-}
-
-static TCP_Handle conn_to_handle(TCP *tcp, TCP_Conn *conn)
-{
-    TCP_Handle handle = {
-        .tcp=tcp,
-        .gen=conn->gen,
-        .idx=conn - tcp->conns,
-    };
-    return handle;
-}
-
-static TCP_Conn *handle_to_conn(TCP_Handle handle)
-{
-    if (handle.tcp == NULL)
-        return NULL;
-    TCP *tcp = handle.tcp;
-
-    if (handle.idx < 0 || handle.idx >= tcp->max_conns)
-        return NULL;
-    TCP_Conn *conn = &tcp->conns[handle.idx];
-
-    if (conn->state == TCP_CONN_STATE_FREE || conn->gen != handle.gen)
-        return NULL;
-
-    return conn;
 }
 
 static bool
@@ -1030,17 +1056,20 @@ TCP_Offset tcp_write_off(TCP_Handle handle)
 // See tcp.h
 void tcp_write(TCP_Handle handle, string data)
 {
-    while (str.len > 0) {
-        TCP_Conn *conn = handle_to_conn(handle);
-        if (conn == NULL)
-            return;
-        byte_queue_write_setmincap(&conn->output, str.len);
+    TCP_Conn *conn = handle_to_conn(handle);
+    if (conn == NULL)
+        return;
+
+    while (data.len > 0) {
+        byte_queue_write_setmincap(&conn->output, data.len);
         string buf = tcp_write_buf(handle);
-        int num = MIN(buf.len, str.len);
-        memcpy(buf.ptr, str.ptr, num);
+
+        int num = MIN(buf.len, data.len);
+        memcpy(buf.ptr, data.ptr, num);
+
         tcp_write_ack(handle, num);
-        str.ptr += num;
-        str.len -= num;
+        data.ptr += num;
+        data.len -= num;
     }
 }
 
@@ -1051,7 +1080,7 @@ void tcp_patch(TCP_Handle handle, TCP_Offset offset, string data)
     if (conn == NULL)
         return;
 
-    byte_queue_patch(&conn->output, offset, src, len);
+    byte_queue_patch(&conn->output, offset, data.ptr, data.len);
 }
 
 // See tcp.h
@@ -1087,7 +1116,7 @@ void tcp_set_user_ptr(TCP_Handle handle, void *user_ptr)
     if (conn == NULL)
         return;
 
-    conn->user_ptr = ptr;
+    conn->user_ptr = user_ptr;
 }
 
 // See tcp.h
