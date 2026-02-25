@@ -4,9 +4,24 @@
 #include <toastyfs.h>
 #include <lib/http_server.h>
 
+typedef enum {
+    PROXY_OPER_FREE,
+    PROXY_OPER_PENDING,
+    PROXY_OPER_STARTED,
+} ProxyOperState;
+
+typedef struct {
+    ProxyOperState       state;
+    HTTP_Request*        request;
+    HTTP_ResponseBuilder builder;
+} ProxyOper;
+
 typedef struct {
     HTTP_Server http_server;
     ToastyFS *toastyfs;
+    ProxyOper *opers;
+    int max_opers;
+    int num_polled_by_toasty;
 } HTTPProxy;
 
 struct pollfd;

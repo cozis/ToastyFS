@@ -96,7 +96,7 @@ static const char *step_name(Step step)
 
 static void client_log_impl(ToastyFS *tfs, const char *event, const char *detail)
 {
-    Time now = get_current_time();
+    Time now = get_current_time(); // TODO: check error
     printf("[" TIME_FMT "] CLIENT %lu %-12s V%-3lu | %-20s %s\n",
         TIME_VAL(now),
         tfs->client_id,
@@ -639,12 +639,12 @@ void toastyfs_process_events(ToastyFS *tfs, void **ctxs, struct pollfd *pdata, i
 {
     message_system_process_events(&tfs->msys, ctxs, pdata, pnum);
 
-    void *raw;
-    while ((raw = get_next_message(&tfs->msys)) != NULL) {
-        Message *header = (Message *)raw;
-        ByteView msg_view = { .ptr = raw, .len = header->length };
+    void *raw_message;
+    while ((raw_message = get_next_message(&tfs->msys)) != NULL) {
+        Message *header = (Message *)raw_message;
+        ByteView msg_view = { .ptr = raw_message, .len = header->length };
         process_message(tfs, header->type, msg_view);
-        consume_message(&tfs->msys, raw);
+        consume_message(&tfs->msys, raw_message);
     }
 
     // Check for operation timeout -- retry the current operation if the

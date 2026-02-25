@@ -312,3 +312,67 @@ int main(int argc, char **argv)
 }
 
 #endif // MAIN_SERVER
+////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////
+#ifdef MAIN_HTTP_PROXY
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <poll.h>
+#endif
+
+#include "http_proxy.h"
+
+#define POLL_CAPACITY 1024
+
+int main(int argc, char **argv)
+{
+    int ret;
+
+    HTTPProxy state;
+
+    void*         poll_ctxs[POLL_CAPACITY];
+    struct pollfd poll_array[POLL_CAPACITY];
+    int poll_count;
+    int poll_timeout;
+
+    ret = http_proxy_init(
+        &state,
+        argc,
+        argv,
+        poll_ctxs,
+        poll_array,
+        POLL_CAPACITY,
+        &poll_count,
+        &poll_timeout
+    );
+    if (ret < 0)
+        return -1;
+
+    for (;;) {
+
+#ifdef _WIN32
+        WSAPoll(poll_array, poll_count, poll_timeout);
+#else
+        poll(poll_array, poll_count, poll_timeout);
+#endif
+
+        ret = http_proxy_tick(
+            &state,
+            poll_ctxs,
+            poll_array,
+            POLL_CAPACITY,
+            &poll_count,
+            &poll_timeout
+        );
+        if (ret < 0)
+            return -1;
+    }
+
+    http_proxy_free(&state);
+    return 0;
+}
+
+#endif // MAIN_HTTP_PROXY

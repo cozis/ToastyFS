@@ -13,6 +13,7 @@ int message_system_init(MessageSystem *msys,
     for (int i = 0; i < num_addrs; i++)
         msys->addrs[i] = addrs[i];
     msys->num_addrs = num_addrs;
+    // TODO: sort addresses
 
     int max_conns = 2 * num_addrs + 1;
 
