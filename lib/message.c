@@ -29,8 +29,8 @@ int message_system_init(MessageSystem *msys,
         msys->conns[i].num_senders = 0;
     }
 
-    int ret = tcp_init(&msys->tcp, max_conns);
-    if (ret < 0) {
+    msys->tcp = tcp_init(max_conns);
+    if (msys->tcp == NULL) {
         free(msys->conns);
         return -1;
     }
@@ -40,14 +40,14 @@ int message_system_init(MessageSystem *msys,
 
 int message_system_free(MessageSystem *msys)
 {
-    tcp_free(&msys->tcp);
+    tcp_free(msys->tcp);
     free(msys->conns);
     return 0;
 }
 
 int message_system_listen_tcp(MessageSystem *msys, Address addr)
 {
-    int ret = tcp_listen_tcp(&msys->tcp, S(""), addr.port, true, 128);
+    int ret = tcp_listen_tcp(msys->tcp, S(""), addr.port, true, 128);
     if (ret < 0)
         return -1;
     return 0;
@@ -55,7 +55,7 @@ int message_system_listen_tcp(MessageSystem *msys, Address addr)
 
 int message_system_listen_tls(MessageSystem *msys, Address addr)
 {
-    int ret = tcp_listen_tls(&msys->tcp, S(""), addr.port, true, 128);
+    int ret = tcp_listen_tls(msys->tcp, S(""), addr.port, true, 128);
     if (ret < 0)
         return -1;
     return 0;
@@ -64,19 +64,19 @@ int message_system_listen_tls(MessageSystem *msys, Address addr)
 void message_system_process_events(MessageSystem *msys,
     void **ptrs, struct pollfd *arr, int num)
 {
-    tcp_process_events(&msys->tcp, ptrs, arr, num);
+    tcp_process_events(msys->tcp, ptrs, arr, num);
 }
 
 int message_system_register_events(MessageSystem *msys,
     void **ptrs, struct pollfd *arr, int cap)
 {
-    return tcp_register_events(&msys->tcp, ptrs, arr, cap);
+    return tcp_register_events(msys->tcp, ptrs, arr, cap);
 }
 
 void *get_next_message(MessageSystem *msys)
 {
     TCP_Event event;
-    while (tcp_next_event(&msys->tcp, &event)) {
+    while (tcp_next_event(msys->tcp, &event)) {
 
         if (event.flags & TCP_EVENT_NEW) {
 
@@ -160,7 +160,7 @@ static TCP_Handle find_conn_by_message(MessageSystem *msys, void *message)
     for (int i = 0; i < msys->max_conns; i++) {
         ConnMetadata *meta = &msys->conns[i];
         if (meta->message == message)
-            return (TCP_Handle) { &msys->tcp, meta->gen, i };
+            return (TCP_Handle) { msys->tcp, meta->gen, i };
     }
     return (TCP_Handle) {0};
 }
@@ -173,7 +173,7 @@ static TCP_Handle find_conn_by_target(MessageSystem *msys, int target)
             continue;
         for (int j = 0; j < meta->num_senders; j++) {
             if (meta->senders[j] == target) {
-                return (TCP_Handle) { &msys->tcp, meta->gen, i };
+                return (TCP_Handle) { msys->tcp, meta->gen, i };
             }
         }
     }
@@ -189,13 +189,13 @@ static TCP_Handle ensure_conn(MessageSystem *msys, int target)
     if (target < 0 || target >= msys->num_addrs)
         return (TCP_Handle) {0};
 
-    int ret = tcp_connect(&msys->tcp, false, &msys->addrs[target], 1);
+    int ret = tcp_connect(msys->tcp, false, &msys->addrs[target], 1);
     if (ret < 0)
         return (TCP_Handle) {0};
 
     // Find the newly created connection slot and pre-associate with target
     for (int i = 0; i < msys->max_conns; i++) {
-        TCP_Conn *conn = &msys->tcp.conns[i];
+        TCP_Conn *conn = msys->tcp.conns[i];
         if (conn->state == TCP_CONN_STATE_FREE)
             continue;
         if (conn->user_ptr != NULL)
@@ -211,7 +211,7 @@ static TCP_Handle ensure_conn(MessageSystem *msys, int target)
         meta->senders[0] = target;
         meta->message = NULL;
 
-        TCP_Handle h = { &msys->tcp, conn->gen, i };
+        TCP_Handle h = { msys->tcp, conn->gen, i };
         tcp_set_user_ptr(h, meta);
         return h;
     }
@@ -231,7 +231,7 @@ void consume_message(MessageSystem *msys, void *ptr)
     Message message;
     memcpy(&message, ptr, sizeof(message));
 
-    TCP_Handle handle = { &msys->tcp, msys->conns[i].gen, i };
+    TCP_Handle handle = { msys->tcp, msys->conns[i].gen, i };
     tcp_read_ack(handle, message.length);
     tcp_mark_ready(handle);
     msys->conns[i].message = NULL;

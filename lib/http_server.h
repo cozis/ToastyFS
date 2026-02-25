@@ -29,7 +29,7 @@ typedef struct {
 } HTTP_Conn;
 
 typedef struct {
-    TCP tcp;
+    TCP *tcp;
     int num_conns;
     int max_conns;
     HTTP_Conn *conns;

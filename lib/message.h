@@ -15,7 +15,7 @@ typedef struct {
 
 typedef struct {
 
-    TCP tcp;
+    TCP *tcp;
 
     Address addrs[MESSAGE_SYSTEM_NODE_LIMIT];
     int num_addrs;

@@ -7,30 +7,119 @@
 
 #include "tcp.h"
 
-#define MIN_RECV 4096
-
 #ifdef _WIN32
-typedef SOCKET NATIVE_SOCKET;
+#define CLOSE_SOCKET closesocket
 #else
-typedef int NATIVE_SOCKET;
+#define SOCKET int
+#define INVALID_SOCKET -1
+#define CLOSE_SOCKET close
 #endif
 
-// On Windows, sockets must be closed with closesocket(), not close().
-// close() is a CRT function for file descriptors and triggers an
-// "Invalid parameter" abort when called on a socket handle.
-static void close_socket(int fd)
+#define MIN_RECV 4096
+#define TCP_CONNECT_ADDR_LIMIT 8
+
+// Flags for the "flags" field in TCP_Conn.
+enum {
+    TCP_CONN_FLAG_CLOSED = 1<<0,
+    TCP_CONN_FLAG_SECURE = 1<<1,
+};
+
+typedef enum {
+    TCP_CONN_STATE_FREE,
+    TCP_CONN_STATE_HANDSHAKE,
+    TCP_CONN_STATE_ESTABLISHED,
+    TCP_CONN_STATE_CONNECTING,
+    TCP_CONN_STATE_ACCEPTING,
+    TCP_CONN_STATE_SHUTDOWN,
+} TCP_ConnState;
+
+typedef struct {
+
+    // ID of the general state this structure is in
+    TCP_ConnState state;
+
+    // Information about the socket
+    int flags;
+
+    // Events associated to this connection that the user
+    // still isn't aware about. These will be returned to
+    // the user at the next tcp_next_event call and this
+    // field cleared.
+    int events;
+
+    // Generation counter for this structure. This allows
+    // invalidating handles to this structure. It's important
+    // we use an unsigned field here as we rely on it
+    // overflowing.
+    uint16_t gen;
+
+    // Underlying socket
+    SOCKET fd;
+
+    // Whether the user is holding a handle to this struct.
+    // It's first set when the TCP_EVENT_NEW is passed to
+    // the user, and it's unset when the user calls tcp_close.
+    bool handled;
+
+    // The socket should be closing as soon as the buffered
+    // output data has been flushed. When this is set, no more
+    // data can be buffered from the network.
+    bool closing;
+
+    // Opaque pointer set by the user. It allows associating
+    // the connection's handle to the user's metadata for it.
+    void *user_ptr;
+
+    // Input and output buffers
+    ByteQueue input;
+    ByteQueue output;
+
+    Address addrs[TCP_CONNECT_ADDR_LIMIT];
+    int num_addrs;
+    int addr_idx;
+
+#ifdef TLS_ENABLED
+    TLS_Conn tls;
+#endif
+
+} TCP_Conn;
+
+struct TCP {
+    // Listening sockets for TCP and TLS connections.
+    // Zero, one, or both of these may be set. If both
+    // are invalid, the user will only be able to add
+    // connections to the TCP pool via tcp_connect.
+    // If only one of these is set, all connections will
+    // be either plaintext or encrypted. If both are
+    // set, some connections will be plaintext and some
+    // will be encrypted, but either way they will look
+    // the same from the user's perspective as it will
+    // only see the plaintext data.
+    SOCKET tcp_listen_fd;
+    SOCKET tls_listen_fd;
+
+    // Total size of the connection array and how many
+    // structures in it are currently in use.
+    int max_conns;
+    int num_conns;
+
+    // Fixed-size array of connection structures. The
+    // array follows the TCP structure in memory, making
+    // it possible for it to be allocated with a single
+    // malloc call.
+    TCP_Conn conns[];
+};
+
+static void close_socket(SOCKET fd)
 {
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-    closesocket(fd);
+#if defined(_WIN32)
+    closesocket(fd); // TODO: make sure closesocket is mocked
 #else
     close(fd);
 #endif
 }
 
-static void tcp_conn_free(TCP_Conn *conn);
-static bool tcp_conn_free_maybe(TCP_Conn *conn);
-
-static int set_socket_blocking(NATIVE_SOCKET sock, bool value)
+static int set_socket_blocking(SOCKET fd, bool value)
 {
 #ifdef _WIN32
     u_long mode = !value;
@@ -53,30 +142,32 @@ static int set_socket_blocking(NATIVE_SOCKET sock, bool value)
 #endif
 }
 
-static int create_listen_socket(string addr, uint16_t port,
+static SOCKET
+create_listen_socket(string addr, uint16_t port,
     bool reuse_addr, int backlog)
 {
+    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
 #ifdef _WIN32
-    // TODO: Only do this if socket creation fails due to
-    //       winsock not being initialized, then try again
-    //       with the socket
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (fd == INVALID_SOCKET && WSALastError() == xxx) {
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa); // TODO: check error
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+    }
 #endif
-
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd == -1)
-        return -1;
+    if (fd == INVALID_SOCKET)
+        return INVALID_SOCKET;
 
     if (set_socket_blocking(fd, false) < 0) {
         close_socket(fd);
-        return -1;
+        return INVALID_SOCKET;
     }
 
+#ifndef QUAKEY_ENABLE_MOCKS
     if (reuse_addr) {
         int one = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (void*) &one, sizeof(one));
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (void*) &one, sizeof(one)); // TODO: mock this
     }
+#endif
 
     struct in_addr addr_buf;
     if (addr.len == 0)
@@ -86,14 +177,14 @@ static int create_listen_socket(string addr, uint16_t port,
         char copy[100];
         if (addr.len >= (int) sizeof(copy)) {
             close_socket(fd);
-            return -1;
+            return INVALID_SOCKET;
         }
         memcpy(copy, addr.ptr, addr.len);
         copy[addr.len] = '\0';
 
         if (inet_pton(AF_INET, copy, &addr_buf) < 0) {
             close_socket(fd);
-            return -1;
+            return INVALID_SOCKET;
         }
     }
 
@@ -103,105 +194,149 @@ static int create_listen_socket(string addr, uint16_t port,
     bind_buf.sin_port   = htons(port);
     if (bind(fd, (struct sockaddr*) &bind_buf, sizeof(bind_buf)) < 0) {
         close_socket(fd);
-        return -1;
+        return INVALID_SOCKET;
     }
 
     if (listen(fd, backlog) < 0) {
         close_socket(fd);
-        return -1;
+        return INVALID_SOCKET;
     }
 
     return fd;
 }
 
-int tcp_init(TCP *tcp, int max_conns)
+static int connect_2(SOCKET fd, Address addr)
 {
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-    {
-        WSADATA wsa;
-        WSAStartup(MAKEWORD(2, 2), &wsa);
+    int ret;
+    if (next_addr.is_ipv4) {
+        struct sockaddr_in buf;
+        buf.sin_family = AF_INET;
+        buf.sin_port   = htons(next_addr.port);
+        STATIC_ASSERT(sizeof(buf.sin_addr) == sizeof(next_addr.ipv4));
+        memcpy(&buf.sin_addr, &next_addr.ipv4, sizeof(next_addr.ipv4));
+        return connect(fd, (struct sockaddr*) &buf, sizeof(buf));
+    } else {
+        struct sockaddr_in6 buf;
+        buf.sin6_family = AF_INET;
+        buf.sin6_port   = htons(next_addr.port);
+        STATIC_ASSERT(sizeof(buf.sin6_addr) == sizeof(next_addr.ipv6));
+        memcpy(&buf.sin6_addr, &next_addr.ipv6, sizeof(next_addr.ipv6));
+        return connect(fd, (struct sockaddr*) &buf, sizeof(buf));
     }
-#endif
+}
 
-    TCP_Conn *conns = malloc(max_conns * sizeof(TCP_Conn));
-    if (conns == NULL)
-        return -1;
+// See tcp.h
+TCP *tcp_init(int max_conns)
+{
+    TCP *tcp = malloc(sizeof(TCP) + max_conns * sizeof(TCP_Conn));
+    if (tcp == NULL)
+        return NULL;
 
-    tcp->tls_listen_fd = -1;
-    tcp->tcp_listen_fd = -1;
-    tcp->num_conns = 0;
-    tcp->max_conns = max_conns;
-    tcp->conns = conns;
-
-    for (int i = 0; i < tcp->max_conns; i++) {
+    // Initialize TCP_Conn fields that are used event if
+    // the structure is free.
+    for (int i = 0; i < max_conns; i++) {
         tcp->conns[i].state = TCP_CONN_STATE_FREE;
         tcp->conns[i].gen = 0;
     }
 
-    return 0;
+    // Listening sockets is disabled by default. The user
+    // must enable it explicitly by calling the tcp_listen_xxx
+    // functions.
+    tcp->tcp_listen_fd = INVALID_SOCKET;
+    tcp->tls_listen_fd = INVALID_SOCKET;
+
+    tcp->max_conns = max_conns;
+    tcp->num_conns = 0;
+
+    return tcp;
 }
 
+static void tcp_conn_free(TCP_Conn *conn);
+static bool tcp_conn_free_maybe(TCP_Conn *conn);
+
+// See tcp.h
 void tcp_free(TCP *tcp)
 {
-    for (int i = 0; i < tcp->max_conns; i++) {
-        if (tcp->conns[i].state != TCP_CONN_STATE_FREE)
-            tcp_conn_free(&tcp->conns[i]);
-    }
-    free(tcp->conns);
-
-    if (tcp->tcp_listen_fd != -1)
+    if (tcp->tcp_listen_fd != INVALID_SOCKET)
         close_socket(tcp->tcp_listen_fd);
 
 #ifdef TLS_ENABLED
-    if (tcp->tls_listen_fd != -1) {
+    if (tcp->tls_listen_fd != INVALID_SOCKET) {
         close_socket(tcp->tls_listen_fd);
         tls_server_free(&tcp->tls);
     }
 #endif
+
+    for (int i = 0; i < tcp->max_conns; i++) {
+        if (tcp->conns[i].state != TCP_CONN_STATE_FREE)
+            tcp_conn_free(&tcp->conns[i]);
+    }
+
+    free(tcp);
 }
 
-int tcp_listen_tcp(TCP *tcp, string addr, uint16_t port, bool reuse_addr, int backlog)
+// See tcp.h
+int tcp_listen_tcp(TCP *tcp, string addr, uint16_t port)
 {
-    if (tcp->tcp_listen_fd != -1)
+    // Ensure plaintext server mode wasn't enabled already.
+    if (tcp->tcp_listen_fd != INVALID_SOCKET)
         return -1;
 
-    int fd = create_listen_socket(addr, port, reuse_addr, backlog);
-    if (fd == -1)
+    SOCKET fd = create_listen_socket(addr, port, reuse_addr, backlog);
+    if (fd == INVALID_SOCKET)
         return -1;
 
     tcp->tcp_listen_fd = fd;
     return 0;
 }
 
-int tcp_listen_tls(TCP *tcp, string addr, uint16_t port, bool reuse_addr, int backlog)
+// See tcp.h
+int tcp_listen_tls(TCP *tcp, string addr, uint16_t port, string cert_file, string key_file)
 {
 #ifdef TLS_ENABLED
-    if (tcp->tls_listen_fd != -1)
+    // Ensure plaintext server mode wasn't enabled already.
+    if (tcp->tls_listen_fd != INVALID_SOCKET)
         return -1;
 
-    int fd = create_listen_socket(addr, port, reuse_addr, backlog);
-    if (fd == -1)
+    SOCKET fd = create_listen_socket(addr, port, reuse_addr, backlog);
+    if (fd == INVALID_SOCKET)
         return -1;
+
+    if (tls_server_init() < 0) {
+        close_socket(fd);
+        return -1;
+    }
 
     tcp->tls_listen_fd = fd;
     return 0;
 #else
-    (void)tcp; (void)addr; (void)port; (void)reuse_addr; (void)backlog;
+    (void) tcp;
+    (void) addr;
+    (void) port;
+    (void) reuse_addr;
+    (void) backlog;
     return -1;
 #endif
 }
 
-int tcp_add_cert(TCP *tcp, string cert_file, string key_file)
+// See tcp.h
+int tcp_add_cert(TCP *tcp, string domain, string cert_file, string key_file)
 {
 #ifdef TLS_ENABLED
-    return tls_server_add_cert(&tcp->tls, S(""), cert_file, key_file);
+    int ret = tcp_server_add_cert(&tcp->tls, domain, cert_file, cert_key);
+    if (ret < 0)
+        return -1;
+    return 0;
 #else
-    (void)tcp; (void)cert_file; (void)key_file;
+    (void) tcp;
+    (void) domain;
+    (void) cert_file;
+    (void) key_file;
     return -1;
 #endif
 }
 
-static void tcp_conn_init(TCP *tcp, TCP_Conn *conn, bool secure, TCP_ConnState state, int fd)
+static void tcp_conn_init(TCP *tcp, TCP_Conn *conn)
 {
     conn->state = state;
     conn->flags = 0;
@@ -212,37 +347,29 @@ static void tcp_conn_init(TCP *tcp, TCP_Conn *conn, bool secure, TCP_ConnState s
     conn->num_addrs = 0;
     conn->addr_idx = 0;
     conn->user_ptr = NULL;
-
     byte_queue_init(&conn->input, 1<<20);
     byte_queue_init(&conn->output, 1<<20);
-
 #ifdef TLS_ENABLED
     if (secure) {
         conn->flags |= TCP_CONN_FLAG_SECURE;
         tls_conn_init(&conn->tls, &tcp->tls);
     }
 #else
-    (void)tcp;
-    (void)secure;
+    (void) tcp;
+    (void) secure;
 #endif
 }
 
 static void tcp_conn_free(TCP_Conn *conn)
 {
-    if (conn->fd >= 0) {
+    if (conn->fd != INVALID_SOCKET)
         close_socket(conn->fd);
-        conn->fd = -1;
-    }
-
     byte_queue_free(&conn->input);
     byte_queue_free(&conn->output);
-
 #ifdef TLS_ENABLED
-    if (conn->flags & TCP_CONN_FLAG_SECURE) {
+    if (conn->flags & TCP_CONN_FLAG_SECURE)
         tls_conn_free(&conn->tls);
-    }
 #endif
-
     conn->state = TCP_CONN_STATE_FREE;
 }
 
@@ -388,100 +515,136 @@ static void tcp_conn_invalidate_handles(TCP_Conn *conn)
         conn->gen = 1;
 }
 
-static int build_sockaddr(Address *addr, struct sockaddr_in *out)
-{
-    memset(out, 0, sizeof(*out));
-    if (!addr->is_ipv4)
-        return -1; // Only IPv4 supported for now
-    out->sin_family = AF_INET;
-    out->sin_port = htons(addr->port);
-    memcpy(&out->sin_addr, &addr->ipv4, sizeof(addr->ipv4));
-    return 0;
-}
-
-int tcp_connect(TCP *tcp, bool secure, Address *addrs, int num_addrs)
+static int find_free_conn_struct(TCP *tcp)
 {
     if (tcp->num_conns == tcp->max_conns)
-        return -1;
+        return -1; // No space left
 
+    // Since we passed the previous check, we know
+    // for sure at least one free struct is available
     int i = 0;
-    while (i < tcp->max_conns && tcp->conns[i].state != TCP_CONN_STATE_FREE)
+    while (tcp->conns[i].state != TCP_CONN_STATE_FREE) {
         i++;
-    assert(i < tcp->max_conns);
-
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return -1;
+        assert(i < tcp->max_conns);
     }
+
+    return i;
+}
+
+static bool connect_in_progress(void)
+{
+#if defined(_WIN32)
+#if defined(QUAKEY_ENABLE_MOCKS)
+    assert(0); // TODO: The mock WSA function must use WSASetLastError
+#endif
+    return (WSAGetLastError() == WSAEWOULDBLOCK);
+#else
+    return (errno == EINPROGRESS);
+#endif
+}
+
+// See tcp.h
+int tcp_connect(TCP *tcp, bool secure, Address *addrs, int num_addrs, TCP_Handle *handle)
+{
+    if (num_addrs == 0)
+        return -1;
+    Address first_addr = addrs[0];
+
+    int conn_idx = find_free_conn_struct(tcp);
+    if (conn_idx < 0)
+        return -1; // No space left
+
+    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+#ifdef _WIN32
+    if (fd == INVALID_SOCKET && WSALastError() == xxx) {
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa); // TODO: check error
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+    }
+#endif
+    if (fd == INVALID_SOCKET)
+        return -1;
 
     if (set_socket_blocking(fd, false) < 0) {
         close_socket(fd);
         return -1;
     }
 
-    struct sockaddr_in sa;
-    if (build_sockaddr(&addrs[0], &sa) < 0) {
-        close_socket(fd);
-        return -1;
-    }
+    int ret = connect_2(fd, first_addr);
 
+    // Generally speaking connect() requires time to complete.
+    // If a connect() operation is started on a non-blocking,
+    // socket, the operation will fail with error code EINPROGRESS.
+    // The user can then monitor the connecting descriptor until
+    // the connection is complete. Under certain circumstances
+    // it may be possible for the connection to resolve immediately,
+    // which means the connect() function will return 0. We also
+    // want to cover those cases.
     TCP_ConnState state;
-    int ret = connect(fd, (struct sockaddr*) &sa, sizeof(sa));
     if (ret == 0) {
+        // Early completion
         if (secure) {
+            // If the connection is TLS, we also need to perform the
+            // TLS handshake before we can call it established.
             state = TCP_CONN_STATE_HANDSHAKE;
         } else {
+            // All done. Connection si ready.
             state = TCP_CONN_STATE_ESTABLISHED;
         }
     } else {
         assert(ret < 0);
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-        int connect_in_progress = (WSAGetLastError() == WSAEWOULDBLOCK);
-#else
-        int connect_in_progress = (errno == EINPROGRESS);
-#endif
-        if (connect_in_progress) {
+        if (connect_in_progress()) {
+            // This is the case we expect most often.
             state = TCP_CONN_STATE_CONNECTING;
         } else {
+            // Operation could not be started
             close_socket(fd);
             return -1;
         }
     }
 
-    tcp_conn_init(tcp, &tcp->conns[i], secure, state, fd);
-    tcp_conn_set_addrs(&tcp->conns[i], addrs, num_addrs);
+    TCP_Conn *conn = &tcp->conns[conn_idx];
+    if (handle)
+        *handle = conn_to_handle(tcp, conn);
+
+    tcp_conn_init(tcp, conn, secure, state, fd);
+    tcp_conn_set_addrs(conn, addrs, num_addrs);
     tcp->num_conns++;
     return 0;
 }
 
+// When a connection operation completes with a
+// failure, the TCP pool must try to establish
+// a connection with the next address specified
+// by the user. This function advances the address
+// cursor and starts a new connect operation.
 static int restart_connect(TCP_Conn *conn)
 {
+    assert(conn->fd != INVALID_SOCKET);
     close_socket(conn->fd);
-    conn->fd = -1;
+    conn->fd = INVALID_SOCKET;
 
     conn->addr_idx++;
-    if (conn->addr_idx == conn->num_addrs) {
-        return -1;
-    }
+    if (conn->addr_idx == conn->num_addrs)
+        return -1; // No more addresses to try
+    Address next_addr = &conn->addrs[conn->addr_idx];
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
+    // Elsewhere in this file calls to socket() are
+    // followed by the initialization of the winsock2
+    // subsystem. Here we don't need to worry about
+    // that since we know at least one connect() operation
+    // was performed before so the winsock2 subsystem was
+    // already initialized.
+    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == INVALID_SOCKET)
         return -1;
-    }
 
     if (set_socket_blocking(fd, false) < 0) {
         close_socket(fd);
         return -1;
     }
 
-    struct sockaddr_in sa;
-    if (build_sockaddr(&conn->addrs[conn->addr_idx], &sa) < 0) {
-        close_socket(fd);
-        return -1;
-    }
-
-    TCP_ConnState state;
-    int ret = connect(fd, (struct sockaddr*) &sa, sizeof(sa));
+    int ret = connect_2(fd, next_addr);
     if (ret == 0) {
         if (conn->flags & TCP_CONN_FLAG_SECURE) {
             state = TCP_CONN_STATE_HANDSHAKE;
@@ -490,12 +653,7 @@ static int restart_connect(TCP_Conn *conn)
         }
     } else {
         assert(ret < 0);
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-        int connect_in_progress = (WSAGetLastError() == WSAEWOULDBLOCK);
-#else
-        int connect_in_progress = (errno == EINPROGRESS);
-#endif
-        if (connect_in_progress) {
+        if (connect_in_progress()) {
             state = TCP_CONN_STATE_CONNECTING;
         } else {
             close_socket(fd);
@@ -508,243 +666,14 @@ static int restart_connect(TCP_Conn *conn)
     return 0;
 }
 
-void tcp_process_events(TCP *tcp, void **ptrs, struct pollfd *arr, int num)
-{
-    for (int i = 0; i < num; i++) {
-        if (arr[i].fd == tcp->tcp_listen_fd ||
-            arr[i].fd == tcp->tls_listen_fd) {
-
-            assert(ptrs[i] == NULL);
-
-            if (arr[i].revents & POLLIN) {
-
-                if (tcp->num_conns == tcp->max_conns)
-                    continue;
-
-                bool is_tls = false;
-                if (arr[i].fd == tcp->tls_listen_fd)
-                    is_tls = true;
-
-                int new_fd = accept(arr[i].fd, NULL, NULL);
-                if (new_fd == -1)
-                    continue;
-
-                if (set_socket_blocking(new_fd, false) < 0) {
-                    close_socket(new_fd);
-                    continue;
-                }
-
-                // Find a free connection slot
-                int slot = 0;
-                while (slot < tcp->max_conns && tcp->conns[slot].state != TCP_CONN_STATE_FREE)
-                    slot++;
-                if (slot == tcp->max_conns) {
-                    close_socket(new_fd);
-                    continue;
-                }
-
-                TCP_ConnState state;
-                if (is_tls) {
-                    state = TCP_CONN_STATE_ACCEPTING;
-                } else {
-                    state = TCP_CONN_STATE_ESTABLISHED;
-                }
-
-                TCP_Conn *conn = &tcp->conns[slot];
-                tcp_conn_init(tcp, conn, is_tls, state, new_fd);
-                if (!is_tls)
-                    conn->events |= TCP_EVENT_NEW;
-                tcp->num_conns++;
-            }
-        } else {
-
-            TCP_Conn *conn = ptrs[i];
-
-            bool defer_ready = false;
-            bool defer_close = false;
-            bool defer_connect = false;
-            switch (conn->state) {
-            case TCP_CONN_STATE_CONNECTING:
-                {
-                    int err = 0;
-                    socklen_t len = sizeof(err);
-                    int gsret = getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (void*) &err, &len);
-                    if (gsret < 0) {
-                        defer_connect = true;
-                        break;
-                    }
-
-                    if (err) {
-                        defer_connect = true;
-                        break;
-                    }
-
-                    if (conn->flags & TCP_CONN_FLAG_SECURE) {
-                        conn->state = TCP_CONN_STATE_HANDSHAKE;
-                    } else {
-                        conn->state = TCP_CONN_STATE_ESTABLISHED;
-                        conn->events |= TCP_EVENT_NEW;
-                    }
-                }
-                break;
-            case TCP_CONN_STATE_HANDSHAKE:
-            case TCP_CONN_STATE_ACCEPTING:
-                {
-#ifdef TLS_ENABLED
-                    if (arr[i].revents & POLLIN) {
-                        int cap;
-                        char *buf = tls_conn_net_write_buf(&conn->tls, &cap);
-                        if (buf) {
-                            int n = recv(conn->fd, buf, cap, 0);
-                            if (n == 0) { defer_close = true; break; }
-                            if (n < 0) {
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-                                if (WSAGetLastError() != WSAEWOULDBLOCK)
-                                    { defer_close = true; break; }
-#else
-                                if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)
-                                    { defer_close = true; break; }
-#endif
-                                n = 0;
-                            }
-                            tls_conn_net_write_ack(&conn->tls, n);
-                        }
-                    }
-
-                    int ret = tls_conn_handshake(&conn->tls);
-                    if (ret == -1) {
-                        defer_close = true;
-                        break;
-                    }
-
-                    if (arr[i].revents & POLLOUT) {
-                        int num;
-                        char *buf = tls_conn_net_read_buf(&conn->tls, &num);
-                        if (buf) {
-                            int n = send(conn->fd, buf, num, 0);
-                            if (n < 0) {
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-                                if (WSAGetLastError() != WSAEWOULDBLOCK)
-                                    { defer_close = true; break; }
-#else
-                                if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)
-                                    { defer_close = true; break; }
-#endif
-                                n = 0;
-                            }
-                            tls_conn_net_read_ack(&conn->tls, n);
-                        }
-                    }
-
-                    if (ret == 1) {
-                        conn->state = TCP_CONN_STATE_ESTABLISHED;
-                        conn->events |= TCP_EVENT_NEW;
-
-                        // Decrypt any application data already in the BIO
-                        for (;;) {
-                            byte_queue_write_setmincap(&conn->input, MIN_RECV);
-                            ByteView buf = byte_queue_write_buf(&conn->input);
-                            if (!buf.ptr) break;
-                            int n = tls_conn_app_read(&conn->tls, (char*) buf.ptr, buf.len);
-                            if (n <= 0) { byte_queue_write_ack(&conn->input, 0); break; }
-                            byte_queue_write_ack(&conn->input, n);
-                            conn->events |= TCP_EVENT_DATA;
-                        }
-                    }
-#else
-                    defer_close = true;
-#endif
-                }
-                break;
-            case TCP_CONN_STATE_ESTABLISHED:
-                {
-                    if (arr[i].revents & POLLIN) {
-                        ByteView buf = tcp_conn_write_buf(conn);
-                        int n = recv(conn->fd, (char*) buf.ptr, buf.len, 0);
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-                        int last_err = WSAGetLastError();
-#endif
-                        if (n == 0) {
-                            defer_close = true;
-                        } else {
-                            if (n < 0) {
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-                                if (last_err != WSAEWOULDBLOCK)
-                                    defer_close = true;
-#else
-                                if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)
-                                    defer_close = true;
-#endif
-                                n = 0;
-                            }
-                        }
-                        int ret = tcp_conn_write_ack(conn, n);
-                        if (ret < 0)
-                            defer_close = true;
-                        defer_ready = true;
-                    }
-
-                    if (arr[i].revents & POLLOUT) {
-                        ByteView buf = tcp_conn_read_buf(conn);
-                        int n = send(conn->fd, (char*) buf.ptr, buf.len, 0);
-                        if (n < 0) {
-#if defined(_WIN32) && !defined(QUAKEY_ENABLE_MOCKS)
-                            if (WSAGetLastError() != WSAEWOULDBLOCK)
-                                defer_close = true;
-#else
-                            if (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)
-                                defer_close = true;
-#endif
-                            n = 0;
-                        }
-                        tcp_conn_read_ack(conn, n);
-                        if (conn->closing && !tcp_conn_needs_flushing(conn))
-                            defer_close = true;
-                    }
-                }
-                break;
-            case TCP_CONN_STATE_SHUTDOWN:
-                {
-                    // TLS shutdown — just close for now
-                    defer_close = true;
-                }
-                break;
-            default:
-                break;
-            }
-
-            if (defer_connect) {
-                int ret = restart_connect(conn);
-                if (ret < 0) {
-                    defer_close = true;
-                }
-            }
-
-            if (defer_ready) {
-                conn->events |= TCP_EVENT_DATA;
-            }
-
-            if (defer_close) {
-
-                close_socket(conn->fd);
-                conn->fd = -1;
-                conn->events |= TCP_EVENT_HUP;
-
-                if (tcp_conn_free_maybe(conn)) {
-                    tcp->num_conns--;
-                }
-            }
-        }
-    }
-}
-
-int tcp_register_events(TCP *tcp, void **ptrs, struct pollfd *arr, int cap)
+// See tcp.h
+int tcp_register_events(TCP *tcp, void **ptrs, struct pollfd *pfds, int cap)
 {
     if (cap < tcp->num_conns+2)
         return -1;
     int ret = 0;
 
-    if (tcp->tcp_listen_fd > -1) {
+    if (tcp->tcp_listen_fd != INVALID_SOCKET) {
         if (tcp->num_conns < tcp->max_conns) {
             arr[ret].fd = tcp->tcp_listen_fd;
             arr[ret].events = POLLIN;
@@ -754,7 +683,7 @@ int tcp_register_events(TCP *tcp, void **ptrs, struct pollfd *arr, int cap)
         }
     }
 
-    if (tcp->tls_listen_fd > -1) {
+    if (tcp->tls_listen_fd != INVALID_SOCKET) {
         if (tcp->num_conns < tcp->max_conns) {
             arr[ret].fd = tcp->tls_listen_fd;
             arr[ret].events = POLLIN;
@@ -794,6 +723,201 @@ int tcp_register_events(TCP *tcp, void **ptrs, struct pollfd *arr, int cap)
     return ret;
 }
 
+static void
+accept_incoming_conns(TCP *tcp, SOCKET listen_fd)
+{
+    int conn_idx = find_free_conn_struct(tcp);
+    if (conn_idx < 0)
+        return; // No space left
+    TCP_Conn *conn = &tcp->conns[conn_idx];
+
+    SOCKET new_fd = accept(listen_fd, NULL, NULL);
+    if (new_fd == INVALID_SOCKET)
+        return;
+
+    if (set_socket_blocking(new_fd, false) < 0) {
+        close_socket(new_fd);
+        return;
+    }
+
+    bool secure = (listen_fd == tcp->tls_listen_fd);
+
+    TCP_ConnState state;
+    if (secure) {
+        state = TCP_CONN_STATE_ACCEPTING;
+    } else {
+        state = TCP_CONN_STATE_ESTABLISHED;
+    }
+
+    tcp_conn_init(tcp, conn, secure, state, new_fd);
+
+    if (!secure)
+        conn->events |= TCP_EVENT_NEW;
+
+    tcp->num_conns++;
+    return 0;
+}
+
+// Returns true if the connection should be closed
+static bool
+read_from_net_into_conn(TCP_Conn *conn)
+{
+    bool defer_close = false;
+    ByteView buf = tcp_conn_write_buf(conn);
+    int n = recv(conn->fd, (char*) buf.ptr, buf.len, 0);
+    if (n == 0) {
+        defer_close = true;
+    } else if (n < 0) {
+        if (!would_block())
+            defer_close = true;
+        n = 0;
+    }
+    int ret = tcp_conn_write_ack(conn, n);
+    if (ret < 0)
+        defer_close = true;
+    conn->events |= TCP_EVENT_DATA;
+    return defer_close;
+}
+
+// Returns true if the connection should be closed
+static bool
+write_from_conn_into_net(TCP_Conn *conn)
+{
+    bool defer_close = false;
+    ByteView buf = tcp_conn_read_buf(conn);
+    int n = send(conn->fd, (char*) buf.ptr, buf.len, 0);
+    if (n < 0) {
+        if (!would_block())
+            defer_close = true;
+        n = 0;
+    }
+    tcp_conn_read_ack(conn, n);
+    if (conn->closing && !tcp_conn_needs_flushing(conn))
+        defer_close = true;
+    return defer_close;
+}
+
+static void process_conn_events(TCP_Conn *conn, int revents)
+{
+    bool defer_close = false;
+    bool defer_connect = false;
+    switch (conn->state) {
+    case TCP_CONN_STATE_CONNECTING:
+        {
+            if (revents & POLLOUT) {
+                int err = 0;
+                socklen_t len = sizeof(err);
+                int gsret = getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (void*) &err, &len);
+                if (gsret < 0) {
+                    defer_connect = true;
+                    break;
+                }
+
+                if (err) {
+                    defer_connect = true;
+                    break;
+                }
+
+                if (conn->flags & TCP_CONN_FLAG_SECURE) {
+                    conn->state = TCP_CONN_STATE_HANDSHAKE;
+                } else {
+                    conn->state = TCP_CONN_STATE_ESTABLISHED;
+                    conn->events |= TCP_EVENT_NEW;
+                }
+            }
+        case TCP_CONN_STATE_HANDSHAKE:
+        case TCP_CONN_STATE_ACCEPTING:
+#ifdef TLS_ENABLED
+            {
+                if (revents & POLLIN) {
+                    defer_close = read_from_net_into_conn(conn);
+                }
+                if (revents & POLLOUT) {
+                    defer_close = write_from_conn_into_net(conn);
+                }
+                int ret = tls_conn_handshake(&conn->tls);
+                if (ret == -1) {
+                    defer_close = true;
+                    break;
+                }
+
+                if (ret == 1) {
+                    conn->state = TCP_CONN_STATE_ESTABLISHED;
+                    conn->events |= TCP_EVENT_NEW;
+
+                    // Decrypt any application data already in the BIO
+                    for (;;) {
+                        byte_queue_write_setmincap(&conn->input, MIN_RECV);
+                        ByteView buf = byte_queue_write_buf(&conn->input);
+                        if (buf.ptr == NULL)
+                            break;
+                        int n = tls_conn_app_read(&conn->tls, (char*) buf.ptr, buf.len);
+                        if (n <= 0) {
+                            byte_queue_write_ack(&conn->input, 0);
+                            break;
+                        }
+                        byte_queue_write_ack(&conn->input, n);
+                        conn->events |= TCP_EVENT_DATA;
+                    }
+                }
+            }
+#endif // TLS_ENABLED
+            break;
+        case TCP_CONN_STATE_ESTABLISHED:
+            {
+                if (revents & POLLIN) {
+                    defer_close = read_from_net_into_conn(conn);
+                }
+                if (revents & POLLOUT) {
+                    defer_close = write_from_conn_into_net(conn);
+                }
+            }
+            break;
+        case TCP_CONN_STATE_SHUTDOWN:
+            {
+                // TODO
+            }
+            break;
+        }
+        break;
+    }
+
+    if (defer_connect) {
+        int ret = restart_connect(conn);
+        if (ret < 0) {
+            defer_close = true;
+        }
+    }
+
+    if (defer_close) {
+
+        close_socket(conn->fd);
+        conn->fd = INVALID_SOCKET;
+        conn->events |= TCP_EVENT_HUP;
+
+        if (tcp_conn_free_maybe(conn)) {
+            tcp->num_conns--;
+        }
+    }
+}
+
+// See tcp.h
+void tcp_process_events(TCP *tcp, void **ptrs, struct pollfd *pfds, int num)
+{
+    for (int i = 0; i < num; i++) {
+        if (pfds[i].fd == tcp->tcp_listen_fd ||
+            pfds[i].fd == tcp->tls_listen_fd) {
+            assert(ptrs[i] == NULL);
+            if (pfds[i].revents & POLLIN) {
+                accept_incoming_conns(tcp, pfds[i].fd);
+            }
+        } else {
+            TCP_Conn *conn = ptrs[i];
+            process_conn_events(conn, pfds[i].revents);
+        }
+    }
+}
+
 static TCP_Handle conn_to_handle(TCP *tcp, TCP_Conn *conn)
 {
     TCP_Handle handle = {
@@ -820,7 +944,8 @@ static TCP_Conn *handle_to_conn(TCP_Handle handle)
     return conn;
 }
 
-static bool conn_to_event(TCP *tcp, TCP_Conn *conn, TCP_Event *event)
+static bool
+conn_to_event(TCP *tcp, TCP_Conn *conn, TCP_Event *event)
 {
     if (!conn->events)
         return false;
@@ -832,6 +957,7 @@ static bool conn_to_event(TCP *tcp, TCP_Conn *conn, TCP_Event *event)
     return true;
 }
 
+// See tcp.h
 bool tcp_next_event(TCP *tcp, TCP_Event *event)
 {
     for (int i = 0, j = 0; j < tcp->num_conns; i++) {
@@ -851,15 +977,17 @@ bool tcp_next_event(TCP *tcp, TCP_Event *event)
     return false;
 }
 
-ByteView tcp_read_buf(TCP_Handle handle)
+// See tcp.h
+string tcp_read_buf(TCP_Handle handle)
 {
     TCP_Conn *conn = handle_to_conn(handle);
     if (conn == NULL)
-        return (ByteView) {0};
+        return (string) {0};
 
     return byte_queue_read_buf(&conn->input);
 }
 
+// See tcp.h
 void tcp_read_ack(TCP_Handle handle, int num)
 {
     TCP_Conn *conn = handle_to_conn(handle);
@@ -869,15 +997,17 @@ void tcp_read_ack(TCP_Handle handle, int num)
     byte_queue_read_ack(&conn->input, num);
 }
 
-ByteView tcp_write_buf(TCP_Handle handle)
+// See tcp.h
+string tcp_write_buf(TCP_Handle handle)
 {
     TCP_Conn *conn = handle_to_conn(handle);
     if (conn == NULL)
-        return (ByteView) {0};
+        return (string) {0};
 
     return byte_queue_write_buf(&conn->output);
 }
 
+// See tcp.h
 void tcp_write_ack(TCP_Handle handle, int num)
 {
     TCP_Conn *conn = handle_to_conn(handle);
@@ -887,6 +1017,7 @@ void tcp_write_ack(TCP_Handle handle, int num)
     byte_queue_write_ack(&conn->output, num);
 }
 
+// See tcp.h
 TCP_Offset tcp_write_off(TCP_Handle handle)
 {
     TCP_Conn *conn = handle_to_conn(handle);
@@ -896,14 +1027,15 @@ TCP_Offset tcp_write_off(TCP_Handle handle)
     return byte_queue_offset(&conn->output);
 }
 
-void tcp_write(TCP_Handle handle, string str)
+// See tcp.h
+void tcp_write(TCP_Handle handle, string data)
 {
     while (str.len > 0) {
         TCP_Conn *conn = handle_to_conn(handle);
         if (conn == NULL)
             return;
         byte_queue_write_setmincap(&conn->output, str.len);
-        ByteView buf = tcp_write_buf(handle);
+        string buf = tcp_write_buf(handle);
         int num = MIN(buf.len, str.len);
         memcpy(buf.ptr, str.ptr, num);
         tcp_write_ack(handle, num);
@@ -912,7 +1044,8 @@ void tcp_write(TCP_Handle handle, string str)
     }
 }
 
-void tcp_patch(TCP_Handle handle, TCP_Offset offset, void *src, int len)
+// See tcp.h
+void tcp_patch(TCP_Handle handle, TCP_Offset offset, string data)
 {
     TCP_Conn *conn = handle_to_conn(handle);
     if (conn == NULL)
@@ -921,6 +1054,7 @@ void tcp_patch(TCP_Handle handle, TCP_Offset offset, void *src, int len)
     byte_queue_patch(&conn->output, offset, src, len);
 }
 
+// See tcp.h
 void tcp_clear_from_offset(TCP_Handle handle, TCP_Offset offset)
 {
     TCP_Conn *conn = handle_to_conn(handle);
@@ -930,6 +1064,7 @@ void tcp_clear_from_offset(TCP_Handle handle, TCP_Offset offset)
     byte_queue_remove_from_offset(&conn->output, offset);
 }
 
+// See tcp.h
 void tcp_close(TCP_Handle handle)
 {
     TCP *tcp = handle.tcp;
@@ -945,7 +1080,8 @@ void tcp_close(TCP_Handle handle)
     }
 }
 
-void tcp_set_user_ptr(TCP_Handle handle, void *ptr)
+// See tcp.h
+void tcp_set_user_ptr(TCP_Handle handle, void *user_ptr)
 {
     TCP_Conn *conn = handle_to_conn(handle);
     if (conn == NULL)
@@ -954,6 +1090,7 @@ void tcp_set_user_ptr(TCP_Handle handle, void *ptr)
     conn->user_ptr = ptr;
 }
 
+// See tcp.h
 void *tcp_get_user_ptr(TCP_Handle handle)
 {
     TCP_Conn *conn = handle_to_conn(handle);
@@ -963,6 +1100,7 @@ void *tcp_get_user_ptr(TCP_Handle handle)
     return conn->user_ptr;
 }
 
+// See tcp.h
 void tcp_mark_ready(TCP_Handle handle)
 {
     TCP_Conn *conn = handle_to_conn(handle);

@@ -84,8 +84,8 @@ int http_server_init(HTTP_Server *server, int max_conns)
     server->max_conns = max_conns;
     server->num_conns = 0;
 
-    int ret = tcp_init(&server->tcp, max_conns);
-    if (ret < 0) {
+    server->tcp = tcp_init(max_conns);
+    if (server->tcp == NULL) {
         free(server->conns);
         return -1;
     }
@@ -95,7 +95,7 @@ int http_server_init(HTTP_Server *server, int max_conns)
 
 void http_server_free(HTTP_Server *server)
 {
-    tcp_free(&server->tcp);
+    tcp_free(server->tcp);
     free(server->conns);
 }
 
