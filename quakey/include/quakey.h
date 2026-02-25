@@ -123,11 +123,13 @@ int   mock_ioctlsocket(SOCKET fd, long cmd, unsigned long *argp);
 BOOL   mock_QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
 BOOL   mock_QueryPerformanceFrequency(LARGE_INTEGER *lpFrequency);
 HANDLE mock_CreateFileW(WCHAR *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
+DWORD  mock_GetFileAttributesA(char *lpFileName);
 BOOL   mock_CloseHandle(HANDLE handle);
 BOOL   mock_ReadFile(HANDLE handle, char *dst, DWORD len, DWORD *num, OVERLAPPED *ov);
 BOOL   mock_WriteFile(HANDLE handle, char *src, DWORD len, DWORD *num, OVERLAPPED *ov);
 BOOL   mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf);
 DWORD  mock_SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceToMoveHigh, DWORD dwMoveMethod);
+BOOL   mock_SetEndOfFile(HANDLE hFile);
 BOOL   mock_LockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToLockLow, DWORD nNumberOfBytesToLockHigh);
 BOOL   mock_UnlockFile(HANDLE hFile, DWORD dwFileOffsetLow, DWORD dwFileOffsetHigh, DWORD nNumberOfBytesToUnlockLow, DWORD nNumberOfBytesToUnlockHigh);
 BOOL   mock_FlushFileBuffers(HANDLE handle);
@@ -199,6 +201,7 @@ void  mock_free(void *ptr);
 #define close            mock_close
 #define ftruncate        mock_ftruncate
 #define CreateFileW      mock_CreateFileW
+#define GetFileAttributesA mock_GetFileAttributesA
 #define CloseHandle      mock_CloseHandle
 #define ReadFile         mock_ReadFile
 #define WriteFile        mock_WriteFile
@@ -208,6 +211,7 @@ void  mock_free(void *ptr);
 #define GetFileSizeEx    mock_GetFileSizeEx
 #define lseek            mock_lseek
 #define SetFilePointer   mock_SetFilePointer
+#define SetEndOfFile     mock_SetEndOfFile
 #define flock            mock_flock
 #define LockFile         mock_LockFile
 #define UnlockFile       mock_UnlockFile

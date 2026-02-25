@@ -4371,6 +4371,25 @@ HANDLE mock_CreateFileW(WCHAR *lpFileName,
     return (HANDLE)(long long)desc_idx;
 }
 
+DWORD mock_GetFileAttributesA(char *lpFileName)
+{
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_GetFileAttributesA() with no node scheduled\n");
+
+    // Try opening the file read-only to check existence
+    int ret = host_open_file(host, lpFileName, MOCKFS_O_RDONLY);
+    if (ret < 0) {
+        *host_errno_ptr(host) = ERROR_FILE_NOT_FOUND;
+        return INVALID_FILE_ATTRIBUTES;
+    }
+
+    // File exists — close it and return normal attributes
+    host_close(host, ret, false);
+    *host_errno_ptr(host) = ERROR_SUCCESS;
+    return FILE_ATTRIBUTE_NORMAL;
+}
+
 BOOL mock_CloseHandle(HANDLE handle)
 {
     Host *host = host___;
@@ -4572,6 +4591,45 @@ DWORD mock_SetFilePointer(HANDLE hFile, LONG lDistanceToMove, PLONG lpDistanceTo
 
     *host_errno_ptr(host) = ERROR_SUCCESS;
     return (DWORD)(new_pos & 0xFFFFFFFF);
+}
+
+BOOL mock_SetEndOfFile(HANDLE hFile)
+{
+    Host *host = host___;
+    if (host == NULL)
+        abort_("Call to mock_SetEndOfFile() with no node scheduled\n");
+
+    if (hFile == INVALID_HANDLE_VALUE || hFile == NULL) {
+        *host_errno_ptr(host) = ERROR_INVALID_HANDLE;
+        return 0;  // FALSE
+    }
+
+    int desc_idx = (int)(long long)hFile;
+
+    // Get current file position to use as the new size
+    int cur_pos = host_lseek(host, desc_idx, 0, HOST_SEEK_CUR);
+    if (cur_pos < 0) {
+        *host_errno_ptr(host) = ERROR_INVALID_HANDLE;
+        return 0;  // FALSE
+    }
+
+    int ret = host_ftruncate(host, desc_idx, cur_pos);
+    if (ret < 0) {
+        switch (ret) {
+        case HOST_ERROR_BADIDX:
+            *host_errno_ptr(host) = ERROR_INVALID_HANDLE;
+            return 0;
+        case HOST_ERROR_NOSPC:
+            *host_errno_ptr(host) = ERROR_DISK_FULL;
+            return 0;
+        default:
+            *host_errno_ptr(host) = ERROR_INVALID_PARAMETER;
+            return 0;
+        }
+    }
+
+    *host_errno_ptr(host) = ERROR_SUCCESS;
+    return 1;  // TRUE
 }
 
 BOOL mock_GetFileSizeEx(HANDLE handle, LARGE_INTEGER *buf)

@@ -86,7 +86,12 @@ int file_truncate(Handle fd, size_t new_size)
 #endif
 
 #ifdef _WIN32
-    return -1; // TODO: Not implemented
+    DWORD result = SetFilePointer((HANDLE) fd.data, (LONG) new_size, NULL, FILE_BEGIN);
+    if (result == INVALID_SET_FILE_POINTER)
+        return -1;
+    if (!SetEndOfFile((HANDLE) fd.data))
+        return -1;
+    return 0;
 #endif
 }
 
