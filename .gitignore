@@ -1,9 +1,11 @@
-toastyfs
-toastyfs_client
-toastyfs_simulation
-toastyfs_server
-toastyfs_http_proxy
-toastyfs_random_client
+toasty_simulation
+toasty_simulation.exe
+toasty
+toasty.exe
+toasty_random_client
+toasty_random_client.exe
+toasty_proxy
+toasty_proxy.exe
 *.gcno
 *.gcda
 *.gcov

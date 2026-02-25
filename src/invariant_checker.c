@@ -1,3 +1,5 @@
+#ifdef MAIN_SIMULATION
+
 // VSR invariant checker with external shadow log tracking.
 //
 // This file runs in the main simulation loop outside Quakey-scheduled
@@ -450,3 +452,5 @@ void invariant_checker_run(InvariantChecker *ic, Server **nodes, int num_nodes,
         }
     }
 }
+
+#endif // MAIN_SIMULATION

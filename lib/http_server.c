@@ -118,7 +118,10 @@ int http_server_listen_tls(HTTP_Server *server, Address addr,
 
     return 0;
 #else
-    (void)server; (void)addr; (void)port; (void)cert_file; (void)key_file;
+    (void) server;
+    (void) addr;
+    (void) cert_file;
+    (void) key_file;
     return -1;
 #endif
 }
