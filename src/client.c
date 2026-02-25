@@ -67,9 +67,11 @@ struct ToastyFS {
     Transfer transfers[MAX_TRANSFERS];
     int num_transfers;
 
-    SHA256 chunks[META_CHUNKS_MAX];
-    int    chunk_sizes[META_CHUNKS_MAX];
-    int    num_chunks;
+    SHA256   chunks[META_CHUNKS_MAX];
+    int      chunk_sizes[META_CHUNKS_MAX];
+    uint16_t chunk_num_holders[META_CHUNKS_MAX];
+    uint16_t chunk_holders[META_CHUNKS_MAX][REPLICATION_FACTOR];
+    int      num_chunks;
 
     char *put_data;
     int   put_data_len;
@@ -166,6 +168,7 @@ void toastyfs_free(ToastyFS *tfs)
 
 static int find_completed_transfer_for_hash(ToastyFS *tfs, SHA256 hash);
 static bool all_chunk_transfers_completed(ToastyFS *tfs);
+static bool all_transfers_finished(ToastyFS *tfs);
 
 static bool
 transfer_for_hash_already_started(ToastyFS *tfs, SHA256 hash)
@@ -304,6 +307,9 @@ static void replay_request(ToastyFS *tfs)
             for (int i = 0; i < tfs->num_chunks; i++) {
                 msg.oper.chunks[i].hash = tfs->chunks[i];
                 msg.oper.chunks[i].size = tfs->chunk_sizes[i];
+                msg.oper.chunks[i].num_holders = tfs->chunk_num_holders[i];
+                for (int j = 0; j < tfs->chunk_num_holders[i]; j++)
+                    msg.oper.chunks[i].holders[j] = tfs->chunk_holders[i][j];
             }
             send_message(&tfs->msys, leader_idx(tfs), &msg.base);
         }
@@ -348,6 +354,16 @@ static void replay_request(ToastyFS *tfs)
 
 static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
 {
+    // Discard messages that arrive after the operation has completed or
+    // before a new one has started.  This handles late/stale responses
+    // from previous operations (e.g. a STORE_CHUNK_ACK arriving after the
+    // client already moved on to a GET).
+    if (tfs->step == STEP_IDLE
+        || tfs->step == STEP_PUT_DONE
+        || tfs->step == STEP_GET_DONE
+        || tfs->step == STEP_DELETE_DONE)
+        return 0;
+
     switch (tfs->step) {
     case STEP_FETCH_CHUNK:
         {
@@ -412,10 +428,27 @@ static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
                     assert(transfer_idx > -1);
 
                     tfs->transfers[transfer_idx].state = TRANSFER_COMPLETED;
-                    mark_waiting_transfers_for_hash_as_aborted(tfs, ack.hash);
+                    // NOTE: Do NOT abort pending transfers for this hash.
+                    // We need all REPLICATION_FACTOR copies to be stored.
 
                     begin_transfers(tfs);
-                    if (all_chunk_transfers_completed(tfs)) {
+                    if (all_transfers_finished(tfs)) {
+
+                        // Extract holder info from completed transfers
+                        for (int i = 0; i < tfs->num_chunks; i++) {
+                            tfs->chunk_num_holders[i] = 0;
+                            for (int t = 0; t < tfs->num_transfers; t++) {
+                                if (!memcmp(&tfs->transfers[t].hash, &tfs->chunks[i], sizeof(SHA256))
+                                    && tfs->transfers[t].state == TRANSFER_COMPLETED)
+                                {
+                                    int h = tfs->chunk_num_holders[i];
+                                    if (h < REPLICATION_FACTOR) {
+                                        tfs->chunk_holders[i][h] = (uint16_t)tfs->transfers[t].location;
+                                        tfs->chunk_num_holders[i]++;
+                                    }
+                                }
+                            }
+                        }
 
                         tfs->request_id++;
                         CommitPutMessage msg = {
@@ -438,6 +471,9 @@ static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
                         for (int i = 0; i < tfs->num_chunks; i++) {
                             msg.oper.chunks[i].hash = tfs->chunks[i];
                             msg.oper.chunks[i].size = tfs->chunk_sizes[i];
+                            msg.oper.chunks[i].num_holders = tfs->chunk_num_holders[i];
+                            for (int j = 0; j < tfs->chunk_num_holders[i]; j++)
+                                msg.oper.chunks[i].holders[j] = tfs->chunk_holders[i][j];
                         }
                         send_message(&tfs->msys, leader_idx(tfs), &msg.base);
                         tfs->step = STEP_COMMIT;
@@ -596,12 +632,9 @@ static int process_message(ToastyFS *tfs, uint16_t type, ByteView msg)
 
                     tfs->num_transfers = 0;
                     for (int i = 0; i < (int)resp.num_chunks; i++) {
-                        // TODO: The server selection formula is a temporary
-                        //       solution. Figure out a proper strategy for
-                        //       picking which servers to fetch chunks from.
-                        for (int j = 0; j < REPLICATION_FACTOR; j++) {
+                        for (int j = 0; j < resp.chunks[i].num_holders; j++) {
                             add_transfer(tfs, resp.chunks[i].hash,
-                                (i + j) % tfs->num_servers, NULL, 0);
+                                resp.chunks[i].holders[j], NULL, 0);
                         }
                         tfs->chunks[i] = resp.chunks[i].hash;
                         tfs->chunk_sizes[i] = resp.chunks[i].size;
@@ -923,6 +956,17 @@ static void get_result(ToastyFS *tfs, ToastyFS_Result *result)
     result->error = TOASTYFS_ERROR_VOID;
     result->data  = blob_data;
     result->size  = blob_size;
+}
+
+static bool
+all_transfers_finished(ToastyFS *tfs)
+{
+    for (int i = 0; i < tfs->num_transfers; i++) {
+        if (tfs->transfers[i].state == TRANSFER_PENDING
+            || tfs->transfers[i].state == TRANSFER_STARTED)
+            return false;
+    }
+    return true;
 }
 
 static bool

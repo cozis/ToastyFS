@@ -5,10 +5,13 @@
 #include <stdbool.h>
 
 #include <lib/basic.h>
+#include "config.h"
 
 typedef struct {
     SHA256   hash;
     uint32_t size;
+    uint16_t num_holders;
+    uint16_t holders[REPLICATION_FACTOR];
 } ChunkRef;
 
 #define META_BUCKET_MAX  64
