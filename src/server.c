@@ -56,7 +56,7 @@ static void node_log_impl(Server *state, const char *event, const char *detail)
         self_idx(state),
         is_primary(state) ? "PR" : "RE",
         status_name(state->status),
-        state->view_number,
+        (unsigned long long)state->view_number,
         state->commit_index,
         state->log.count,
         event,
@@ -141,7 +141,7 @@ process_request(Server *state, void *raw_message)
         char oper_buf[128];
         meta_snprint_oper(oper_buf, sizeof(oper_buf), &request_message.oper);
         node_log(state, "RECV REQUEST", "client=%llu req=%llu %s",
-            request_message.client_id, request_message.request_id,
+            (unsigned long long)request_message.client_id, (unsigned long long)request_message.request_id,
             oper_buf);
     }
 
@@ -166,7 +166,7 @@ process_request(Server *state, void *raw_message)
                     .request_id = request_message.request_id,
                 };
                 reply_to_message(state->msys, raw_message, &reply_message.base);
-                node_log(state, "SEND REPLY", "client=%llu REJECTED (table full)", request_message.client_id);
+                node_log(state, "SEND REPLY", "client=%llu REJECTED (table full)", (unsigned long long)request_message.client_id);
                 return HR_OK;
             }
 
@@ -195,7 +195,7 @@ process_request(Server *state, void *raw_message)
                 {
                     char result_buf[64];
                     meta_snprint_result(result_buf, sizeof(result_buf), entry->last_result);
-                    node_log(state, "SEND REPLY", "client=%llu cached %s", request_message.client_id, result_buf);
+                    node_log(state, "SEND REPLY", "client=%llu cached %s", (unsigned long long)request_message.client_id, result_buf);
                 }
                 return HR_OK;
             }
@@ -248,7 +248,7 @@ static void reply_to_client(Server *state, ClientTableEntry *table_entry,
         meta_snprint_oper(oper_buf, sizeof(oper_buf), oper);
         meta_snprint_result(result_buf, sizeof(result_buf), result);
         node_log(state, "SEND REPLY", "client=%llu req=%llu %s -> %s",
-            table_entry->client_id, request_id, oper_buf, result_buf);
+            (unsigned long long)table_entry->client_id, (unsigned long long)request_id, oper_buf, result_buf);
     }
 
     if (table_entry->pending_message) {
@@ -312,7 +312,7 @@ process_prepare_ok(Server *state, void *raw_message)
     memcpy(&message, raw_message, sizeof(message));
 
     node_log(state, "RECV PREPARE_OK", "from=%d idx=%d view=%llu",
-        message.sender_idx, message.log_index, message.view_number);
+        message.sender_idx, message.log_index, (unsigned long long)message.view_number);
 
     if (message.view_number < state->view_number)
         return HR_OK;
@@ -396,7 +396,7 @@ complete_view_change_and_become_primary(Server *state)
     broadcast_message_ex(state->msys, self_idx(state),&begin_view_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
 
     node_log(state, "SEND BEGIN_VIEW", "to=* view=%llu log=%d commit=%d",
-        state->view_number, state->log.count, state->commit_index);
+        (unsigned long long)state->view_number, state->log.count, state->commit_index);
 
     clear_view_change_fields(state);
     return HR_OK;
@@ -413,7 +413,7 @@ process_do_view_change(Server *state, void *raw_message)
     memcpy(&message, raw_message, sizeof(message));
 
     node_log(state, "RECV DO_VIEW_CHANGE", "from=%d view=%llu old_view=%llu ops=%d commit=%d",
-        message.sender_idx, message.view_number, message.old_view_number,
+        message.sender_idx, (unsigned long long)message.view_number, (unsigned long long)message.old_view_number,
         message.op_number, message.commit_index);
 
     if (message.view_number != state->view_number)
@@ -459,10 +459,10 @@ process_recovery(Server *state, void *raw_message)
         return HR_INVALID_MESSAGE;
     memcpy(&recovery_message, raw_message, sizeof(recovery_message));
 
-    node_log(state, "RECV RECOVERY", "from=%d nonce=%llu", recovery_message.sender_idx, recovery_message.nonce);
+    node_log(state, "RECV RECOVERY", "from=%d nonce=%llu", recovery_message.sender_idx, (unsigned long long)recovery_message.nonce);
 
     node_log(state, "SEND RECOVERY_RESP", "to=%d view=%llu is_primary=%s",
-        recovery_message.sender_idx, state->view_number, is_primary(state) ? "yes" : "no");
+        recovery_message.sender_idx, (unsigned long long)state->view_number, is_primary(state) ? "yes" : "no");
 
     RecoveryResponseMessage recovery_response_message = {
         .base = {
@@ -513,7 +513,7 @@ perform_log_transfer_for_view_change(Server *state)
         };
         send_message_ex(state->msys,primary_idx(state), &do_view_change_message.base, state->log.entries, state->log.count * sizeof(LogEntry));
         node_log(state, "SEND DO_VIEW_CHANGE", "to=%d view=%llu old_view=%llu log=%d commit=%d",
-            primary_idx(state), state->view_number, state->last_normal_view,
+            primary_idx(state), (unsigned long long)state->view_number, (unsigned long long)state->last_normal_view,
             state->log.count, state->commit_index);
     }
 
@@ -532,7 +532,7 @@ process_begin_view_change(Server *state, void *raw_message)
         return HR_INVALID_MESSAGE;
     memcpy(&message, raw_message, sizeof(message));
 
-    node_log(state, "RECV BEGIN_VIEW_CHG", "from=%d view=%llu", message.sender_idx, message.view_number);
+    node_log(state, "RECV BEGIN_VIEW_CHG", "from=%d view=%llu", message.sender_idx, (unsigned long long)message.view_number);
 
     if (message.view_number < state->view_number)
         return HR_OK;
@@ -554,13 +554,13 @@ process_begin_view_change(Server *state, void *raw_message)
             .sender_idx = self_idx(state),
         };
         broadcast_message(state->msys, self_idx(state),&message_2.base);
-        node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", message.view_number);
+        node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", (unsigned long long)message.view_number);
 
         clear_view_change_fields(state);
         state->view_number = message.view_number;
         state->heartbeat = state->now;
         state->status = STATUS_CHANGE_VIEW;
-        node_log(state, "STATUS CHANGE_VIEW", "view=%llu", state->view_number);
+        node_log(state, "STATUS CHANGE_VIEW", "view=%llu", (unsigned long long)state->view_number);
     }
 
     bool before = reached_quorum(state, state->view_change_begin_votes);
@@ -588,7 +588,7 @@ process_begin_view(Server *state, void *raw_message)
     memcpy(&message, raw_message, sizeof(message));
 
     node_log(state, "RECV BEGIN_VIEW", "view=%llu commit=%d ops=%d",
-        message.view_number, message.commit_index, message.op_number);
+        (unsigned long long)message.view_number, message.commit_index, message.op_number);
 
     if (message.view_number < state->view_number)
         return HR_OK;
@@ -597,7 +597,7 @@ process_begin_view(Server *state, void *raw_message)
 
     state->status = STATUS_NORMAL;
     state->last_normal_view = state->view_number;
-    node_log(state, "STATUS NORMAL", "new view=%llu (follower)", state->view_number);
+    node_log(state, "STATUS NORMAL", "new view=%llu (follower)", (unsigned long long)state->view_number);
 
     int num_entries = (len - sizeof(BeginViewMessage)) / sizeof(LogEntry);
     assert(num_entries >= state->commit_index);
@@ -644,7 +644,7 @@ process_get_state(Server *state, void *raw_message)
     memcpy(&get_state_message, raw_message, sizeof(get_state_message));
 
     node_log(state, "RECV GET_STATE", "from=%d op=%d view=%llu",
-        get_state_message.sender_idx, get_state_message.op_number, get_state_message.view_number);
+        get_state_message.sender_idx, get_state_message.op_number, (unsigned long long)get_state_message.view_number);
 
     if (state->status != STATUS_NORMAL)
         return HR_OK;
@@ -858,7 +858,7 @@ complete_recovery(Server *state)
     state->status = STATUS_NORMAL;
     state->last_normal_view = state->view_number;
     node_log(state, "STATUS NORMAL", "recovery complete view=%llu commit=%d",
-        state->view_number, state->commit_index);
+        (unsigned long long)state->view_number, state->commit_index);
 
     if (is_primary(state)) {
         for (int i = state->commit_index; i < state->log.count; i++) {
@@ -907,7 +907,7 @@ process_recovery_response(Server *state, void *raw_message)
     memcpy(&message, raw_message, sizeof(message));
 
     node_log(state, "RECV RECOVERY_RESP", "from=%d view=%llu commit=%d nonce=%llu",
-        message.sender_idx, message.view_number, message.commit_index, message.nonce);
+        message.sender_idx, (unsigned long long)message.view_number, message.commit_index, (unsigned long long)message.nonce);
 
     if (message.nonce != state->recovery_nonce)
         return HR_OK;
@@ -1008,7 +1008,7 @@ process_prepare(Server *state, void *raw_message)
         meta_snprint_oper(oper_buf, sizeof(oper_buf), &message.oper);
         node_log(state, "RECV PREPARE", "from=%d idx=%d commit=%d view=%llu %s",
             message.sender_idx, message.log_index, message.commit_index,
-            message.view_number, oper_buf);
+            (unsigned long long)message.view_number, oper_buf);
     }
 
     if (message.view_number < state->view_number)
@@ -1100,7 +1100,7 @@ process_new_state(Server *state, void *raw_message)
     memcpy(&new_state_message, raw_message, sizeof(new_state_message));
 
     node_log(state, "RECV NEW_STATE", "entries=%d commit=%d view=%llu",
-        new_state_message.op_number, new_state_message.commit_index, new_state_message.view_number);
+        new_state_message.op_number, new_state_message.commit_index, (unsigned long long)new_state_message.view_number);
 
     if (new_state_message.view_number != state->view_number)
         return HR_OK;
@@ -1421,7 +1421,7 @@ int server_init(void *state_, int argc, char **argv,
     }
 
     if (previously_crashed) {
-        node_log(state, "STATUS RECOVERY", "nonce=%llu (crash detected)", state->recovery_nonce);
+        node_log(state, "STATUS RECOVERY", "nonce=%llu (crash detected)", (unsigned long long)state->recovery_nonce);
 
         RecoveryMessage recovery_message = {
             .base = {
@@ -1433,7 +1433,7 @@ int server_init(void *state_, int argc, char **argv,
             .nonce = state->recovery_nonce,
         };
         broadcast_message(state->msys, self_idx(state),&recovery_message.base);
-        node_log(state, "SEND RECOVERY", "to=* nonce=%llu", state->recovery_nonce);
+        node_log(state, "SEND RECOVERY", "to=* nonce=%llu", (unsigned long long)state->recovery_nonce);
 
         nearest_deadline(&deadline, state->recovery_time + RECOVERY_TIMEOUT_SEC * 1000000000ULL);
     }
@@ -1493,7 +1493,7 @@ int server_tick(void *state_, void **ctxs,
                 .nonce = state->recovery_nonce,
             };
             broadcast_message(state->msys, self_idx(state),&recovery_message.base);
-            node_log(state, "SEND RECOVERY", "to=* nonce=%llu", state->recovery_nonce);
+            node_log(state, "SEND RECOVERY", "to=* nonce=%llu", (unsigned long long)state->recovery_nonce);
 
             state->recovery_time = state->now;
 
@@ -1523,7 +1523,7 @@ int server_tick(void *state_, void **ctxs,
                 .view_number = state->view_number,
                 .sender_idx = self_idx(state),
             };
-            node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", state->view_number);
+            node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", (unsigned long long)state->view_number);
             broadcast_message(state->msys, self_idx(state),&begin_view_change_message.base);
 
         } else {
@@ -1579,8 +1579,8 @@ int server_tick(void *state_, void **ctxs,
                 };
                 broadcast_message(state->msys, self_idx(state),&begin_view_change_message.base);
 
-                node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", state->view_number);
-                node_log(state, "STATUS CHANGE_VIEW", "view=%llu", state->view_number);
+                node_log(state, "SEND BEGIN_VIEW_CHG", "to=* view=%llu", (unsigned long long)state->view_number);
+                node_log(state, "STATUS CHANGE_VIEW", "view=%llu", (unsigned long long)state->view_number);
             } else {
                 nearest_deadline(&deadline, death_deadline);
             }

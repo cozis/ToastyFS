@@ -738,10 +738,6 @@ static b32 socket_queue_empty(SocketQueue *queue)
     return queue->used == 0;
 }
 
-static b32 socket_queue_used(SocketQueue *queue)
-{
-    return queue->used;
-}
 
 /////////////////////////////////////////////////////////////////
 // Accept Queue Code
@@ -3378,6 +3374,7 @@ static int convert_linux_open_flags_to_mockfs(int flags)
 
 int mock_open(char *path, int flags, int mode)
 {
+    (void)mode;
     Host *host = host___;
     if (host == NULL)
         abort_("Call to mock_open() with no node scheduled\n");
@@ -3737,6 +3734,8 @@ int mock_clock_gettime(clockid_t clockid, struct timespec *tp)
 int mock_flock(int fd, int op)
 {
     // TODO
+    (void)fd;
+    (void)op;
     return 0;
 }
 
@@ -3854,6 +3853,7 @@ int mock_fstat(int fd, struct stat *buf)
 
 int mock_mkstemp(char *path)
 {
+    (void)path;
     TODO;
 }
 
