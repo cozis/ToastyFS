@@ -319,6 +319,16 @@ int main(int argc, char **argv)
 
 #ifdef _WIN32
 #include <winsock2.h>
+#include <stdlib.h>
+#include <stdio.h>
+static void invalid_param_handler(const wchar_t *expr, const wchar_t *func,
+    const wchar_t *file, unsigned int line, uintptr_t reserved)
+{
+    (void)expr; (void)func; (void)file; (void)line; (void)reserved;
+    fprintf(stderr, "[CRT] Invalid parameter in %ls (%ls:%u)\n",
+        func ? func : L"?", file ? file : L"?", line);
+    fflush(stderr);
+}
 #else
 #include <poll.h>
 #endif
@@ -329,6 +339,9 @@ int main(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    _set_invalid_parameter_handler(invalid_param_handler);
+#endif
     int ret;
 
     HTTPProxy state;

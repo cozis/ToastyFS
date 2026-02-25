@@ -26,6 +26,7 @@ int message_system_init(MessageSystem *msys,
     for (int i = 0; i < max_conns; i++) {
         msys->conns[i].used = false;
         msys->conns[i].gen = 0;
+        msys->conns[i].num_senders = 0;
     }
 
     int ret = tcp_init(&msys->tcp, max_conns);
@@ -81,17 +82,17 @@ void *get_next_message(MessageSystem *msys)
 
             // Skip if already set up by ensure_conn (outbound connection)
             if (tcp_get_user_ptr(event.handle) == NULL) {
-                int i = 0;
-                while (i < msys->max_conns && msys->conns[i].used)
-                    i++;
-
-                if (i == msys->max_conns) {
-                    tcp_close(event.handle);
-                    continue;
-                }
+                // Use the TCP connection's slot index so that the
+                // ConnMetadata index always matches the TCP_Conn index.
+                // Searching for a "free" metadata slot could assign a
+                // different index when stale metadata entries remain
+                // from failed outbound connections.
+                int i = event.handle.idx;
+                assert(i >= 0 && i < msys->max_conns);
 
                 ConnMetadata *meta = &msys->conns[i];
                 meta->used = true;
+                meta->gen = event.handle.gen;
                 meta->num_senders = 0;
                 meta->message = NULL;
                 tcp_set_user_ptr(event.handle, meta);
@@ -168,6 +169,8 @@ static TCP_Handle find_conn_by_target(MessageSystem *msys, int target)
 {
     for (int i = 0; i < msys->max_conns; i++) {
         ConnMetadata *meta = &msys->conns[i];
+        if (!meta->used)
+            continue;
         for (int j = 0; j < meta->num_senders; j++) {
             if (meta->senders[j] == target) {
                 return (TCP_Handle) { &msys->tcp, meta->gen, i };

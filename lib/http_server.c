@@ -245,6 +245,7 @@ bool http_server_next_request(HTTP_Server *server,
             continue;
 
         if (server->conns[i].ready) {
+            server->conns[i].ready = false;
             *request = &server->conns[i].request;
             *builder = (HTTP_ResponseBuilder) {
                 .server = server,
