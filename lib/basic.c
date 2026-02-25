@@ -184,27 +184,31 @@ bool addr_eql(Address a, Address b)
     return true;
 }
 
-int parse_addr_arg(char *arg, Address *out)
+int parse_addr_arg(string arg, Address *out)
 {
-    int len = strlen(arg);
+    char buf[1<<7];
+    if (arg.len >= (int) sizeof(buf))
+        return -1;
+    memcpy(buf, arg.ptr, arg.len);
+    arg.ptr = buf;
 
     int i = 0;
-    while (i < len && arg[i] != ':')
+    while (i < arg.len && arg.ptr[i] != ':')
         i++;
 
-    if (i == len)
+    if (i == arg.len)
         return -1; // No ':' character.
-    arg[i] = '\0';
+    arg.ptr[i] = '\0';
 
     IPv4 ipv4;
-    int ret = inet_pton(AF_INET, arg, &ipv4);
-    arg[i] = ':';
+    int ret = inet_pton(AF_INET, arg.ptr, &ipv4);
+    arg.ptr[i] = ':';
 
     if (ret != 1)
         return -1;
 
     errno = 0;
-    ret = atoi(arg + i + 1);
+    ret = atoi(arg.ptr + i + 1);
     if (ret == 0 && errno != 0)
         return -1;
 

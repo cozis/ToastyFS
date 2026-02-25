@@ -39,7 +39,7 @@ int http_proxy_init(void *state, int argc, char **argv,
 
     // TODO: Make these configurable
     int      max_opers = 128;
-    char    *http_addr = "127.0.0.1:3000";
+    string   http_addr = S("127.0.0.1:3000");
     uint64_t client_id = 999;
 
     proxy->max_opers = max_opers;

@@ -140,7 +140,7 @@ ToastyFS *toastyfs_init(uint64_t client_id, char **addrs, int num_addrs)
     tfs->request_id  = 0;
 
     for (int i = 0; i < num_addrs; i++) {
-        if (parse_addr_arg(addrs[i], &tfs->server_addrs[i]) < 0) {
+        if (parse_addr_arg((string) { addrs[i], strlen(addrs[i]) }, &tfs->server_addrs[i]) < 0) {
             free(tfs);
             return NULL;
         }

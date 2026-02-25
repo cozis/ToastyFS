@@ -1317,7 +1317,7 @@ int server_init(void *state_, int argc, char **argv,
                 fprintf(stderr, "Option --addr missing value. Usage is --addr <addr>:<port>\n");
                 return -1;
             }
-            int ret = parse_addr_arg(argv[i], &state->self_addr);
+            int ret = parse_addr_arg((string) { argv[i], strlen(argv[i]) }, &state->self_addr);
             if (ret < 0) {
                 fprintf(stderr, "Malformed <addr>:<port> pair for --addr option\n");
                 return -1;
@@ -1337,7 +1337,7 @@ int server_init(void *state_, int argc, char **argv,
                 fprintf(stderr, "Node limit of %d reached\n", NODE_LIMIT);
                 return -1;
             }
-            int ret = parse_addr_arg(argv[i], &state->node_addrs[state->num_nodes]);
+            int ret = parse_addr_arg((string) { argv[i], strlen(argv[i]) }, &state->node_addrs[state->num_nodes]);
             if (ret < 0) {
                 fprintf(stderr, "Malformed <addr>:<port> pair for --peer option\n");
                 return -1;

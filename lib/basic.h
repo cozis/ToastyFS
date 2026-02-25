@@ -57,7 +57,7 @@ void append_hex_as_str(char *out, SHA256 hash);
 bool addr_eql(Address a, Address b);
 bool addr_lower(Address a, Address b);
 
-int parse_addr_arg(char *arg, Address *out);
+int parse_addr_arg(string arg, Address *out);
 void addr_sort(Address *addrs, int count);
 
 #endif // BASIC_INCLUDED
