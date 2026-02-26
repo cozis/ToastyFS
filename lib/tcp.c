@@ -39,7 +39,14 @@ typedef struct {
     // ID of the general state this structure is in
     TCP_ConnState state;
 
-    // Information about the socket
+    // Information about the socket:
+    //   - TCP_CONN_FLAG_CLOSED
+    //       Whether the user is holding a handle to this struct.
+    //       It's first set when the TCP_EVENT_NEW is passed to
+    //       the user, and it's unset when the user calls tcp_close.
+    //   - TCP_CONN_FLAG_SECURE
+    //       Whether the connection was establushed via the
+    //       encrypted interface or not
     int flags;
 
     // Events associated to this connection that the user
@@ -56,11 +63,6 @@ typedef struct {
 
     // Underlying socket
     SOCKET fd;
-
-    // Whether the user is holding a handle to this struct.
-    // It's first set when the TCP_EVENT_NEW is passed to
-    // the user, and it's unset when the user calls tcp_close.
-    bool handled;
 
     // The socket should be closing as soon as the buffered
     // output data has been flushed. When this is set, no more
@@ -347,7 +349,6 @@ static void tcp_conn_init(TCP *tcp, TCP_Conn *conn, bool secure, TCP_ConnState s
     conn->state = state;
     conn->flags = 0;
     conn->events = 0;
-    conn->handled = false;
     conn->closing = false;
     conn->fd = fd;
     conn->num_addrs = 0;
@@ -506,7 +507,7 @@ static bool tcp_conn_is_buffering(TCP_Conn *conn)
 
 static bool tcp_conn_free_maybe(TCP_Conn *conn)
 {
-    if (!conn->handled && conn->fd == INVALID_SOCKET) {
+    if (!(conn->flags & TCP_CONN_FLAG_CLOSED) && conn->fd == INVALID_SOCKET) {
         tcp_conn_free(conn);
         return true;
     } else {
@@ -1064,6 +1065,9 @@ void tcp_write(TCP_Handle handle, string data)
         byte_queue_write_setmincap(&conn->output, data.len);
         string buf = tcp_write_buf(handle);
 
+        if (buf.len == 0)
+            break; // Output buffer full or in error state
+
         int num = MIN(buf.len, data.len);
         memcpy(buf.ptr, data.ptr, num);
 
@@ -1101,8 +1105,10 @@ void tcp_close(TCP_Handle handle)
     if (conn == NULL)
         return;
 
+    // Only free immediately if the user already called tcp_close
+    // (CLOSED flag set). Otherwise, keep the connection alive so
+    // tcp_next_event can deliver the HUP event to the user.
     conn->flags |= TCP_CONN_FLAG_CLOSED;
-    conn->handled = false;
     tcp_conn_invalidate_handles(conn);
     if (tcp_conn_free_maybe(conn)) {
         tcp->num_conns--;

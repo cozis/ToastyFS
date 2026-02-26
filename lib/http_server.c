@@ -272,6 +272,11 @@ builder_to_conn(HTTP_ResponseBuilder builder)
     return conn;
 }
 
+bool http_response_builder_is_valid(HTTP_ResponseBuilder builder)
+{
+    return builder_to_conn(builder) != NULL;
+}
+
 void http_response_builder_status(HTTP_ResponseBuilder builder, int status)
 {
     HTTP_Conn *conn = builder_to_conn(builder);

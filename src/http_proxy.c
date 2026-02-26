@@ -101,6 +101,7 @@ int http_proxy_tick(void *state, void **ctxs,
     struct pollfd *pdata, int pcap, int *pnum, int *timeout)
 {
     HTTPProxy *proxy = state;
+
     http_server_process_events(&proxy->http_server,
         ctxs  + proxy->num_polled_by_toasty,
         pdata + proxy->num_polled_by_toasty,
@@ -123,14 +124,15 @@ int http_proxy_tick(void *state, void **ctxs,
         ProxyOper *oper = &proxy->opers[i];
         assert(oper->state == PROXY_OPER_STARTED);
 
-        HTTP_Request *request = oper->request;
         HTTP_ResponseBuilder builder = oper->builder;
 
         switch (result.type) {
         case TOASTYFS_RESULT_PUT:
-            assert(request->method == CHTTP_METHOD_PUT);
             if (result.error == TOASTYFS_ERROR_VOID) {
                 http_response_builder_status(builder, 201);
+                http_response_builder_submit(builder);
+            } else if (result.error == TOASTYFS_ERROR_FULL) {
+                http_response_builder_status(builder, 507);
                 http_response_builder_submit(builder);
             } else {
                 http_response_builder_status(builder, 500);
@@ -138,21 +140,25 @@ int http_proxy_tick(void *state, void **ctxs,
             }
             break;
         case TOASTYFS_RESULT_GET:
-            assert(request->method == CHTTP_METHOD_GET);
             if (result.error == TOASTYFS_ERROR_VOID) {
                 http_response_builder_status(builder, 200);
                 http_response_builder_content(builder, (string) { result.data, result.size });
                 http_response_builder_submit(builder);
                 free(result.data);
+            } else if (result.error == TOASTYFS_ERROR_NOT_FOUND) {
+                http_response_builder_status(builder, 404);
+                http_response_builder_submit(builder);
             } else {
                 http_response_builder_status(builder, 500);
                 http_response_builder_submit(builder);
             }
             break;
         case TOASTYFS_RESULT_DELETE:
-            assert(request->method == CHTTP_METHOD_DELETE);
             if (result.error == TOASTYFS_ERROR_VOID) {
                 http_response_builder_status(builder, 204);
+                http_response_builder_submit(builder);
+            } else if (result.error == TOASTYFS_ERROR_NOT_FOUND) {
+                http_response_builder_status(builder, 404);
                 http_response_builder_submit(builder);
             } else {
                 http_response_builder_status(builder, 500);
@@ -164,6 +170,17 @@ int http_proxy_tick(void *state, void **ctxs,
         }
 
         oper->state = PROXY_OPER_FREE;
+    }
+
+    // Discard pending operations whose connection has been closed.
+    // When a client disconnects, the HTTP_Conn is freed and the builder
+    // becomes invalid.  The request pointers (url, body) reference the
+    // now-freed TCP read buffer, so we must not dereference them.
+    for (int i = 0; i < proxy->max_opers; i++) {
+        if (proxy->opers[i].state == PROXY_OPER_PENDING
+            && !http_response_builder_is_valid(proxy->opers[i].builder)) {
+            proxy->opers[i].state = PROXY_OPER_FREE;
+        }
     }
 
     // Buffer operation requests
@@ -189,7 +206,7 @@ int http_proxy_tick(void *state, void **ctxs,
 
         if (i == proxy->max_opers) {
             // Queue is full
-            http_response_builder_status(builder, 500);
+            http_response_builder_status(builder, 503);
             http_response_builder_submit(builder);
             continue;
         }
@@ -223,25 +240,36 @@ int http_proxy_tick(void *state, void **ctxs,
             if (i < proxy->max_opers) {
                 // Found pending operation
                 ProxyOper *oper = &proxy->opers[i];
-
-                // Begin the operation based on the request method
                 HTTP_Request *request = oper->request;
+                int ret = -1;
+
                 switch (request->method) {
                 case CHTTP_METHOD_GET:
-                    toastyfs_async_get(proxy->toastyfs, request->url.path.ptr, request->url.path.len);
+                    ret = toastyfs_async_get(proxy->toastyfs,
+                        request->url.path.ptr, request->url.path.len);
                     break;
                 case CHTTP_METHOD_PUT:
-                    toastyfs_async_put(proxy->toastyfs, request->url.path.ptr, request->url.path.len,
+                    ret = toastyfs_async_put(proxy->toastyfs,
+                        request->url.path.ptr, request->url.path.len,
                         request->body.ptr, request->body.len);
                     break;
                 case CHTTP_METHOD_DELETE:
-                    toastyfs_async_delete(proxy->toastyfs, request->url.path.ptr, request->url.path.len);
+                    ret = toastyfs_async_delete(proxy->toastyfs,
+                        request->url.path.ptr, request->url.path.len);
                     break;
                 default:
                     UNREACHABLE;
                 }
 
-                oper->state = PROXY_OPER_STARTED;
+                if (ret < 0) {
+                    // Async operation failed to start -- respond with error
+                    // and free the slot so the proxy doesn't get stuck.
+                    http_response_builder_status(oper->builder, 500);
+                    http_response_builder_submit(oper->builder);
+                    oper->state = PROXY_OPER_FREE;
+                } else {
+                    oper->state = PROXY_OPER_STARTED;
+                }
             }
         }
     }

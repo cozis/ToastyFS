@@ -60,6 +60,7 @@ typedef struct {
 bool http_server_next_request(HTTP_Server *server,
     HTTP_Request **request, HTTP_ResponseBuilder *builder);
 
+bool http_response_builder_is_valid(HTTP_ResponseBuilder builder);
 void http_response_builder_status(HTTP_ResponseBuilder builder, int status);
 void http_response_builder_header(HTTP_ResponseBuilder builder, string header);
 void http_response_builder_content(HTTP_ResponseBuilder builder, string content);
