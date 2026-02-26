@@ -23,3 +23,4 @@ vsr_boot_marker
 *.pem
 *.exe
 .claude/
+cluster-data/
