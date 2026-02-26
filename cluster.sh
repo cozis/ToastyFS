@@ -138,6 +138,7 @@ do_stop() {
     stop_process "node1"
     stop_process "node2"
     stop_process "node3"
+    rm -f "$SCRIPT_DIR/vsr_boot_marker"
     echo "Cluster stopped."
 }
 

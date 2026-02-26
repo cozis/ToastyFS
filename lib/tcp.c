@@ -282,7 +282,7 @@ int tcp_listen_tcp(TCP *tcp, Address addr)
         return -1;
 
     // TODO: Make these configurable
-    bool reuse_addr = false;
+    bool reuse_addr = true;
     int backlog = 32;
 
     SOCKET fd = create_listen_socket(addr, reuse_addr, backlog);
@@ -302,7 +302,7 @@ int tcp_listen_tls(TCP *tcp, Address addr, string cert_file, string key_file)
         return -1;
 
     // TODO: Make these configurable
-    bool reuse_addr = false;
+    bool reuse_addr = true;
     int backlog = 32;
 
     SOCKET fd = create_listen_socket(addr, reuse_addr, backlog);
