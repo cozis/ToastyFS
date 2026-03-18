@@ -1,9 +1,15 @@
-# ToastyFS Documentation
+# ToastyFS
+
+ToastyFS is a simple, fault-tolerant, highly available object storage featuring:
+
+* Deterministic Simulation Testing
+* Cross-Platform (Windows, Linux)
+* Minimal Dependencies (OpenSSL and SChannel)
+* Viewstamped Replication
 
 ## Table of Contents
 
-* [Overview](#overview)
-  * [What is ToastyFS?](#what-is-toastyfs)
+* [ToastyFS](#toastyfs)
   * [Motivation](#motivation)
   * [Project Status & Known Limitations](#project-status--known-limitations)
 * [Getting Started](#getting-started)
@@ -21,17 +27,6 @@
 * [Testing](#testing)
   * [Deterministic Simulation Testing](#deterministic-simulation-testing)
   * [Testing in ToastyFS](#testing-in-toastyfs)
-
-## Overview
-
-### What is ToastyFS?
-
-ToastyFS is a simple, fault-tolerant, highly available object storage featuring:
-
-* Deterministic Simulation Testing
-* Cross-Platform (Windows, Linux)
-* Minimal Dependencies (OpenSSL and SChannel)
-* Viewstamped Replication
 
 ### Motivation
 
