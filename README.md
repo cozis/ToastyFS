@@ -7,10 +7,11 @@ ToastyFS is a simple, fault-tolerant, highly available object storage featuring:
 * Minimal Dependencies (OpenSSL and SChannel)
 * Viewstamped Replication
 
+I initially started this project to learn about distributed systems. I asked myself what it would take to build my own Dropbox. A rabbit-hole later and here is my distributed storage system!
+
 ## Table of Contents
 
 * [ToastyFS](#toastyfs)
-  * [Motivation](#motivation)
   * [Project Status & Known Limitations](#project-status--known-limitations)
 * [Getting Started](#getting-started)
   * [Building](#building)
@@ -27,10 +28,6 @@ ToastyFS is a simple, fault-tolerant, highly available object storage featuring:
 * [Testing](#testing)
   * [Deterministic Simulation Testing](#deterministic-simulation-testing)
   * [Testing in ToastyFS](#testing-in-toastyfs)
-
-### Motivation
-
-I initially started this project to learn about distributed systems. I asked myself what it would take to build my own Dropbox. A rabbit-hole later and here is my distributed storage system!
 
 ### Project Status & Known Limitations
 
