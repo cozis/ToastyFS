@@ -30,6 +30,7 @@ int message_system_register_events(MessageSystem *msys,
 
 void *get_next_message(MessageSystem *msys);
 
+int message_type(void *raw_message);
 int message_length(void *raw_message);
 
 void consume_message(MessageSystem *msys, void *ptr);

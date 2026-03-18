@@ -185,6 +185,13 @@ static int find_channel_by_message(MessageSystem *msys, void *raw_message)
     return -1;
 }
 
+int message_type(void *raw_message)
+{
+    Message message;
+    memcpy(&message, raw_message, sizeof(message));
+    return message.type;
+}
+
 int message_length(void *raw_message)
 {
     Message message;

@@ -38,7 +38,7 @@ enum {
 
     // Chunk Storage Protocol (bypasses log)
     MESSAGE_TYPE_STORE_CHUNK,
-    MESSAGE_TYPE_STORE_CHUNK_ACK,
+    MESSAGE_TYPE_STORE_CHUNK_RESPONSE,
     MESSAGE_TYPE_FETCH_CHUNK,
     MESSAGE_TYPE_FETCH_CHUNK_RESPONSE,
 
@@ -166,7 +166,7 @@ typedef struct {
 typedef struct {
     Message base;
     SHA256  hash;
-    int     sender_idx; // -1 if from a client
+    int     sender_idx; // -1 if from a client (TODO: remove this)
 } FetchChunkMessage;
 
 // FetchChunkResponse: server -> client/server. Chunk data as trailing bytes.
