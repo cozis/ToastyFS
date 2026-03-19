@@ -34,15 +34,13 @@ I initially started this project to learn about distributed systems. I asked mys
 This project should be considered a robust proof-of-concept at this time. Features that would be required for long-running instances are missing, such as:
 
 * Log compaction
-* Log persistence on disk
-
-If a majority of nodes is turned off, the system's state will be lost. This is in accordance with disk-free version of the Viewstamped Replication protocol.
+* Ability to shut down all nodes without resetting the system
 
 ## Getting Started
 
 ### Building
 
-ToastyFS supports Windows and Linux. It can be compiled by calling the `build.bat` script on Windows and `build.sh` on Linux
+ToastyFS supports Windows and Linux. Each platform has its own build script:
 
 ```
 # Windows
@@ -54,12 +52,14 @@ ToastyFS supports Windows and Linux. It can be compiled by calling the `build.ba
 
 The build script will produce the following executables:
 
-toasty_simulation: Runs a ToastyFS cluster in-memory, with sped-up time and serving a number of random operations. See [Testing](#testing) section for details.
-toasty: The actual ToastyFS program. This is what you need to run to use ToastyFS.
-toasty_random_client: An utility client which spams random requests towards a ToastyFS cluster. Useful for testing.
-toasty_proxy: An HTTP proxy that translates HTTP request to the ToastyFS-specific request protocol.
+| Name | Description |
+| :--- | :---------- |
+| toasty_simulation | Runs a ToastyFS cluster in-memory, with sped-up time and serving a number of random operations. See [Testing](#testing) section for details. |
+| toasty | The actual ToastyFS program. This is what you need to run to use ToastyFS. |
+| toasty_random_client | An utility client which spams random requests towards a ToastyFS cluster. Useful for testing. |
+| toasty_proxy | An HTTP proxy that translates HTTP request to the ToastyFS-specific request protocol. |
 
-If you are on Windows, the executable names will have the .exe extension (so you will get `toasty_simulation.exe` instead of `toasty_simulation` for instance).
+On Windows the executables will have the `.exe` extension.
 
 ### Running a Cluster
 
@@ -92,15 +92,13 @@ I'm the first object
 
 ### The Need for Replication
 
-In order to build fault tolerant systems, it is necessary to build them as distributed systems: multiple nodes that coordinate to offer a single service. This allows for the system to stay alive in case some nodes fail. The system must be able to detect when some nodes become unavailable and choose other nodes to take their places to ensure the service is not interrupted. In practice, this is achieved via replication algorithms, such as Raft and Viewstamped Replication.
+To build a fault-tolerant service, it's necessary for it to run on multiple machines in such a way that if a machine dies, the others can continue its work. This is referred to as replication. Designing and implementing a replication system that properly manages all edge cases is **incredibly hard**. Such an algorithm needs to account for any number of node crashes at any phase of the protocol, it needs to account for arbitrary network partitions (network failures that cause the system to be split in multiple groups of nodes) making it impossible for the state of each group to diverge. This is such a hard problem that not only few general algorithms have been designed, but also the number of their implementations is vanishingly low. The common replication algorithms are Raft and Paxos (*). This project uses a less known algorithm called Viewstamped Replication (VSR).
 
-Replication algorithms, which are related but not exactly the same as consensus algorithms, allow the creation of a group of nodes (called replicas) that are synchronized maintaining the same state. The replication algorithm ensures that if a node of the group dies, it's impossible for a node that takes its place to have a stale state, causing an inconsistency in the overall system from the perspective of the user.
-
-This is generally considered as a very hard problem, since the value of such algorithms is in the mathematical certainty that once a request is accepted by the system, that information will never be lost. The algorithm needs both be designed and implemented correctly. ToastyFS solves this problem using the Viewstamped Replication algorithm.
+(*) Strictly speaking, Paxos is a consensus algorithm. Replication can be built on top of it.
 
 ### Raft VS Viewstamped Replication
 
-For historical reasons, the established algorithm to achieve replication is Paxos (strictly speaking, it's a consensus algorithm on top of which replication is built). Paxos (1989) is known for being hard to understand, and therefore to implement, so in 2014 a new simpler algorithm called Raft was introduced. Since then it has been the go-to algorithm for new open source projects.
+For historical reasons, Paxos (1989) is the established algorithm to achieve replication. Paxos is notorious for being hard to understand and implement, so in 2014 a more understandable algorithm called Raft was introduced. Since then, Raft has been the go-to algorithm from new open source projects.
 
 There is also a lesser known replication algorithm called Viewstamped Replication (VSR), which never got much attention from the industry even though it was invented around the same time as Paxos (and arguably, before it). In 2012 the "Viewstamped Replication Revisited" paper was published which offered a modernized design of the protocol. The later paper is the reference for VSR used in this project.
 
