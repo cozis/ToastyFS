@@ -9,6 +9,10 @@ ToastyFS is a simple, fault-tolerant, highly available object storage featuring:
 
 I initially started this project to learn about distributed systems. I asked myself what it would take to build my own Dropbox. A rabbit-hole later and here is my distributed storage system!
 
+Here is a cool pic of the hardware I'm building to run ToastyFS :D
+
+![photo of an 8 Raspberry PI cluster mouted in a small rack connected via a switch](pic.jpg)
+
 ## Table of Contents
 
 * [ToastyFS](#toastyfs)
