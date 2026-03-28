@@ -19,6 +19,10 @@ int http_proxy_init(void *state, int argc, char **argv,
     char *addrs[NODE_LIMIT];
     int num_addrs = 0;
 
+    int      max_opers = 128;
+    string   http_addr = S("127.0.0.1:3000");
+    uint64_t client_id = 999;
+
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--server")) {
             i++;
@@ -32,15 +36,39 @@ int http_proxy_init(void *state, int argc, char **argv,
             }
             addrs[num_addrs] = argv[i];
             num_addrs++;
+        } else if (!strcmp(argv[i], "--addr")) {
+            i++;
+            if (i == argc) {
+                fprintf(stderr, "Option --addr missing value\n");
+                return -1;
+            }
+            http_addr = (string) { argv[i], strlen(argv[i]) };
+        } else if (!strcmp(argv[i], "--max-ops")) {
+            i++;
+            if (i == argc) {
+                fprintf(stderr, "Option --max-ops missing value\n");
+                return -1;
+            }
+            max_opers = atoi(argv[i]); // TODO: don't use atoi
+            if (max_opers == 0) {
+                fprintf(stderr, "Invalid value for option --max-ops\n");
+                return -1;
+            }
+        } else if (!strcmp(argv[i], "--client-id")) {
+            i++;
+            if (i == argc) {
+                fprintf(stderr, "Invalid value for option --client-id\n");
+                return -1;
+            }
+            client_id = atoi(argv[i]);
+            if (client_id == 0) {
+                fprintf(stderr, "Invalid value for option --client-id\n");
+                return -1;
+            }
         } else {
             // Ignore unknown options
         }
     }
-
-    // TODO: Make these configurable
-    int      max_opers = 128;
-    string   http_addr = S("127.0.0.1:3000");
-    uint64_t client_id = 999;
 
     proxy->max_opers = max_opers;
     proxy->opers = malloc(max_opers * sizeof(ProxyOper));
