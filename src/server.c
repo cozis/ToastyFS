@@ -75,7 +75,7 @@ static void node_log_impl(Server *state, const char *event, const char *detail)
 static int count_set(uint32_t word)
 {
     int n = 0;
-    for (int i = 0; i < (int) sizeof(word) * 8; i++)
+    for (int i = 0; i < (int) sizeof(word) * 8 - 1; i++)
         if (word & (1 << i))
             n++;
     return n;
